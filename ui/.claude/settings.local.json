@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git *)",
+      "Bash(where git *)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Git\\\\mingw64\\\\bin\\\\git.exe\" clone \"https://github.com/forrestchang/andrej-karpathy-skills\" \"C:\\\\Users\\\\jumda\\\\.claude\\\\plugins\\\\marketplaces\\\\andrej-karpathy-skills\" 2>&1)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Git\\\\mingw64\\\\bin\\\\git.exe\" clone \"https://github.com/multica-ai/andrej-karpathy-skills\" \"C:\\\\Users\\\\jumda\\\\.claude\\\\plugins\\\\marketplaces\\\\karpathy-skills\" 2>&1)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\GitHub\\\\VisionSW\\\\ui\" -Force | Select-Object Name, @{Name='Type';Expression={if\\($_.PSIsContainer\\){'Directory'}else{'File'}}} | Sort-Object Type, Name)"
+    ]
+  }
+}

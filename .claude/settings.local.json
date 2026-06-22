@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:claude.ai)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(where vcpkg *)",
+      "Bash(where cmake *)",
+      "Bash(where git *)",
+      "Bash(where ninja *)",
+      "Bash(cmake --build build --target VisionUI --config Debug)",
+      "Bash(ls C:/Qt/6.8.3/msvc2022_64/lib/cmake/ | grep -i dialog)",
+      "Bash(cmake --build build --target VisionTests --config Debug)",
+      "Bash(ctest -C Debug --output-on-failure)",
+      "Bash(cmake --build D:\\\\GitHub\\\\VisionSW\\\\build --target CoreTests ToolTests --config Debug)",
+      "Bash(cmake --build \"D:/GitHub/VisionSW/build\" --target CoreTests --config Debug)",
+      "Bash(cmake --build \"D:/GitHub/VisionSW/build\" --target ToolTests --config Debug)",
+      "Bash(ctest --test-dir \"D:/GitHub/VisionSW/build\" -C Debug --output-on-failure)",
+      "Bash(awk '{print $6, $7, $8, $9}')",
+      "Bash(\"D:/GitHub/VisionSW/build/bin/Debug/VisionUI.exe\")",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(cmake --build \"D:/GitHub/VisionSW/build\" --target VisionUI --config Debug)",
+      "Bash(taskkill /F /IM VisionUI.exe)",
+      "Bash(grep -E \"error GD|error C|error LNK|FAILED|\\\\.exe$\")",
+      "Bash(powershell -Command \"Stop-Process -Name VisionUI -Force -ErrorAction SilentlyContinue\")",
+      "Bash(Get-ChildItem -Path \"D:\\\\GitHub\\\\VisionSW\" -Force)",
+      "Bash(Select-Object Name, FullName, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); node --version; npm --version)",
+      "PowerShell(npm run *)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(taskkill /F /IM electron.exe)",
+      "Bash(taskkill /F /IM VisionSW.exe)",
+      "PowerShell(Get-Process *)"
+    ]
+  }
+}

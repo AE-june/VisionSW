@@ -1,0 +1,11 @@
+{
+  "name": "visionsw",
+  "version": "0.1.0",
+  "dependencies": [
+    "spdlog",
+    "nlohmann-json",
+    "gtest",
+    "crow",
+    "stb"
+  ]
+}

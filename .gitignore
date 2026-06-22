@@ -1,69 +1,95 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# ── C++ 빌드 ────────────────────────────────────────────────────────
 build/
-Build/
-build-*/
+out/
+x64/
+x86/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
 
-# CMake generated files
-CMakeFiles/
+# CMake 생성 파일
 CMakeCache.txt
+CMakeFiles/
 cmake_install.cmake
 Makefile
-install_manifest.txt
-compile_commands.json
+*.cmake
+!CMakeLists.txt
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+# MSVC / Visual Studio
+.vs/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.VC.db
+*.VC.opendb
+*.aps
+ipch/
 
-# vcpkg
+# 컴파일 산출물
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.o
+
+# ── vcpkg ────────────────────────────────────────────────────────────
 vcpkg_installed/
+.vcpkg-root
 
-# debug information files
-*.dwo
+# ── Node.js / Electron ───────────────────────────────────────────────
+ui/node_modules/
+ui/dist/
+ui/out/
+ui/.vite/
+node_modules/
 
-# test output & cache
-Testing/
-.cache/
+# electron-builder 패키지 산출물
+ui/dist-electron/
+ui/release/
+*.exe.blockmap
+*.dmg.blockmap
+
+# ── 로그 / 런타임 ────────────────────────────────────────────────────
+*.log
+*.log.*
+logs/
+
+# ── 대용량 바이너리 데이터 ───────────────────────────────────────────
+# ZMap / 스캔 데이터
+*.zmap
+*.raw
+*.bin
+*.asc
+
+# 스캔 PNG (UI 소스 이미지 제외)
+# → 스캔 데이터는 data/ 또는 testdata/ 폴더에 보관할 것
+data/
+testdata/
+sample_data/
+*.tiff
+*.tif
+
+# data 폴더 밖에 있는 PNG도 명시적으로 무시하려면 아래 줄 활성화
+# *.png
+
+# ── 환경 / 시크릿 ────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+
+# ── IDE / 에디터 ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
