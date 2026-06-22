@@ -19,8 +19,6 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
         return { ToolStatus::Fail, "PlaneFit: ZMap이 없습니다." };
     if (m_params.refRois.empty())
         return { ToolStatus::Fail, "PlaneFit: Reference ROI가 없습니다." };
-    if (!m_params.measureRoi.valid())
-        return { ToolStatus::Fail, "PlaneFit: Measure ROI가 설정되지 않았습니다." };
 
     const ZMap& map = *input->zmap;
 
@@ -43,27 +41,33 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     if (!plane.valid)
         return { ToolStatus::Fail, "PlaneFit: 평면 피팅 실패" };
 
-    VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  inliers={}",
-        plane.a, plane.b, plane.c, plane.inliers);
+    // RMSE: 전체 ref 포인트의 평면 대비 수직 잔차 RMS
+    const double len = std::sqrt(1.0 + plane.a * plane.a + plane.b * plane.b);
+    double sse = 0;
+    for (auto& p : pts) {
+        double resid = (p[2] - (plane.a * p[0] + plane.b * p[1] + plane.c)) / len;
+        sse += resid * resid;
+    }
+    double rmse = std::sqrt(sse / pts.size());
+    double tiltDeg = std::atan(std::sqrt(plane.a * plane.a + plane.b * plane.b))
+                     * 180.0 / 3.14159265358979323846;
 
-    // Measure: mean of all valid points in measure ROI
-    auto mpts = extractPoints(map, m_params.measureRoi);
-    if (mpts.empty())
-        return { ToolStatus::Fail, "PlaneFit: Measure ROI에 유효 포인트 없음" };
+    m_result.a   = plane.a;
+    m_result.b   = plane.b;
+    m_result.c   = plane.c;
+    m_result.rmse          = rmse;
+    m_result.tiltDeg       = tiltDeg;
+    m_result.refPointCount = static_cast<int>(pts.size());
+    m_result.inlierCount   = plane.inliers;
+    m_result.valid         = true;
 
-    double Qx = 0, Qy = 0, Qz = 0;
-    for (auto& p : mpts) { Qx += p[0]; Qy += p[1]; Qz += p[2]; }
-    Qx /= mpts.size(); Qy /= mpts.size(); Qz /= mpts.size();
+    VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
+        plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
 
-    double refZ  = plane.a * Qx + plane.b * Qy + plane.c;
-    double hdiff = Qz - refZ;
-
-    m_result = { plane.a, plane.b, plane.c, hdiff, Qx, Qy, Qz, refZ, plane.inliers, true, "" };
-
-    VISION_LOG_INFO("PlaneFit: Q=({:.3f},{:.3f},{:.3f})  refZ={:.4f}  ΔH={:.4f} mm",
-        Qx, Qy, Qz, refZ, hdiff);
-
-    return { ToolStatus::Ok, "", std::make_shared<VisionData>(*input) };
+    // 출력: 입력 ZMap 복사 + 피팅된 평면 모델 첨부
+    auto out = std::make_shared<VisionData>(*input);
+    out->plane = std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true });
+    return { ToolStatus::Ok, "", out };
 }
 
 // ─────────────────────────────────────────────────────────────────────

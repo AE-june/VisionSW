@@ -1,6 +1,14 @@
 import { useState, useRef, useCallback } from 'react'
 import ParamPanel from './ParamPanel'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
+import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
+import ImageViewer from './ImageViewer'
+import type { Roi } from './RoiCanvas'
+
+interface HeightMeasure {
+  cx: number; cy: number; z: number
+  distance: number; pointCount: number; pass: boolean
+}
 
 interface NodeResult {
   preview?: string
@@ -11,6 +19,11 @@ interface NodeResult {
   pass?: boolean
   ok?: boolean
   msg?: string
+  // PlaneFit
+  planeA?: number; planeB?: number; planeC?: number
+  rmse?: number; tiltDeg?: number; refPointCount?: number; inlierCount?: number
+  // HeightFromPlane
+  measures?: HeightMeasure[]; allPass?: boolean
 }
 
 interface Props {
@@ -33,15 +46,11 @@ function ResultView({ toolType, result }: { toolType: string; result?: NodeResul
     <div className="node-result-view">
       {result.preview && (
         <div className="node-result-image-wrap">
-          <img
-            src={`data:image/png;base64,${result.preview}`}
-            className="node-result-image"
-            alt="output"
-          />
+          <ImageViewer preview={result.preview} />
         </div>
       )}
 
-      {(toolType === 'LineFitHeight' || toolType === 'PlaneFit') && result.heightDiff !== undefined && (
+      {toolType === 'LineFitHeight' && result.heightDiff !== undefined && (
         <div className="node-result-measures">
           <div className="node-result-row">
             <span className="node-result-label">Height Diff</span>
@@ -51,6 +60,43 @@ function ResultView({ toolType, result }: { toolType: string; result?: NodeResul
             <span className="node-result-label">Qz</span>
             <span className="node-result-val">{(result as { Qz?: number }).Qz?.toFixed(4) ?? '—'} mm</span>
           </div>
+        </div>
+      )}
+
+      {toolType === 'PlaneFit' && result.planeA !== undefined && (
+        <div className="node-result-measures">
+          <div className="node-result-row">
+            <span className="node-result-label">평면식</span>
+            <span className="node-result-val">z = {result.planeA.toFixed(5)}·x + {result.planeB!.toFixed(5)}·y + {result.planeC!.toFixed(4)}</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">RMSE</span>
+            <span className="node-result-val">{result.rmse?.toFixed(4)} mm</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">기울기</span>
+            <span className="node-result-val">{result.tiltDeg?.toFixed(3)}°</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">포인트</span>
+            <span className="node-result-val">{result.inlierCount ?? result.refPointCount} / {result.refPointCount}</span>
+          </div>
+        </div>
+      )}
+
+      {toolType === 'HeightFromPlane' && result.measures && (
+        <div className="node-result-measures">
+          {result.measures.map((m, i) => (
+            <div className="node-result-row" key={i}>
+              <span className="node-result-label">
+                Meas {i + 1}
+                {m.pointCount === 0 && ' (빈 ROI)'}
+              </span>
+              <span className={`node-result-val ${m.pass ? '' : 'fail-val'}`}>
+                {m.pointCount === 0 ? '—' : `${m.distance.toFixed(4)} mm`}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -67,9 +113,9 @@ function ResultView({ toolType, result }: { toolType: string; result?: NodeResul
         </div>
       )}
 
-      {result.pass !== undefined && (
-        <div className={`node-result-badge ${result.pass ? 'pass' : 'fail'}`}>
-          {result.pass ? 'PASS' : 'FAIL'}
+      {(result.pass ?? result.allPass) !== undefined && (
+        <div className={`node-result-badge ${(result.pass ?? result.allPass) ? 'pass' : 'fail'}`}>
+          {(result.pass ?? result.allPass) ? 'PASS' : 'FAIL'}
         </div>
       )}
 
@@ -141,6 +187,20 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               preview={upstreamPreview ?? (result as { preview?: string } | undefined)?.preview}
               onChange={(rois, algo, threshold, iterations) =>
                 onParamChange(nodeId, { ...params, rois, algorithm: algo, ransacThreshold: threshold, ransacIterations: iterations })
+              }
+            />
+          ) : toolType === 'HeightFromPlane' ? (
+            <HeightFromPlaneEditor
+              rois={(params.rois as Roi[]) ?? []}
+              aggregation={(params.aggregation as string) ?? 'Mean'}
+              highTailPct={(params.highTailPct as number) ?? 20}
+              useTolerance={(params.useTolerance as boolean) ?? false}
+              nominalMm={(params.nominalMm as number) ?? 0}
+              toleranceMm={(params.toleranceMm as number) ?? 0.05}
+              preview={upstreamPreview ?? result?.preview}
+              measures={result?.measures}
+              onChange={(next: HeightFromPlaneSettings) =>
+                onParamChange(nodeId, { ...params, ...next })
               }
             />
           ) : (

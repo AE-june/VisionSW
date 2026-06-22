@@ -4,6 +4,7 @@
 #include "ThicknessMeasure.h"
 #include "LineFitHeightMeasure.h"
 #include "PlaneFitTool.h"
+#include "HeightFromPlaneTool.h"
 #include "IZMapLoader.h"
 #include "VisionData.h"
 #include "ZMap.h"
@@ -170,7 +171,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     if (type == "PlaneFit") {
         PlaneFitParams params;
 
-        // rois 배열: type="ref"|"measure", xPct/yPct/wPct/hPct
+        // rois 배열: 모두 reference ROI (평면 피팅 전용), xPct/yPct/wPct/hPct
         if (p.contains("rois") && p["rois"].is_array()) {
             for (const auto& r : p["rois"]) {
                 PlaneFitParams::ROI roi;
@@ -178,11 +179,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 roi.yPct = r.value("yPct", 0.f);
                 roi.wPct = r.value("wPct", 1.f);
                 roi.hPct = r.value("hPct", 1.f);
-                std::string roiType = r.value("type", "ref");
-                if (roiType == "measure")
-                    params.measureRoi = roi;
-                else
-                    params.refRois.push_back(roi);
+                params.refRois.push_back(roi);
             }
         }
 
@@ -195,6 +192,33 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.ransacIterations  = p.value("ransacIterations",  200);
 
         return std::make_shared<PlaneFitTool>(params);
+    }
+    if (type == "HeightFromPlane") {
+        HeightFromPlaneParams params;
+
+        // rois 배열: measure ROI들, xPct/yPct/wPct/hPct
+        if (p.contains("rois") && p["rois"].is_array()) {
+            for (const auto& r : p["rois"]) {
+                HeightFromPlaneParams::ROI roi;
+                roi.xPct = r.value("xPct", 0.f);
+                roi.yPct = r.value("yPct", 0.f);
+                roi.wPct = r.value("wPct", 1.f);
+                roi.hPct = r.value("hPct", 1.f);
+                params.measureRois.push_back(roi);
+            }
+        }
+
+        std::string agg = p.value("aggregation", "Mean");
+        if      (agg == "Max")      params.aggregation = HeightFromPlaneParams::Aggregation::Max;
+        else if (agg == "HighTail") params.aggregation = HeightFromPlaneParams::Aggregation::HighTail;
+        else                        params.aggregation = HeightFromPlaneParams::Aggregation::Mean;
+
+        params.highTailPct  = p.value("highTailPct",  20.f);
+        params.useTolerance = p.value("useTolerance", false);
+        params.nominalMm    = p.value("nominalMm",    0.f);
+        params.toleranceMm  = p.value("toleranceMm",  0.05f);
+
+        return std::make_shared<HeightFromPlaneTool>(params);
     }
     if (type == "ThicknessMeasure") {
         ThicknessMeasure::Params params;

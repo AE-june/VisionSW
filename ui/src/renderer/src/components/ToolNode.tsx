@@ -3,6 +3,10 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { TOOL_DEF_MAP, PORT_COLORS } from '../types/tools'
 
+interface HeightMeasure {
+  distance: number; pointCount: number; pass: boolean
+}
+
 interface NodeResult {
   preview?: string    // base64 PNG
   heightDiff?: number
@@ -10,6 +14,10 @@ interface NodeResult {
   pass?: boolean
   ok?: boolean
   msg?: string
+  // PlaneFit
+  planeA?: number; rmse?: number; tiltDeg?: number
+  // HeightFromPlane
+  measures?: HeightMeasure[]; allPass?: boolean
 }
 
 interface ToolNodeData {
@@ -21,21 +29,40 @@ interface ToolNodeData {
 }
 
 function ResultArea({ toolType, result }: { toolType: string; result: NodeResult }) {
-  // Image / ZMap preview
-  if (result.preview) {
+  // PlaneFit: 평면 피팅 품질
+  if (toolType === 'PlaneFit' && result.planeA !== undefined) {
     return (
       <div className="tool-node-result">
-        <img
-          src={`data:image/png;base64,${result.preview}`}
-          className="tool-node-preview"
-          alt="result"
-        />
+        <div className="tool-node-measure pass">
+          <span className="measure-label">RMSE</span>
+          <span className="measure-value">{result.rmse?.toFixed(4)} mm</span>
+          <span className="measure-badge">{result.tiltDeg?.toFixed(2)}°</span>
+        </div>
       </div>
     )
   }
 
-  // LineFitHeight / PlaneFit measurement
-  if ((toolType === 'LineFitHeight' || toolType === 'PlaneFit') && result.heightDiff !== undefined) {
+  // HeightFromPlane: ROI별 수직거리
+  if (toolType === 'HeightFromPlane' && result.measures) {
+    return (
+      <div className="tool-node-result">
+        {result.measures.map((m, i) => (
+          <div key={i} className={`tool-node-measure ${m.pass ? 'pass' : 'fail'}`}>
+            <span className="measure-label">#{i + 1}</span>
+            <span className="measure-value">
+              {m.pointCount === 0 ? '—' : `${m.distance.toFixed(4)} mm`}
+            </span>
+            <span className={`measure-badge ${m.pass ? 'pass' : 'fail'}`}>
+              {m.pass ? 'PASS' : 'FAIL'}
+            </span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  // LineFitHeight measurement
+  if (toolType === 'LineFitHeight' && result.heightDiff !== undefined) {
     const pass = result.pass !== false
     return (
       <div className="tool-node-result">
@@ -44,6 +71,19 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
           <span className="measure-value">{result.heightDiff.toFixed(3)} mm</span>
           <span className={`measure-badge ${pass ? 'pass' : 'fail'}`}>{pass ? 'PASS' : 'FAIL'}</span>
         </div>
+      </div>
+    )
+  }
+
+  // Image / ZMap preview (로더/필터)
+  if (result.preview) {
+    return (
+      <div className="tool-node-result">
+        <img
+          src={`data:image/png;base64,${result.preview}`}
+          className="tool-node-preview"
+          alt="result"
+        />
       </div>
     )
   }

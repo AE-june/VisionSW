@@ -212,11 +212,11 @@ export default function App() {
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
 
-  // PlaneFit 노드용: upstream ZMap 노드의 preview를 ROI 에디터에 전달
+  // PlaneFit / HeightFromPlane 노드용: upstream 노드의 preview를 ROI 에디터에 전달
   const upstreamPreview = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
-    if (tt !== 'PlaneFit') return undefined
+    if (tt !== 'PlaneFit' && tt !== 'HeightFromPlane') return undefined
     const upEdge = edges.find(e => e.target === selectedNode.id)
     if (!upEdge) return undefined
     return (nodeResults[upEdge.source] as { preview?: string } | undefined)?.preview

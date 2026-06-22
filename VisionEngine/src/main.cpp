@@ -5,6 +5,7 @@
 #include "LineFitHeightMeasure.h"
 #include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
+#include "HeightFromPlaneTool.h"
 #include <crow.h>
 #include <nlohmann/json.hpp>
 
@@ -155,15 +156,31 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
             auto* m = dynamic_cast<PlaneFitTool*>(tool.get());
             if (m && m->lastResult().valid) {
                 const auto& r = m->lastResult();
-                jr["heightDiff"]  = r.heightDiff;
-                jr["Qx"]          = r.Qx;
-                jr["Qy"]          = r.Qy;
-                jr["Qz"]          = r.Qz;
-                jr["refZatQ"]     = r.refZatQ;
-                jr["planeA"]      = r.a;
-                jr["planeB"]      = r.b;
-                jr["planeC"]      = r.c;
-                jr["inlierCount"] = r.inlierCount;
+                jr["planeA"]        = r.a;
+                jr["planeB"]        = r.b;
+                jr["planeC"]        = r.c;
+                jr["rmse"]          = r.rmse;
+                jr["tiltDeg"]       = r.tiltDeg;
+                jr["refPointCount"] = r.refPointCount;
+                jr["inlierCount"]   = r.inlierCount;
+            }
+        }
+        if (ns.type == "HeightFromPlane") {
+            auto* m = dynamic_cast<HeightFromPlaneTool*>(tool.get());
+            if (m && m->lastResult().valid) {
+                const auto& r = m->lastResult();
+                jr["allPass"]  = r.allPass;
+                json measures = json::array();
+                for (const auto& hm : r.measures) {
+                    measures.push_back({
+                        {"cx", hm.cx}, {"cy", hm.cy}, {"z", hm.z},
+                        {"distance", hm.distance},
+                        {"pointCount", hm.pointCount},
+                        {"pass", hm.pass}
+                    });
+                }
+                jr["measures"] = measures;
+                if (!r.allPass) pipelinePass = false;
             }
         }
         if (ns.type == "ThicknessMeasure") {

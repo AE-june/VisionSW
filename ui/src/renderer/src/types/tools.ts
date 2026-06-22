@@ -1,4 +1,4 @@
-export type PortType = 'ZMap' | 'Image2D' | 'PointCloud3D' | 'Any'
+export type PortType = 'ZMap' | 'PlaneZMap' | 'Image2D' | 'PointCloud3D' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -11,6 +11,7 @@ export interface ToolDef {
 
 export const PORT_COLORS: Record<PortType, string> = {
   ZMap:          '#00bcd4',
+  PlaneZMap:     '#26a69a',
   Image2D:       '#ff9800',
   PointCloud3D:  '#9c27b0',
   Any:           '#888',
@@ -52,12 +53,24 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'PlaneFit', label: 'Plane Fit', category: '측정',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['ZMap'], outputs: ['PlaneZMap'],
     defaultParams: {
       rois: [],
       algorithm: 'LeastSquares',
       ransacThreshold: 0.05,
       ransacIterations: 200,
+    },
+  },
+  {
+    type: 'HeightFromPlane', label: 'Height from Plane', category: '측정',
+    inputs: ['PlaneZMap'], outputs: ['PlaneZMap'],
+    defaultParams: {
+      rois: [],
+      aggregation: 'Mean',
+      highTailPct: 20,
+      useTolerance: false,
+      nominalMm: 0,
+      toleranceMm: 0.05,
     },
   },
   {

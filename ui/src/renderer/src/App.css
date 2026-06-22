@@ -406,6 +406,10 @@
   color: #ccc;
   font-family: monospace;
 }
+.node-result-val.fail-val {
+  color: #ff5252;
+  font-weight: bold;
+}
 .node-result-badge {
   margin: 8px 12px 4px;
   padding: 4px 0;
@@ -702,6 +706,7 @@
   object-fit: fill;
   display: block;
   pointer-events: none;
+  image-rendering: pixelated;
 }
 .pfe-placeholder {
   width: 100%;
@@ -727,6 +732,23 @@
 .pfe-roi-ref     { border-color: #00bcd4; background: rgba(0,188,212,0.1); }
 .pfe-roi-measure { border-color: #ff5722; background: rgba(255,87,34,0.1); }
 .pfe-roi-drawing { pointer-events: none; opacity: 0.7; }
+
+.pfe-roi-result {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: bold;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
+  pointer-events: none;
+  background: rgba(0,0,0,0.8);
+}
+.pfe-roi-result.pass { color: #4caf50; }
+.pfe-roi-result.fail { color: #ff5252; }
 
 .pfe-roi-label {
   font-size: 9px;

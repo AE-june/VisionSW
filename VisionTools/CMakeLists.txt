@@ -4,6 +4,7 @@ add_library(VisionTools STATIC
     src/ThicknessMeasure.cpp
     src/LineFitHeightMeasure.cpp
     src/PlaneFitTool.cpp
+    src/HeightFromPlaneTool.cpp
 )
 
 target_include_directories(VisionTools

@@ -55,9 +55,9 @@ inline void downscale(const uint8_t* src, int sw, int sh, int ch,
     }
 }
 
-// ── Image2D → base64 PNG (max 320px wide) ────────────────────────────────
+// ── Image2D → base64 PNG (max 1024px wide) ────────────────────────────────
 
-inline std::string imageToBase64(const Image2D& img, int maxW = 320) {
+inline std::string imageToBase64(const Image2D& img, int maxW = 1024) {
     int dw = img.width, dh = img.height;
     if (dw > maxW) { dh = dh * maxW / dw; dw = maxW; }
 
@@ -74,9 +74,9 @@ inline std::string imageToBase64(const Image2D& img, int maxW = 320) {
     return base64Encode(png);
 }
 
-// ── ZMap → base64 PNG grayscale (normalized, max 320px wide) ─────────────
+// ── ZMap → base64 PNG grayscale (normalized, max 1024px wide) ─────────────
 
-inline std::string zmapToBase64(const ZMap& zmap, int maxW = 320) {
+inline std::string zmapToBase64(const ZMap& zmap, int maxW = 1024) {
     if (zmap.empty()) return {};
 
     // Normalize float → uint8
