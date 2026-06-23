@@ -5,9 +5,10 @@ interface Props {
   onStop: () => void
   onToggleResult: () => void
   onOpenFile: () => void
+  onRestartEngine: () => void
 }
 
-export default function Toolbar({ running, engineConnected, onRun, onStop, onToggleResult, onOpenFile }: Props) {
+export default function Toolbar({ running, engineConnected, onRun, onStop, onToggleResult, onOpenFile, onRestartEngine }: Props) {
   return (
     <div className="toolbar">
       <span className="app-title">VisionSW</span>
@@ -22,12 +23,18 @@ export default function Toolbar({ running, engineConnected, onRun, onStop, onTog
       <button className="btn-icon" title="레시피 열기" onClick={onOpenFile}>📂</button>
       <button className="btn-icon" title="레시피 저장">💾</button>
       <div className="toolbar-spacer" />
-      <span className="status-item" style={{ fontSize: 11, marginRight: 8 }}>
+      <span className="status-item" style={{ fontSize: 11, marginRight: 6 }}>
         {engineConnected
           ? <span style={{ color: '#4caf50' }}>● Engine</span>
-          : <span style={{ color: '#888' }}>○ Engine</span>
+          : <span style={{ color: '#ff5252' }}>○ Engine</span>
         }
       </span>
+      <button
+        className="btn-icon"
+        title={engineConnected ? '엔진 재시작' : '엔진 시작 / 재연결'}
+        onClick={onRestartEngine}
+        style={!engineConnected ? { color: '#ff5252', borderColor: '#ff5252' } : undefined}
+      >↻</button>
       <button className="btn-panel" onClick={onToggleResult}>결과 패널</button>
     </div>
   )

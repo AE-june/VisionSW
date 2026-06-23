@@ -59,7 +59,7 @@ struct HeightFromPlaneResult {
 class HeightFromPlaneTool : public IAlgorithmTool {
 public:
     explicit HeightFromPlaneTool(HeightFromPlaneParams params = {});
-    std::string name() const override { return "HeightFromPlane"; }
+    std::string name() const override { return "HeightMeasure"; }
     ToolResult  execute(VisionDataPtr input) override;
 
     const HeightFromPlaneResult& lastResult() const { return m_result; }

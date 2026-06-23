@@ -16,14 +16,13 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     m_result = {};
 
     if (!input || !input->hasZMap())
-        return { ToolStatus::Fail, "HeightFromPlane: ZMap이 없습니다." };
-    if (!input->hasPlane())
-        return { ToolStatus::Fail, "HeightFromPlane: 입력에 평면이 없습니다. PlaneFit 노드를 먼저 연결하세요." };
+        return { ToolStatus::Fail, "HeightMeasure: ZMap이 없습니다." };
     if (m_params.measureRois.empty())
-        return { ToolStatus::Fail, "HeightFromPlane: Measure ROI가 없습니다." };
+        return { ToolStatus::Fail, "HeightMeasure: 측정 ROI가 없습니다." };
 
     const ZMap&       map   = *input->zmap;
-    const PlaneModel& plane = *input->plane;
+    // plane 입력이 있으면 평면 기준 수직거리, 없으면 절대 높이(z)
+    const PlaneModel* plane = input->hasPlane() ? input->plane.get() : nullptr;
 
     bool allPass = true;
     for (const auto& roi : m_params.measureRois) {
@@ -43,7 +42,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
         hm.cy = rep[1];
         hm.z  = rep[2];
         hm.pointCount = static_cast<int>(pts.size());
-        hm.distance   = plane.signedDistance(rep[0], rep[1], rep[2]);
+        hm.distance   = plane ? plane->signedDistance(rep[0], rep[1], rep[2]) : rep[2];
 
         if (m_params.useTolerance) {
             hm.pass = std::abs(hm.distance - m_params.nominalMm) <= m_params.toleranceMm;
@@ -52,7 +51,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
             hm.pass = true;
         }
 
-        VISION_LOG_INFO("HeightFromPlane: Q=({:.3f},{:.3f},{:.4f})  dist={:.4f} mm  pts={}  {}",
+        VISION_LOG_INFO("HeightMeasure: Q=({:.3f},{:.3f},{:.4f})  dist={:.4f} mm  pts={}  {}",
             hm.cx, hm.cy, hm.z, hm.distance, hm.pointCount,
             hm.pass ? "PASS" : "FAIL");
 

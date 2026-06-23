@@ -1,14 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import ImageViewer, { type DrawRect } from './ImageViewer'
+import ImageViewer, { type Roi, type DrawRect } from './ImageViewer'
 
-export interface Roi {
-  id: string
-  type: string
-  xPct: number
-  yPct: number
-  wPct: number
-  hPct: number
-}
+export type { Roi } from './ImageViewer'
 
 export interface RoiTypeSpec {
   type: string       // 'ref' | 'measure' 등
@@ -23,12 +16,14 @@ interface Props {
   onChange: (rois: Roi[]) => void
   /** ROI별 추가 오버레이 (예: 측정 결과). 같은 type 내 0-based index 전달 */
   overlayFor?: (roi: Roi, indexInType: number) => ReactNode
+  zMin?: number
+  zMax?: number
 }
 
 let uidCounter = 0
 const uid = () => `roi-${++uidCounter}`
 
-export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor }: Props) {
+export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, zMin, zMax }: Props) {
   const [drawType, setDrawType] = useState<string | null>(null)
 
   const addRoi = (rect: DrawRect) => {
@@ -41,36 +36,6 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
     onChange(updated)
     setDrawType(null)
   }
-
-  const deleteRoi = (id: string) => onChange(rois.filter(r => r.id !== id))
-  const labelFor = (type: string) => roiTypes.find(t => t.type === type)?.label ?? type
-
-  // 같은 type 내 인덱스 계산용 카운터
-  const typeCounters: Record<string, number> = {}
-
-  const overlay = rois.map(roi => {
-    const idxInType = (typeCounters[roi.type] = (typeCounters[roi.type] ?? -1) + 1)
-    return (
-      <div
-        key={roi.id}
-        className={`pfe-roi pfe-roi-${roi.type}`}
-        style={{
-          left:   `${roi.xPct * 100}%`,
-          top:    `${roi.yPct * 100}%`,
-          width:  `${roi.wPct * 100}%`,
-          height: `${roi.hPct * 100}%`,
-        }}
-      >
-        <span className="pfe-roi-label">{labelFor(roi.type)} {idxInType + 1}</span>
-        <button
-          className="pfe-roi-del"
-          onMouseDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); deleteRoi(roi.id) }}
-        >×</button>
-        {overlayFor?.(roi, idxInType)}
-      </div>
-    )
-  })
 
   const toolbarLeft = roiTypes.map(spec => (
     <button
@@ -86,15 +51,22 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         {spec.label}: {rois.filter(r => r.type === spec.type).length}{spec.single ? '/1' : ''}
       </span>
     ))}
-    {drawType && <span className="pfe-drawing-hint">드래그해서 영역 지정 · 다시 버튼 클릭 시 취소</span>}
+    {drawType
+      ? <span className="pfe-drawing-hint">드래그해서 영역 지정 · 다시 버튼 클릭 시 취소</span>
+      : <span className="pfe-drawing-hint">ROI를 드래그하면 이동, 모서리를 끌면 크기 조정</span>}
   </>
 
   return (
     <ImageViewer
       preview={preview}
+      zMin={zMin}
+      zMax={zMax}
       drawMode={drawType}
       onDrawComplete={addRoi}
-      overlay={overlay}
+      rois={rois}
+      onRoisChange={onChange}
+      roiTypeLabel={() => 'ROI'}
+      overlayFor={overlayFor}
       toolbarLeft={toolbarLeft}
       footer={footer}
     />

@@ -43,7 +43,7 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
   }
 
   // HeightFromPlane: ROI별 수직거리
-  if (toolType === 'HeightFromPlane' && result.measures) {
+  if (toolType === 'HeightMeasure' && result.measures) {
     return (
       <div className="tool-node-result">
         {result.measures.map((m, i) => (

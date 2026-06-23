@@ -8,6 +8,11 @@ export interface MeasureResult {
   minMm?: number
   maxMm?: number
   pass?: boolean
+  // PlaneFit
+  planeA?: number; rmse?: number; tiltDeg?: number
+  // HeightFromPlane
+  measures?: { distance: number; pointCount: number; pass: boolean }[]
+  allPass?: boolean
 }
 
 export interface LogEntry {
@@ -22,23 +27,44 @@ interface Props {
   onClear: () => void
 }
 
-function formatResult(r: MeasureResult): string {
+function Row({ label, value, pass }: { label: string; value: string; pass: boolean }) {
+  return (
+    <div className="result-row">
+      <span className="result-label">{label}</span>
+      <span className={`result-value ${pass ? 'pass-color' : 'fail-color'}`}>{value}</span>
+    </div>
+  )
+}
+
+// 노드 1개의 결과 → 행 묶음
+function ResultRows({ r }: { r: MeasureResult }) {
+  if (!r.ok) return <Row label={r.tool} value={r.msg || 'Fail'} pass={false} />
+
+  if (r.tool === 'PlaneFit') {
+    if (r.planeA === undefined) return <Row label="PlaneFit" value="OK" pass />
+    return <>
+      <Row label="Plane RMSE" value={`${r.rmse?.toFixed(4)} mm`} pass />
+      <Row label="기울기" value={`${r.tiltDeg?.toFixed(3)}°`} pass />
+    </>
+  }
+  if (r.tool === 'HeightMeasure') {
+    if (!r.measures || r.measures.length === 0) return <Row label="Height" value="—" pass={false} />
+    return <>
+      {r.measures.map((m, i) => (
+        <Row key={i}
+          label={`Meas ${i + 1}`}
+          value={m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
+          pass={m.pass}
+        />
+      ))}
+    </>
+  }
   if (r.tool === 'LineFitHeight' && r.heightDiff !== undefined)
-    return `${r.heightDiff.toFixed(3)} mm`
+    return <Row label="Height Diff" value={`${r.heightDiff.toFixed(3)} mm`} pass={r.pass ?? r.ok} />
   if (r.tool === 'ThicknessMeasure' && r.thicknessMm !== undefined)
-    return `${r.thicknessMm.toFixed(3)} mm`
-  return r.ok ? 'OK' : r.msg || 'Fail'
-}
+    return <Row label="Thickness" value={`${r.thicknessMm.toFixed(3)} mm`} pass={r.pass ?? r.ok} />
 
-function toolLabel(r: MeasureResult): string {
-  if (r.tool === 'LineFitHeight') return 'Height Diff'
-  if (r.tool === 'ThicknessMeasure') return 'Thickness'
-  return r.tool
-}
-
-function resultPass(r: MeasureResult): boolean {
-  if (r.pass !== undefined) return r.pass
-  return r.ok
+  return <Row label={r.tool} value="OK" pass />
 }
 
 export default function ResultPanel({ results, logs, overallPass, onClear }: Props) {
@@ -52,12 +78,7 @@ export default function ResultPanel({ results, logs, overallPass, onClear }: Pro
         <div className={`result-status ${statusClass}`}>{statusText}</div>
         <div className="result-list">
           {results.map((r) => (
-            <div key={r.id} className="result-row">
-              <span className="result-label">{toolLabel(r)}</span>
-              <span className={`result-value ${resultPass(r) ? 'pass-color' : 'fail-color'}`}>
-                {formatResult(r)}
-              </span>
-            </div>
+            <ResultRows key={r.id} r={r} />
           ))}
           {results.length === 0 && (
             <div className="result-row">

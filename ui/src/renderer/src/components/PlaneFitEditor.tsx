@@ -2,34 +2,45 @@ import RoiCanvas, { type Roi } from './RoiCanvas'
 
 export type PlaneFitROI = Roi
 
-interface Props {
+export interface PlaneFitSettings {
   rois: Roi[]
   algorithm: string
   ransacThreshold: number
   ransacIterations: number
+  maxCloudPoints: number
+}
+
+interface Props extends PlaneFitSettings {
   preview?: string
-  onChange: (rois: Roi[], algo: string, threshold: number, iterations: number) => void
+  zMin?: number
+  zMax?: number
+  onChange: (next: PlaneFitSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'ref', label: 'Reference' }]
 
-export default function PlaneFitEditor({
-  rois, algorithm, ransacThreshold, ransacIterations, preview, onChange
-}: Props) {
+export default function PlaneFitEditor(props: Props) {
+  const { rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, preview, zMin, zMax, onChange } = props
+
+  const emit = (patch: Partial<PlaneFitSettings>) =>
+    onChange({ rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, ...patch })
+
   return (
     <div>
       <RoiCanvas
         rois={rois}
         roiTypes={ROI_TYPES}
         preview={preview}
-        onChange={r => onChange(r, algorithm, ransacThreshold, ransacIterations)}
+        zMin={zMin}
+        zMax={zMax}
+        onChange={r => emit({ rois: r })}
       />
 
       <div className="param-section">알고리즘</div>
       <div className="param-row">
         <span className="param-label">Method</span>
         <select className="param-select" value={algorithm}
-          onChange={e => onChange(rois, e.target.value, ransacThreshold, ransacIterations)}>
+          onChange={e => emit({ algorithm: e.target.value })}>
           <option value="LeastSquares">Least Squares</option>
           <option value="RANSAC">RANSAC</option>
           <option value="SVD">SVD (PCA)</option>
@@ -39,14 +50,21 @@ export default function PlaneFitEditor({
         <div className="param-row">
           <span className="param-label">Threshold (mm)</span>
           <input className="param-input" type="number" step="0.001" value={ransacThreshold}
-            onChange={e => onChange(rois, algorithm, parseFloat(e.target.value) || 0, ransacIterations)} />
+            onChange={e => emit({ ransacThreshold: parseFloat(e.target.value) || 0 })} />
         </div>
         <div className="param-row">
           <span className="param-label">Iterations</span>
           <input className="param-input" type="number" step="10" value={ransacIterations}
-            onChange={e => onChange(rois, algorithm, ransacThreshold, parseInt(e.target.value) || 0)} />
+            onChange={e => emit({ ransacIterations: parseInt(e.target.value) || 0 })} />
         </div>
       </>}
+
+      <div className="param-section">3D 뷰</div>
+      <div className="param-row">
+        <span className="param-label">최대 포인트 수</span>
+        <input className="param-input" type="number" step="10000" min="1000" value={maxCloudPoints}
+          onChange={e => emit({ maxCloudPoints: parseInt(e.target.value) || 1000 })} />
+      </div>
     </div>
   )
 }

@@ -17,6 +17,7 @@ declare global {
       engineRun: (recipe: unknown) => Promise<{ ok?: boolean; error?: string }>
       enginePing: () => Promise<{ connected: boolean }>
       engineIsReady: () => Promise<{ connected: boolean }>
+      engineRestart: () => Promise<{ ok?: boolean }>
       onEngineEvent: (cb: (data: unknown) => void) => () => void
     }
   }
@@ -106,6 +107,23 @@ export default function App() {
     [setEdges]
   )
 
+  // 엔진 강제 재시작 / 재연결
+  const handleRestartEngine = useCallback(async () => {
+    const api = window.electronAPI
+    if (!api?.engineRestart) return
+    setEngineConnected(false)
+    setLogs(l => [...l, { level: 'info', msg: '엔진 재시작 중…' }])
+    await api.engineRestart()
+    setTimeout(async () => {
+      const { connected } = await api.engineIsReady()
+      setEngineConnected(connected)
+      setLogs(l => [...l, {
+        level: connected ? 'info' : 'error',
+        msg: connected ? 'VisionEngine connected' : '엔진 연결 실패 — 빌드/포트(9000)를 확인하세요'
+      }])
+    }, 1500)
+  }, [])
+
   // Stable ref — always uses latest nodes/edges without re-creating
   const handleNodeRun = useCallback(async (nodeId: string) => {
     const api = window.electronAPI
@@ -119,13 +137,30 @@ export default function App() {
     ))
     setLogs(l => [...l, { level: 'info', msg: `실행: ${(target.data as { label: string }).label}` }])
 
+    // 타겟 노드의 모든 조상(입력 체인)을 수집 — 상류가 실행돼야 입력 데이터가 채워짐
+    const allNodes = nodesRef.current
+    const allEdges = edgesRef.current
+    const needed = new Set<string>([nodeId])
+    const queue = [nodeId]
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const e of allEdges) {
+        if (e.target === cur && !needed.has(e.source)) {
+          needed.add(e.source)
+          queue.push(e.source)
+        }
+      }
+    }
+
     const recipe = {
-      nodes: [{
-        id: target.id,
-        type: (target.data as { toolType: string }).toolType,
-        params: (target.data as { params: Record<string, unknown> }).params ?? {}
-      }],
-      edges: []
+      nodes: allNodes.filter(n => needed.has(n.id)).map(n => ({
+        id: n.id,
+        type: (n.data as { toolType: string }).toolType,
+        params: (n.data as { params: Record<string, unknown> }).params ?? {}
+      })),
+      edges: allEdges
+        .filter(e => needed.has(e.source) && needed.has(e.target))
+        .map(e => ({ source: e.source, target: e.target }))
     }
     const res = await api.engineRun(recipe)
     if (res.error) setLogs(l => [...l, { level: 'error', msg: res.error! }])
@@ -212,15 +247,20 @@ export default function App() {
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
 
-  // PlaneFit / HeightFromPlane 노드용: upstream 노드의 preview를 ROI 에디터에 전달
-  const upstreamPreview = (() => {
+  // PlaneFit / HeightFromPlane 노드용: ZMap 입력(input-0) 소스의 결과를 ROI 에디터 배경으로
+  const upstreamRes = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
-    if (tt !== 'PlaneFit' && tt !== 'HeightFromPlane') return undefined
-    const upEdge = edges.find(e => e.target === selectedNode.id)
-    if (!upEdge) return undefined
-    return (nodeResults[upEdge.source] as { preview?: string } | undefined)?.preview
+    if (tt !== 'PlaneFit' && tt !== 'HeightMeasure') return undefined
+    const tEdges = edges.filter(e => e.target === selectedNode.id)
+    if (tEdges.length === 0) return undefined
+    // ZMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지
+    const zEdge = tEdges.find(e => (e.targetHandle ?? 'input-0') === 'input-0') ?? tEdges[0]
+    return nodeResults[zEdge.source] as { preview?: string; zMin?: number; zMax?: number } | undefined
   })()
+  const upstreamPreview = upstreamRes?.preview
+  const upstreamZMin = upstreamRes?.zMin
+  const upstreamZMax = upstreamRes?.zMax
 
   return (
     <div className="app">
@@ -231,6 +271,7 @@ export default function App() {
         onStop={handleStop}
         onToggleResult={() => setResultVisible(v => !v)}
         onOpenFile={handleOpenFile}
+        onRestartEngine={handleRestartEngine}
       />
       <div className="workspace">
         <ToolboxPanel />
@@ -252,6 +293,8 @@ export default function App() {
             params={(selectedNode.data as { params: Record<string, unknown> }).params ?? {}}
             result={nodeResults[selectedNode.id] as Record<string, unknown> | undefined}
             upstreamPreview={upstreamPreview}
+            upstreamZMin={upstreamZMin}
+            upstreamZMax={upstreamZMax}
             onParamChange={onParamChange}
             onClose={() => setSelectedNodeId(null)}
           />

@@ -9,6 +9,7 @@
 #include "VisionData.h"
 #include "ZMap.h"
 #include "Logger.h"
+#include <limits>
 
 // stb for PNG/JPG loading
 #define STB_IMAGE_IMPLEMENTATION
@@ -40,10 +41,12 @@ public:
             zmap->height = h;
             zmap->xResMm = m_xResMm;
             zmap->yResMm = m_yResMm;
-            zmap->zResMm = m_zResMm / 65535.f;   // 0~65535 → 0~zResMm
+            zmap->zResMm = m_zResMm;   // count당 mm (분해능 그대로 적용)
             zmap->data.resize(static_cast<size_t>(w) * h);
             for (int i = 0; i < w * h; ++i)
-                zmap->data[i] = static_cast<float>(raw16[i]);
+                zmap->data[i] = (raw16[i] == 0)
+                    ? std::numeric_limits<float>::quiet_NaN()   // 0 = 미측정(배경) → 무효
+                    : static_cast<float>(raw16[i]);
             stbi_image_free(raw16);
 
             auto data = std::make_shared<VisionData>();
@@ -63,10 +66,12 @@ public:
         zmap->height = h;
         zmap->xResMm = m_xResMm;
         zmap->yResMm = m_yResMm;
-        zmap->zResMm = m_zResMm / 255.f;   // 0~255 → 0~zResMm
+        zmap->zResMm = m_zResMm;   // count당 mm (분해능 그대로 적용)
         zmap->data.resize(static_cast<size_t>(w) * h);
         for (int i = 0; i < w * h; ++i)
-            zmap->data[i] = static_cast<float>(raw8[i]);
+            zmap->data[i] = (raw8[i] == 0)
+                ? std::numeric_limits<float>::quiet_NaN()   // 0 = 미측정(배경) → 무효
+                : static_cast<float>(raw8[i]);
         stbi_image_free(raw8);
 
         auto data = std::make_shared<VisionData>();
@@ -190,10 +195,11 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
 
         params.ransacThresholdMm = p.value("ransacThreshold",  0.05f);
         params.ransacIterations  = p.value("ransacIterations",  200);
+        params.maxCloudPoints    = p.value("maxCloudPoints",    200000);
 
         return std::make_shared<PlaneFitTool>(params);
     }
-    if (type == "HeightFromPlane") {
+    if (type == "HeightMeasure") {
         HeightFromPlaneParams params;
 
         // rois 배열: measure ROI들, xPct/yPct/wPct/hPct

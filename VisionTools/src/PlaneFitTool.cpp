@@ -61,6 +61,17 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     m_result.inlierCount   = plane.inliers;
     m_result.valid         = true;
 
+    // 3D 뷰용: 전체 ZMap을 격자 다운샘플 (목표 개수는 파라미터)
+    const size_t target = static_cast<size_t>(std::max(1, m_params.maxCloudPoints));
+    const size_t total  = static_cast<size_t>(map.width) * map.height;
+    const int    step   = std::max(1, static_cast<int>(std::sqrt(
+                              static_cast<double>(total) / target)));
+    for (int row = 0; row < map.height; row += step)
+        for (int col = 0; col < map.width; col += step)
+            if (map.valid(col, row))
+                m_result.cloudPoints.push_back({ map.xMm(col), map.yMm(row),
+                                                 static_cast<double>(map.zMm(col, row)) });
+
     VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
         plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
 

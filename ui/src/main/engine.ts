@@ -85,6 +85,16 @@ export function stopEngine() {
   }
 }
 
+// 강제 재시작: 내부 프로세스/소켓을 정리하고 재연결 카운터를 리셋한 뒤 다시 시작.
+// 이미 외부에서 엔진이 떠 있으면 새 spawn은 포트 충돌로 종료되고 기존 엔진에 연결된다.
+export function restartEngine() {
+  if (ws) { ws.terminate(); ws = null }
+  wsReady = false
+  if (engineProcess) { engineProcess.kill(); engineProcess = null }
+  retryCount = 0
+  startEngine()
+}
+
 // ── IPC handlers ──────────────────────────────────────────────────────────
 
 export function registerEngineIpc() {
@@ -104,5 +114,10 @@ export function registerEngineIpc() {
 
   ipcMain.handle('engine:isReady', async () => {
     return { connected: wsReady }
+  })
+
+  ipcMain.handle('engine:restart', async () => {
+    restartEngine()
+    return { ok: true }
   })
 }

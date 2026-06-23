@@ -3,6 +3,7 @@ import ParamPanel from './ParamPanel'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import ImageViewer from './ImageViewer'
+import PlaneView3D from './PlaneView3D'
 import type { Roi } from './RoiCanvas'
 
 interface HeightMeasure {
@@ -22,8 +23,11 @@ interface NodeResult {
   // PlaneFit
   planeA?: number; planeB?: number; planeC?: number
   rmse?: number; tiltDeg?: number; refPointCount?: number; inlierCount?: number
+  cloud?: [number, number, number][]
   // HeightFromPlane
   measures?: HeightMeasure[]; allPass?: boolean
+  // ZMap 실제 z 범위
+  zMin?: number; zMax?: number
 }
 
 interface Props {
@@ -33,33 +37,41 @@ interface Props {
   params: Record<string, unknown>
   result?: NodeResult
   upstreamPreview?: string
+  upstreamZMin?: number
+  upstreamZMax?: number
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
   onClose: () => void
 }
 
-function ResultView({ toolType, result }: { toolType: string; result?: NodeResult }) {
+function ResultView({ toolType, result, rois }: { toolType: string; result?: NodeResult; rois?: Roi[] }) {
+  const zMin = result?.zMin
+  const zMax = result?.zMax
   if (!result) {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
+
+  // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이
+  const measureRois = (rois ?? []).filter(r => r.type === 'measure')
 
   return (
     <div className="node-result-view">
       {result.preview && (
         <div className="node-result-image-wrap">
-          <ImageViewer preview={result.preview} />
-        </div>
-      )}
-
-      {toolType === 'LineFitHeight' && result.heightDiff !== undefined && (
-        <div className="node-result-measures">
-          <div className="node-result-row">
-            <span className="node-result-label">Height Diff</span>
-            <span className="node-result-val">{result.heightDiff.toFixed(4)} mm</span>
-          </div>
-          <div className="node-result-row">
-            <span className="node-result-label">Qz</span>
-            <span className="node-result-val">{(result as { Qz?: number }).Qz?.toFixed(4) ?? '—'} mm</span>
-          </div>
+          <ImageViewer
+            preview={result.preview}
+            zMin={zMin}
+            zMax={zMax}
+            rois={toolType === 'HeightMeasure' ? measureRois : undefined}
+            roiTypeLabel={() => 'ROI'}
+            overlayFor={(_roi, idx) => {
+              const m = result.measures?.[idx]
+              return m ? (
+                <span className={`pfe-roi-result ${m.pass ? 'pass' : 'fail'}`}>
+                  {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
+                </span>
+              ) : null
+            }}
+          />
         </div>
       )}
 
@@ -77,51 +89,26 @@ function ResultView({ toolType, result }: { toolType: string; result?: NodeResul
             <span className="node-result-label">기울기</span>
             <span className="node-result-val">{result.tiltDeg?.toFixed(3)}°</span>
           </div>
-          <div className="node-result-row">
-            <span className="node-result-label">포인트</span>
-            <span className="node-result-val">{result.inlierCount ?? result.refPointCount} / {result.refPointCount}</span>
-          </div>
         </div>
       )}
 
-      {toolType === 'HeightFromPlane' && result.measures && (
+      {toolType === 'PlaneFit' && result.cloud && result.cloud.length > 0 && (
+        <PlaneView3D
+          a={result.planeA!} b={result.planeB!} c={result.planeC!}
+          points={result.cloud}
+        />
+      )}
+
+      {toolType === 'HeightMeasure' && result.measures && result.measures.length > 0 && (
         <div className="node-result-measures">
           {result.measures.map((m, i) => (
             <div className="node-result-row" key={i}>
-              <span className="node-result-label">
-                Meas {i + 1}
-                {m.pointCount === 0 && ' (빈 ROI)'}
-              </span>
+              <span className="node-result-label">ROI {i + 1}</span>
               <span className={`node-result-val ${m.pass ? '' : 'fail-val'}`}>
-                {m.pointCount === 0 ? '—' : `${m.distance.toFixed(4)} mm`}
+                {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
               </span>
             </div>
           ))}
-        </div>
-      )}
-
-      {toolType === 'ThicknessMeasure' && result.thicknessMm !== undefined && (
-        <div className="node-result-measures">
-          <div className="node-result-row">
-            <span className="node-result-label">Thickness</span>
-            <span className="node-result-val">{result.thicknessMm.toFixed(4)} mm</span>
-          </div>
-          <div className="node-result-row">
-            <span className="node-result-label">Min / Max</span>
-            <span className="node-result-val">{result.minMm?.toFixed(3)} / {result.maxMm?.toFixed(3)} mm</span>
-          </div>
-        </div>
-      )}
-
-      {(result.pass ?? result.allPass) !== undefined && (
-        <div className={`node-result-badge ${(result.pass ?? result.allPass) ? 'pass' : 'fail'}`}>
-          {(result.pass ?? result.allPass) ? 'PASS' : 'FAIL'}
-        </div>
-      )}
-
-      {result.ok !== undefined && result.pass === undefined && (
-        <div className={`node-result-badge ${result.ok ? 'pass' : 'fail'}`}>
-          {result.ok ? 'OK' : 'FAIL'}
         </div>
       )}
 
@@ -130,7 +117,7 @@ function ResultView({ toolType, result }: { toolType: string; result?: NodeResul
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, onParamChange, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, onParamChange, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>('params')
   const [width, setWidth] = useState(280)
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
@@ -184,12 +171,13 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               algorithm={(params.algorithm as string) ?? 'LeastSquares'}
               ransacThreshold={(params.ransacThreshold as number) ?? 0.05}
               ransacIterations={(params.ransacIterations as number) ?? 200}
-              preview={upstreamPreview ?? (result as { preview?: string } | undefined)?.preview}
-              onChange={(rois, algo, threshold, iterations) =>
-                onParamChange(nodeId, { ...params, rois, algorithm: algo, ransacThreshold: threshold, ransacIterations: iterations })
-              }
+              maxCloudPoints={(params.maxCloudPoints as number) ?? 200000}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              onChange={(next) => onParamChange(nodeId, { ...params, ...next })}
             />
-          ) : toolType === 'HeightFromPlane' ? (
+          ) : toolType === 'HeightMeasure' ? (
             <HeightFromPlaneEditor
               rois={(params.rois as Roi[]) ?? []}
               aggregation={(params.aggregation as string) ?? 'Mean'}
@@ -198,7 +186,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               nominalMm={(params.nominalMm as number) ?? 0}
               toleranceMm={(params.toleranceMm as number) ?? 0.05}
               preview={upstreamPreview ?? result?.preview}
-              measures={result?.measures}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
@@ -219,7 +208,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
 
       {tab === 'result' && (
         <div className="node-panel-body">
-          <ResultView toolType={toolType} result={result} />
+          <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]} />
         </div>
       )}
     </div>

@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Check current engine connection status (call on mount)
   engineIsReady: () => ipcRenderer.invoke('engine:isReady'),
 
+  // Force restart / reconnect the VisionEngine
+  engineRestart: () => ipcRenderer.invoke('engine:restart'),
+
   // Subscribe to streamed events from VisionEngine
   onEngineEvent: (cb: (data: unknown) => void) => {
     const handler = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)

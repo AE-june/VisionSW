@@ -9,20 +9,17 @@ export interface HeightFromPlaneSettings {
   toleranceMm: number
 }
 
-export interface MeasureResult {
-  distance: number; pointCount: number; pass: boolean
-}
-
 interface Props extends HeightFromPlaneSettings {
   preview?: string
-  measures?: MeasureResult[]
+  zMin?: number
+  zMax?: number
   onChange: (next: HeightFromPlaneSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'measure', label: 'Measure' }]
 
 export default function HeightFromPlaneEditor(props: Props) {
-  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, measures, onChange } = props
+  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, onChange } = props
 
   const emit = (patch: Partial<HeightFromPlaneSettings>) =>
     onChange({ rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, ...patch })
@@ -33,17 +30,9 @@ export default function HeightFromPlaneEditor(props: Props) {
         rois={rois}
         roiTypes={ROI_TYPES}
         preview={preview}
+        zMin={zMin}
+        zMax={zMax}
         onChange={r => emit({ rois: r })}
-        overlayFor={(roi, idx) => {
-          if (roi.type !== 'measure') return null
-          const m = measures?.[idx]
-          if (!m) return null
-          return (
-            <span className={`pfe-roi-result ${m.pass ? 'pass' : 'fail'}`}>
-              {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
-            </span>
-          )
-        }}
       />
 
       <div className="param-section">Z 추출 방식</div>

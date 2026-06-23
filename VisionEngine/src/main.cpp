@@ -88,9 +88,9 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     for (const auto& ns : nodeSpecs) ids.push_back(ns.id);
     auto order = topoSort(ids, edges);
 
-    // Which node's output feeds each node (last connected source)
-    std::unordered_map<std::string, std::string> inputFrom;
-    for (const auto& e : edges) inputFrom[e.target] = e.source;
+    // Which nodes' outputs feed each node (다중 입력 지원)
+    std::unordered_map<std::string, std::vector<std::string>> inputsFrom;
+    for (const auto& e : edges) inputsFrom[e.target].push_back(e.source);
 
     // Node outputs cache
     std::unordered_map<std::string, VisionDataPtr> outputs;
@@ -121,10 +121,25 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
             continue;
         }
 
-        // Get input data (from predecessor or nullptr for source nodes)
+        // Get input data — 여러 입력 엣지의 출력을 하나로 병합
+        // (예: HeightFromPlane은 ZMap 소스 + Plane 소스를 함께 받음)
         VisionDataPtr inputData = nullptr;
-        if (inputFrom.count(nodeId))
-            inputData = outputs[inputFrom.at(nodeId)];
+        if (inputsFrom.count(nodeId)) {
+            auto merged = std::make_shared<VisionData>();
+            bool any = false;
+            for (const auto& src : inputsFrom.at(nodeId)) {
+                auto it = outputs.find(src);
+                if (it == outputs.end() || !it->second) continue;
+                const auto& o = it->second;
+                any = true;
+                if (o->zmap  && !merged->zmap)  merged->zmap  = o->zmap;
+                if (o->image && !merged->image) merged->image = o->image;
+                if (o->cloud && !merged->cloud) merged->cloud = o->cloud;
+                if (o->plane && !merged->plane) merged->plane = o->plane;
+                if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
+            }
+            if (any) inputData = merged;
+        }
 
         auto result = tool->execute(inputData);
         if (result.output) outputs[nodeId] = result.output;
@@ -163,9 +178,13 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 jr["tiltDeg"]       = r.tiltDeg;
                 jr["refPointCount"] = r.refPointCount;
                 jr["inlierCount"]   = r.inlierCount;
+                json pts = json::array();
+                for (const auto& p : r.cloudPoints)
+                    pts.push_back({ p[0], p[1], p[2] });
+                jr["cloud"] = pts;
             }
         }
-        if (ns.type == "HeightFromPlane") {
+        if (ns.type == "HeightMeasure") {
             auto* m = dynamic_cast<HeightFromPlaneTool*>(tool.get());
             if (m && m->lastResult().valid) {
                 const auto& r = m->lastResult();
@@ -199,8 +218,16 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         if (result.output) {
             if (result.output->hasImage())
                 jr["preview"] = imageToBase64(*result.output->image);
-            else if (result.output->hasZMap())
-                jr["preview"] = zmapToBase64(*result.output->zmap);
+            else if (result.output->hasZMap()) {
+                const auto& zm = *result.output->zmap;
+                jr["preview"] = zmapToBase64(zm);
+                // 실제 z(raw count) 범위 — 프론트 컬러맵 range를 실제값 단위로 표시
+                float zMin = std::numeric_limits<float>::max();
+                float zMax = -std::numeric_limits<float>::max();
+                for (float v : zm.data)
+                    if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
+                if (zMin <= zMax) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
+            }
         }
 
         results.push_back(jr);

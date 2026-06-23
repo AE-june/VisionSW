@@ -40,43 +40,19 @@ inline void stbiCallback(void* ctx, void* data, int size) {
     buf->insert(buf->end(), p, p + size);
 }
 
-// ── Nearest-neighbor downscale ────────────────────────────────────────────
+// ── Image2D → base64 PNG (원본 해상도 유지) ───────────────────────────────
+//  미리보기는 다운스케일하지 않는다 — 모든 노드가 초기 로드 해상도를 그대로 사용
 
-inline void downscale(const uint8_t* src, int sw, int sh, int ch,
-                      std::vector<uint8_t>& dst, int dw, int dh) {
-    dst.resize(static_cast<size_t>(dw) * dh * ch);
-    for (int y = 0; y < dh; ++y) {
-        int sy = y * sh / dh;
-        for (int x = 0; x < dw; ++x) {
-            int sx = x * sw / dw;
-            for (int c = 0; c < ch; ++c)
-                dst[(y * dw + x) * ch + c] = src[(sy * sw + sx) * ch + c];
-        }
-    }
-}
-
-// ── Image2D → base64 PNG (max 1024px wide) ────────────────────────────────
-
-inline std::string imageToBase64(const Image2D& img, int maxW = 1024) {
-    int dw = img.width, dh = img.height;
-    if (dw > maxW) { dh = dh * maxW / dw; dw = maxW; }
-
-    std::vector<uint8_t> pixels;
-    if (dw == img.width && dh == img.height) {
-        pixels = img.data;
-    } else {
-        downscale(img.data.data(), img.width, img.height, img.channels, pixels, dw, dh);
-    }
-
+inline std::string imageToBase64(const Image2D& img) {
     std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, dw, dh, img.channels,
-                           pixels.data(), dw * img.channels);
+    stbi_write_png_to_func(stbiCallback, &png, img.width, img.height, img.channels,
+                           img.data.data(), img.width * img.channels);
     return base64Encode(png);
 }
 
-// ── ZMap → base64 PNG grayscale (normalized, max 1024px wide) ─────────────
+// ── ZMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
 
-inline std::string zmapToBase64(const ZMap& zmap, int maxW = 1024) {
+inline std::string zmapToBase64(const ZMap& zmap) {
     if (zmap.empty()) return {};
 
     // Normalize float → uint8
@@ -94,18 +70,9 @@ inline std::string zmapToBase64(const ZMap& zmap, int maxW = 1024) {
                 : static_cast<uint8_t>((v - zMin) / range * 255.f);
     }
 
-    int dw = zmap.width, dh = zmap.height;
-    std::vector<uint8_t> pixels;
-    if (dw > maxW) {
-        int ndh = dh * maxW / dw; int ndw = maxW;
-        downscale(gray.data(), dw, dh, 1, pixels, ndw, ndh);
-        dw = ndw; dh = ndh;
-    } else {
-        pixels = gray;
-    }
-
     std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, dw, dh, 1, pixels.data(), dw);
+    stbi_write_png_to_func(stbiCallback, &png, zmap.width, zmap.height, 1,
+                           gray.data(), zmap.width);
     return base64Encode(png);
 }
 

@@ -27,6 +27,7 @@ struct PlaneFitParams {
 
     float ransacThresholdMm = 0.05f;
     int   ransacIterations  = 200;
+    int   maxCloudPoints    = 200000;   // 3D 뷰 포인트클라우드 목표 개수
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -40,6 +41,8 @@ struct PlaneFitResult {
     int    inlierCount = 0;         // (RANSAC) 인라이어 수, 그 외 = refPointCount
     bool   valid  = false;
     std::string message;
+    // 3D 뷰용: 전체 ZMap을 격자 다운샘플한 포인트클라우드 (x_mm, y_mm, z_mm)
+    std::vector<std::array<double, 3>> cloudPoints;
 };
 
 // ─────────────────────────────────────────────────────────────────────
