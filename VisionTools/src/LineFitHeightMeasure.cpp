@@ -6,6 +6,7 @@
 #include <random>
 #include <cmath>
 #include <stdexcept>
+#include <Eigen/Dense>
 
 namespace vision {
 
@@ -199,11 +200,11 @@ LineFitHeightMeasure::extractPoints3D(const ZMap& map, const Rect2D& roi) const 
             break;
         }
         case ZAggregation::HighTail: {
-            std::sort(rowZ.begin(), rowZ.end(),
-                      [](auto& a, auto& b){ return a.second < b.second; });
             int n = std::max(1, static_cast<int>(
                 std::ceil(rowZ.size() * m_params.highTailPct / 100.f)));
             int start = static_cast<int>(rowZ.size()) - n;
+            std::nth_element(rowZ.begin(), rowZ.begin() + start, rowZ.end(),
+                             [](auto& a, auto& b){ return a.second < b.second; });
             double sy = 0, sz = 0;
             for (int i = start; i < static_cast<int>(rowZ.size()); ++i) {
                 sy += map.yMm(rowZ[i].first);
@@ -241,10 +242,10 @@ double LineFitHeightMeasure::aggregateColumn(const ZMap& map,
     case ZAggregation::Mean:
         return std::accumulate(zvals.begin(), zvals.end(), 0.f) / zvals.size();
     case ZAggregation::HighTail: {
-        std::sort(zvals.begin(), zvals.end());
         int n = std::max(1, static_cast<int>(
             std::ceil(zvals.size() * m_params.highTailPct / 100.f)));
         int start = static_cast<int>(zvals.size()) - n;
+        std::nth_element(zvals.begin(), zvals.begin() + start, zvals.end());
         double sum = 0;
         for (int i = start; i < static_cast<int>(zvals.size()); ++i) sum += zvals[i];
         return sum / n;
@@ -274,12 +275,11 @@ LineFitHeightMeasure::selectMeasurePoint(const ZMap& map) const {
 
     if (pts.empty()) return { 0.0, nan };
 
-    std::sort(pts.begin(), pts.end(),
-              [](const XZPair& a, const XZPair& b){ return a.second < b.second; });
-
     int n = std::max(1, static_cast<int>(
         std::ceil(static_cast<double>(pts.size()) * m_params.measureHighTailPct / 100.0)));
     int start = static_cast<int>(pts.size()) - n;
+    std::nth_element(pts.begin(), pts.begin() + start, pts.end(),
+                     [](const XZPair& a, const XZPair& b){ return a.second < b.second; });
 
     double sumX = 0.0, sumZ = 0.0;
     for (int i = start; i < static_cast<int>(pts.size()); ++i) {
@@ -312,14 +312,13 @@ LineFitHeightMeasure::selectMeasurePoint3D(const ZMap& map) const {
 
     if (pts.empty()) return { 0.0, 0.0, nan };
 
-    std::sort(pts.begin(), pts.end(),
-              [](const XYZTriplet& a, const XYZTriplet& b){
-                  return std::get<2>(a) < std::get<2>(b);
-              });
-
     int n = std::max(1, static_cast<int>(
         std::ceil(static_cast<double>(pts.size()) * m_params.measureHighTailPct / 100.0)));
     int start = static_cast<int>(pts.size()) - n;
+    std::nth_element(pts.begin(), pts.begin() + start, pts.end(),
+                     [](const XYZTriplet& a, const XYZTriplet& b){
+                         return std::get<2>(a) < std::get<2>(b);
+                     });
 
     double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
     for (int i = start; i < static_cast<int>(pts.size()); ++i) {
@@ -341,54 +340,26 @@ LineFitHeightMeasure::selectMeasurePoint3D(const ZMap& map) const {
 //
 //  가우스 소거법 (부분 피벗팅) 으로 풀기
 // ═════════════════════════════════════════════════════════════════════
+//  중심화 + Eigen ColPivHouseholderQR (정규방정식 조건수 문제 회피)
 LineFitHeightMeasure::PlaneParams
 LineFitHeightMeasure::fitPlane(const std::vector<XYZTriplet>& pts) const {
     if (pts.size() < 3) return {};
+    const Eigen::Index n = static_cast<Eigen::Index>(pts.size());
 
-    double Sxx=0, Sxy=0, Sx=0;
-    double Syy=0, Sy=0,  Sn=0;
-    double Sxz=0, Syz=0, Sz=0;
+    double cx = 0, cy = 0, cz = 0;
+    for (auto& [x, y, z] : pts) { cx += x; cy += y; cz += z; }
+    cx /= pts.size(); cy /= pts.size(); cz /= pts.size();
 
+    Eigen::MatrixXd A(n, 2);
+    Eigen::VectorXd rhs(n);
+    Eigen::Index i = 0;
     for (auto& [x, y, z] : pts) {
-        Sxx += x*x; Sxy += x*y; Sx += x;
-        Syy += y*y; Sy  += y;   Sn += 1.0;
-        Sxz += x*z; Syz += y*z; Sz += z;
+        A(i, 0) = x - cx; A(i, 1) = y - cy; rhs(i) = z - cz; ++i;
     }
-
-    // 증강 행렬 [A | b]
-    double A[3][4] = {
-        { Sxx, Sxy, Sx, Sxz },
-        { Sxy, Syy, Sy, Syz },
-        { Sx,  Sy,  Sn, Sz  }
-    };
-
-    // 가우스 소거 (부분 피벗팅)
-    for (int i = 0; i < 3; ++i) {
-        // 피벗 선택
-        int pivot = i;
-        for (int j = i+1; j < 3; ++j)
-            if (std::abs(A[j][i]) > std::abs(A[pivot][i])) pivot = j;
-        std::swap(A[i], A[pivot]);
-
-        if (std::abs(A[i][i]) < 1e-12) return {};
-
-        for (int j = i+1; j < 3; ++j) {
-            double f = A[j][i] / A[i][i];
-            for (int k = i; k < 4; ++k)
-                A[j][k] -= f * A[i][k];
-        }
-    }
-
-    // 후방 대입
-    double sol[3] = {};
-    for (int i = 2; i >= 0; --i) {
-        sol[i] = A[i][3];
-        for (int j = i+1; j < 3; ++j)
-            sol[i] -= A[i][j] * sol[j];
-        sol[i] /= A[i][i];
-    }
-
-    return { sol[0], sol[1], sol[2], true };
+    const Eigen::Vector2d sol = A.colPivHouseholderQr().solve(rhs);
+    const double a = sol(0), b = sol(1);
+    const double c = cz - a * cx - b * cy;
+    return { a, b, c, true };
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -398,20 +369,21 @@ LineFitHeightMeasure::LineParams
 LineFitHeightMeasure::fitLS(const std::vector<XZPair>& pts) const {
     if (pts.size() < 2) return {};
 
-    double n = static_cast<double>(pts.size());
-    double sumX=0, sumZ=0, sumXZ=0, sumX2=0;
+    // 중심화 — x가 큰 경우(수천 mm) cancellation 방지
+    double mx = 0, mz = 0;
+    for (auto& [x, z] : pts) { mx += x; mz += z; }
+    mx /= pts.size(); mz /= pts.size();
 
+    double sxx = 0, sxz = 0;
     for (auto& [x, z] : pts) {
-        sumX  += x;  sumZ  += z;
-        sumXZ += x*z; sumX2 += x*x;
+        const double dx = x - mx;
+        sxx += dx * dx;
+        sxz += dx * (z - mz);
     }
+    if (std::abs(sxx) < 1e-12) return {};
 
-    double denom = n * sumX2 - sumX * sumX;
-    if (std::abs(denom) < 1e-12) return {};
-
-    double a = (n * sumXZ - sumX * sumZ) / denom;
-    double b = (sumZ - a * sumX) / n;
-
+    const double a = sxz / sxx;
+    const double b = mz - a * mx;   // 원좌표 절편 복원
     return { a, b, static_cast<int>(pts.size()), true };
 }
 
@@ -424,11 +396,13 @@ LineFitHeightMeasure::fitRansac(const std::vector<XZPair>& pts) const {
 
     LineParams best;
     int bestCount = 0;
+    const long np = static_cast<long>(pts.size());
 
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(0, static_cast<int>(pts.size()) - 1);
 
-    for (int iter = 0; iter < maxIter; ++iter) {
+    int dynMaxIt = maxIter;   // inlier 비율에 따라 동적 조기 종료
+    for (int iter = 0; iter < dynMaxIt; ++iter) {
         int i = dist(rng), j = dist(rng);
         while (j == i) j = dist(rng);
 
@@ -440,12 +414,19 @@ LineFitHeightMeasure::fitRansac(const std::vector<XZPair>& pts) const {
         double nf = std::sqrt(1.0 + a*a);
 
         int inliers = 0;
-        for (auto& [x, z] : pts)
-            if (std::abs(z - (a*x + b)) / nf < thresh) ++inliers;
+        #pragma omp parallel for reduction(+:inliers)
+        for (long k = 0; k < np; ++k)
+            if (std::abs(pts[k].second - (a*pts[k].first + b)) / nf < thresh) ++inliers;
 
         if (inliers > bestCount) {
             bestCount = inliers;
             best = { a, b, inliers, true };
+            double w = static_cast<double>(inliers) / static_cast<double>(np);
+            double denom = std::log(1.0 - w * w);   // 직선: 2점 샘플
+            if (denom < 0) {
+                int est = static_cast<int>(std::ceil(std::log(1.0 - 0.99) / denom));
+                if (est < dynMaxIt) dynMaxIt = std::max(est, 10);
+            }
         }
     }
 

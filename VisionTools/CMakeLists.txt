@@ -5,6 +5,8 @@ add_library(VisionTools STATIC
     src/LineFitHeightMeasure.cpp
     src/PlaneFitTool.cpp
     src/HeightFromPlaneTool.cpp
+    src/CsvWriterTool.cpp
+    src/LineCenterTool.cpp
 )
 
 target_include_directories(VisionTools
@@ -12,6 +14,9 @@ target_include_directories(VisionTools
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(VisionTools PUBLIC Core)
+target_link_libraries(VisionTools PUBLIC Core Eigen3::Eigen)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(VisionTools PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 # target_link_libraries(VisionTools PRIVATE ${OpenCV_LIBS} ${PCL_LIBRARIES})

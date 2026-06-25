@@ -1,4 +1,4 @@
-export type PortType = 'ZMap' | 'Plane' | 'Image2D' | 'PointCloud3D' | 'Any'
+export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -12,6 +12,7 @@ export interface ToolDef {
 export const PORT_COLORS: Record<PortType, string> = {
   ZMap:          '#00bcd4',
   Plane:         '#26a69a',
+  Heights:       '#ffc107',
   Image2D:       '#ff9800',
   PointCloud3D:  '#9c27b0',
   Any:           '#888',
@@ -21,12 +22,17 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'ZMapLoader', label: 'ZMap Loader', category: '입력',
     inputs: [], outputs: ['ZMap'],
-    defaultParams: { path: '', xResMm: 1.0, yResMm: 1.0, zResMm: 0.001 },
+    defaultParams: { mode: 'file', path: '', folder: '', index: 0, xResMm: 1.0, yResMm: 1.0, zResMm: 0.001 },
   },
   {
     type: 'ImageLoader', label: 'Image Loader', category: '입력',
     inputs: [], outputs: ['Image2D'],
     defaultParams: { path: '' },
+  },
+  {
+    type: 'LineCenter', label: 'Line Center', category: '정렬',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: { rois: [], threshold: 1, scanDir: 'lr', polarity: 'd2l' },
   },
   {
     type: 'NoiseFilter', label: 'Noise Filter', category: '필터',
@@ -64,7 +70,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'HeightMeasure', label: 'Height Measure', category: '측정',
-    inputs: ['ZMap', 'Plane'], outputs: ['ZMap'],
+    inputs: ['ZMap', 'Plane'], outputs: ['Heights'],
     defaultParams: {
       rois: [],
       aggregation: 'Mean',
@@ -82,6 +88,11 @@ export const TOOL_DEFS: ToolDef[] = [
       nominalMm: 0,
       toleranceMm: 0.05,
     },
+  },
+  {
+    type: 'CsvWriter', label: 'CSV Writer', category: '출력',
+    inputs: ['Heights'], outputs: [],
+    defaultParams: { path: '', label: '' },
   },
 ]
 

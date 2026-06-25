@@ -58,20 +58,35 @@ struct PlaneModel {
 };
 
 // ─────────────────────────────────────────────
+//  Reference point — 라인/엣지 검출 결과 (좌표 정렬용)
+//  노드 간에 검출된 기준점(x,y)을 전달하기 위한 모델
+// ─────────────────────────────────────────────
+struct RefPoint {
+    double cx = 0, cy = 0;       // 픽셀 단위 (col, row)
+    double cxMm = 0, cyMm = 0;   // mm 단위
+    double angleDeg = 0;         // 라인 방향 (주축 각도)
+    bool   valid = false;
+};
+
+// ─────────────────────────────────────────────
 //  Universal container passed through pipeline
 // ─────────────────────────────────────────────
 struct VisionData {
     std::shared_ptr<Image2D>      image;
     std::shared_ptr<PointCloud3D> cloud;
     std::shared_ptr<ZMap>         zmap;
-    std::shared_ptr<PlaneModel>   plane;        // fitted plane (PlaneFit → HeightFromPlane)
+    std::shared_ptr<PlaneModel>   plane;        // fitted plane (PlaneFit → HeightMeasure)
+    std::shared_ptr<std::vector<double>> heights; // 측정된 높이값 배열 (HeightMeasure 출력)
+    std::shared_ptr<RefPoint>     point;        // 검출된 기준점 (LineCenter → 좌표정렬)
     std::string                   sourceId;     // sensor / file origin
     int64_t                       timestampUs = 0;
 
-    bool hasImage() const { return image && !image->empty(); }
-    bool hasCloud() const { return cloud && !cloud->empty(); }
-    bool hasZMap()  const { return zmap  && !zmap->empty(); }
-    bool hasPlane() const { return plane && plane->valid; }
+    bool hasImage()   const { return image && !image->empty(); }
+    bool hasCloud()   const { return cloud && !cloud->empty(); }
+    bool hasZMap()    const { return zmap  && !zmap->empty(); }
+    bool hasPlane()   const { return plane && plane->valid; }
+    bool hasHeights() const { return heights && !heights->empty(); }
+    bool hasPoint()   const { return point && point->valid; }
 };
 
 using VisionDataPtr = std::shared_ptr<VisionData>;

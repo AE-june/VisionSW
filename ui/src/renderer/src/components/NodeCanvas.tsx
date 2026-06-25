@@ -24,13 +24,15 @@ interface Props {
   onAddNode: (toolType: string, label: string, position: { x: number; y: number }) => void
   onNodeClick: NodeMouseHandler
   onPaneClick: () => void
+  onEdgeMouseEnter?: (event: React.MouseEvent, edge: Edge) => void
+  onEdgeMouseLeave?: (event: React.MouseEvent, edge: Edge) => void
 }
 
 function isCompatible(a: PortType, b: PortType) {
   return a === 'Any' || b === 'Any' || a === b
 }
 
-function Canvas({ nodes, edges, onNodesChange, onEdgesChange, onConnect, onAddNode, onNodeClick, onPaneClick }: Props) {
+function Canvas({ nodes, edges, onNodesChange, onEdgesChange, onConnect, onAddNode, onNodeClick, onPaneClick, onEdgeMouseEnter, onEdgeMouseLeave }: Props) {
   const { screenToFlowPosition } = useReactFlow()
   const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -80,6 +82,8 @@ function Canvas({ nodes, edges, onNodesChange, onEdgesChange, onConnect, onAddNo
         onDrop={onDrop}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         isValidConnection={isValidConnection}
         fitView
         deleteKeyCode="Delete"

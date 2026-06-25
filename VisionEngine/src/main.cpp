@@ -6,6 +6,8 @@
 #include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
 #include "HeightFromPlaneTool.h"
+#include "CsvWriterTool.h"
+#include "LineCenterTool.h"
 #include <crow.h>
 #include <nlohmann/json.hpp>
 
@@ -17,6 +19,7 @@
 #include <mutex>
 #include <memory>
 #include <iostream>
+#include <chrono>
 
 using json = nlohmann::json;
 using namespace vision;
@@ -52,9 +55,20 @@ static std::vector<std::string> topoSort(
     return order;
 }
 
+// ── 노드 결과 캐시 ─────────────────────────────────────────────────────────
+//  개별 노드 실행 시, 파라미터가 바뀌지 않은 상류 노드는 재실행하지 않고 캐시 재사용.
+//  (단일 사용자 가정 — 접근은 g_cacheMtx로 직렬화)
+struct CachedNode { VisionDataPtr output; std::size_t paramHash; };
+static std::unordered_map<std::string, CachedNode> g_nodeCache;
+static std::mutex g_cacheMtx;
+
 // ── Pipeline execution ───────────────────────────────────────────────────
 
 static json runPipeline(const json& msg, crow::websocket::connection& conn) {
+    const bool useCache = msg.value("useCache", false);
+    // 개별 노드 실행 시 이 노드는 캐시 무시하고 항상 재실행 (상류만 캐시 재사용)
+    const std::string forceNode = msg.value("forceNode", std::string());
+    std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
     // Parse nodes
     struct NodeSpec {
         std::string id, type;
@@ -92,18 +106,38 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     std::unordered_map<std::string, std::vector<std::string>> inputsFrom;
     for (const auto& e : edges) inputsFrom[e.target].push_back(e.source);
 
-    // Node outputs cache
+    // Node outputs (이번 실행 범위) + 재실행 여부(dirty) 추적
     std::unordered_map<std::string, VisionDataPtr> outputs;
+    std::unordered_map<std::string, bool> dirty;
 
     bool pipelinePass = true;
     json results = json::array();
 
     // Send start event
+    const auto pipeStart = std::chrono::steady_clock::now();
     conn.send_text(json{{"event","start"}}.dump());
 
     for (const auto& nodeId : order) {
         if (nodeIdx.find(nodeId) == nodeIdx.end()) continue;
         const auto& ns = nodeSpecs[nodeIdx.at(nodeId)];
+
+        // 캐시 키: 파라미터 해시 + 상류 dirty 여부
+        const std::size_t ph = std::hash<std::string>{}(ns.params.dump());
+        bool upstreamDirty = false;
+        if (inputsFrom.count(nodeId))
+            for (const auto& src : inputsFrom.at(nodeId))
+                if (dirty.count(src) && dirty[src]) { upstreamDirty = true; break; }
+
+        if (useCache && !upstreamDirty && nodeId != forceNode) {
+            auto cit = g_nodeCache.find(nodeId);
+            if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {
+                // 캐시 적중 — 재실행/재전송 없이 출력만 재사용
+                outputs[nodeId] = cit->second.output;
+                dirty[nodeId] = false;
+                continue;
+            }
+        }
+        dirty[nodeId] = true;   // 재실행됨 → 하류도 dirty
 
         // Log tool start
         conn.send_text(json{
@@ -132,28 +166,37 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 if (it == outputs.end() || !it->second) continue;
                 const auto& o = it->second;
                 any = true;
-                if (o->zmap  && !merged->zmap)  merged->zmap  = o->zmap;
-                if (o->image && !merged->image) merged->image = o->image;
-                if (o->cloud && !merged->cloud) merged->cloud = o->cloud;
-                if (o->plane && !merged->plane) merged->plane = o->plane;
+                if (o->zmap    && !merged->zmap)    merged->zmap    = o->zmap;
+                if (o->image   && !merged->image)   merged->image   = o->image;
+                if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
+                if (o->plane   && !merged->plane)   merged->plane   = o->plane;
+                if (o->heights && !merged->heights) merged->heights = o->heights;
+                if (o->point   && !merged->point)   merged->point   = o->point;
                 if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
             }
             if (any) inputData = merged;
         }
 
+        auto tExec0 = std::chrono::steady_clock::now();
         auto result = tool->execute(inputData);
-        if (result.output) outputs[nodeId] = result.output;
+        auto tExec1 = std::chrono::steady_clock::now();
+        double elapsedMs = std::chrono::duration<double, std::milli>(tExec1 - tExec0).count();
+        if (result.output) {
+            outputs[nodeId] = result.output;
+            g_nodeCache[nodeId] = { result.output, ph };   // 캐시 갱신
+        }
 
         bool ok = (result.status == ToolStatus::Ok);
         if (!ok) pipelinePass = false;
 
         // Build per-tool result
         json jr;
-        jr["event"] = "result";
-        jr["id"]    = nodeId;
-        jr["tool"]  = ns.type;
-        jr["ok"]    = ok;
-        jr["msg"]   = result.message;
+        jr["event"]     = "result";
+        jr["id"]        = nodeId;
+        jr["tool"]      = ns.type;
+        jr["ok"]        = ok;
+        jr["msg"]       = result.message;
+        jr["elapsedMs"] = elapsedMs;
 
         // Attach measurements for known tool types
         if (ns.type == "LineFitHeight") {
@@ -202,6 +245,30 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 if (!r.allPass) pipelinePass = false;
             }
         }
+        if (ns.type == "LineCenter") {
+            auto* m = dynamic_cast<LineCenterTool*>(tool.get());
+            if (m && m->lastResult().valid) {
+                const auto& r = m->lastResult();
+                jr["cx"]         = r.cx;
+                jr["cy"]         = r.cy;
+                jr["cxMm"]       = r.cxMm;
+                jr["cyMm"]       = r.cyMm;
+                jr["angleDeg"]   = r.angleDeg;
+                jr["pointCount"] = r.pointCount;
+                if (result.output && result.output->zmap) {
+                    jr["imgW"] = result.output->zmap->width;
+                    jr["imgH"] = result.output->zmap->height;
+                }
+            }
+        }
+        if (ns.type == "CsvWriter") {
+            auto* m = dynamic_cast<CsvWriterTool*>(tool.get());
+            if (m) {
+                const auto& r = m->lastResult();
+                jr["saved"]   = r.saved;
+                jr["columns"] = r.columns;
+            }
+        }
         if (ns.type == "ThicknessMeasure") {
             auto* m = dynamic_cast<ThicknessMeasure*>(tool.get());
             if (m) {
@@ -227,6 +294,8 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 for (float v : zm.data)
                     if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
                 if (zMin <= zMax) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
+                jr["xResMm"] = zm.xResMm;
+                jr["yResMm"] = zm.yResMm;
             }
         }
 
@@ -234,9 +303,17 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         conn.send_text(jr.dump());
     }
 
+    const double totalMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipeStart).count();
+    conn.send_text(json{
+        {"event","log"},{"level","info"},
+        {"msg", "전체 실행시간: " + std::to_string(static_cast<long long>(totalMs + 0.5)) + " ms"}
+    }.dump());
+
     json done;
     done["event"]   = "done";
     done["pass"]    = pipelinePass;
+    done["totalMs"] = totalMs;
     done["results"] = results;
     return done;
 }
@@ -260,6 +337,7 @@ int main() {
         .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t /*code*/) {
             std::lock_guard<std::mutex> lk(connMtx);
             clients.erase(&conn);
+            { std::lock_guard<std::mutex> ck(g_cacheMtx); g_nodeCache.clear(); }
             std::cout << "[VisionEngine] Client disconnected: " << reason << "\n";
         })
         .onmessage([&](crow::websocket::connection& conn,

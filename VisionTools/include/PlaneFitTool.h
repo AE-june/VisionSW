@@ -66,13 +66,9 @@ private:
                                    const PlaneFitParams::ROI& roi) const;
 
     struct Plane { double a = 0, b = 0, c = 0; bool valid = false; int inliers = 0; };
-    Plane fitLS    (const std::vector<Pt3>& pts) const;
+    Plane fitLS    (const std::vector<Pt3>& pts) const;   // 중심화 + Eigen QR
     Plane fitRANSAC(const std::vector<Pt3>& pts) const;
-    Plane fitSVD   (const std::vector<Pt3>& pts) const;
-
-    // Jacobi eigenvalue decomposition for 3×3 symmetric matrix
-    // evals: ascending eigenvalues, evecs: columns are eigenvectors
-    static void jacobi3(double A[3][3], double evals[3], double evecs[3][3]);
+    Plane fitSVD   (const std::vector<Pt3>& pts) const;   // 중심화 + Eigen PCA(직교거리)
 };
 
 } // namespace vision

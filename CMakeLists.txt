@@ -21,6 +21,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 find_package(spdlog        CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(GTest         CONFIG REQUIRED)
+find_package(Eigen3        CONFIG REQUIRED)
+find_package(OpenMP)
 
 # ── Core / VisionTools ───────────────────────────────────────────────
 add_subdirectory(Core)

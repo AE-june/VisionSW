@@ -16,6 +16,7 @@ struct HeightFromPlaneParams {
     // ROI in percentage of ZMap dimensions (0.0 ~ 1.0)
     struct ROI {
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
+        bool  isCircle = false;   // true면 ROI 사각 영역에 내접하는 타원
         bool valid() const { return wPct > 0.f && hPct > 0.f; }
     };
 

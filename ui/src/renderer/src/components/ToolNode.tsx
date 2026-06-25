@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useContext } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { TOOL_DEF_MAP, PORT_COLORS } from '../types/tools'
+import { HoveredEdgeContext } from './hoveredEdge'
 
 interface HeightMeasure {
   distance: number; pointCount: number; pass: boolean
@@ -18,6 +19,7 @@ interface NodeResult {
   planeA?: number; rmse?: number; tiltDeg?: number
   // HeightFromPlane
   measures?: HeightMeasure[]; allPass?: boolean
+  elapsedMs?: number
 }
 
 interface ToolNodeData {
@@ -118,36 +120,27 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
   const { label, toolType, result, onRun } = data as ToolNodeData
   const def = TOOL_DEF_MAP[toolType]
   const [resultOpen, setResultOpen] = useState(false)
+  const [hoveredPort, setHoveredPort] = useState<string | null>(null)
+  const he = useContext(HoveredEdgeContext)
 
+  // 직접 hover 했거나, hover된 엣지에 연결된 핸들이면 강조
+  const isPortLit = (pid: string) =>
+    hoveredPort === pid ||
+    (!!he && ((he.source === id && (he.sourceHandle ?? 'output-0') === pid) ||
+              (he.target === id && (he.targetHandle ?? 'input-0') === pid)))
 
   if (!def) return null
-
-  const hasInputs  = def.inputs.length > 0
-  const hasOutputs = def.outputs.length > 0
 
   const hasResult = !!result
   const statusDotClass = hasResult
     ? (result!.ok !== false && result!.pass !== false ? 'pass' : 'fail')
     : ''
 
+  const portRows = Math.max(def.inputs.length, def.outputs.length)
+
   return (
     <div className={`tool-node ${selected ? 'selected' : ''}`}>
-
-      {/* 입력 핸들 (왼쪽) */}
-      {def.inputs.map((portType, i) => {
-        const pct = def.inputs.length === 1 ? 50 : (i + 1) / (def.inputs.length + 1) * 100
-        return (
-          <Handle
-            key={`input-${i}`}
-            type="target"
-            position={Position.Left}
-            id={`input-${i}`}
-            style={{ top: `${pct}%`, background: PORT_COLORS[portType], border: '2px solid #111' }}
-          />
-        )
-      })}
-
-      {/* 노드 본체 */}
+      {/* 헤더 */}
       <div className="tool-node-header">
         <span>{label}</span>
         <div className="tool-node-header-actions">
@@ -170,35 +163,59 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
           )}
         </div>
       </div>
-      <div className="tool-node-body">
-        <div className="port-col left">
-          {hasInputs && def.inputs.map((t, i) => (
-            <span key={i} className="port-label" style={{ color: PORT_COLORS[t] }}>● {t}</span>
-          ))}
-        </div>
-        <div className="port-col right">
-          {hasOutputs && def.outputs.map((t, i) => (
-            <span key={i} className="port-label" style={{ color: PORT_COLORS[t] }}>{t} ●</span>
-          ))}
-        </div>
+
+      {/* 포트 행 — 핸들과 라벨을 같은 행에 두어 높이를 맞춤 */}
+      <div className="tool-node-ports">
+        {Array.from({ length: portRows }).map((_, i) => {
+          const inT = def.inputs[i]
+          const outT = def.outputs[i]
+          return (
+            <div className="port-row" key={i}>
+              {inT !== undefined && (
+                <Handle
+                  type="target" position={Position.Left} id={`input-${i}`}
+                  className={`th-in${isPortLit(`input-${i}`) ? ' port-handle-hover' : ''}`}
+                  onMouseEnter={() => setHoveredPort(`input-${i}`)}
+                  onMouseLeave={() => setHoveredPort(null)}
+                  style={{ background: PORT_COLORS[inT], border: '2px solid #111' }}
+                />
+              )}
+              <span className="port-slot left">
+                {inT !== undefined && (
+                  <span
+                    className={`port-label ${isPortLit(`input-${i}`) ? 'port-label-hover' : ''}`}
+                    style={{ color: PORT_COLORS[inT] }}
+                    onMouseEnter={() => setHoveredPort(`input-${i}`)}
+                    onMouseLeave={() => setHoveredPort(null)}
+                  >{inT}</span>
+                )}
+              </span>
+              <span className="port-slot right">
+                {outT !== undefined && (
+                  <span
+                    className={`port-label ${isPortLit(`output-${i}`) ? 'port-label-hover' : ''}`}
+                    style={{ color: PORT_COLORS[outT] }}
+                    onMouseEnter={() => setHoveredPort(`output-${i}`)}
+                    onMouseLeave={() => setHoveredPort(null)}
+                  >{outT}</span>
+                )}
+              </span>
+              {outT !== undefined && (
+                <Handle
+                  type="source" position={Position.Right} id={`output-${i}`}
+                  className={`th-out${isPortLit(`output-${i}`) ? ' port-handle-hover' : ''}`}
+                  onMouseEnter={() => setHoveredPort(`output-${i}`)}
+                  onMouseLeave={() => setHoveredPort(null)}
+                  style={{ background: PORT_COLORS[outT], border: '2px solid #111' }}
+                />
+              )}
+            </div>
+          )
+        })}
       </div>
 
       {/* 결과창 (토글) */}
       {result && resultOpen && <ResultArea toolType={toolType} result={result} />}
-
-      {/* 출력 핸들 (오른쪽) */}
-      {def.outputs.map((portType, i) => {
-        const pct = def.outputs.length === 1 ? 50 : (i + 1) / (def.outputs.length + 1) * 100
-        return (
-          <Handle
-            key={`output-${i}`}
-            type="source"
-            position={Position.Right}
-            id={`output-${i}`}
-            style={{ top: `${pct}%`, background: PORT_COLORS[portType], border: '2px solid #111' }}
-          />
-        )
-      })}
     </div>
   )
 }

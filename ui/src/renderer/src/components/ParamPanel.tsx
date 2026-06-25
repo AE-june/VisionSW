@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { TOOL_DEF_MAP } from '../types/tools'
 
 interface Props {
@@ -157,16 +158,95 @@ function NoiseFilterParams({ params, onChange }: { params: Record<string, unknow
   </>
 }
 
+function CsvWriterParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const path = params.path as string ?? ''
+  const filename = path ? path.split(/[\\/]/).pop() : ''
+
+  const handleSave = async () => {
+    const api = (window as Window & { electronAPI?: { saveFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
+    if (!api?.saveFile) return
+    const p = await api.saveFile([
+      { name: 'CSV', extensions: ['csv'] },
+      { name: 'All Files', extensions: ['*'] },
+    ])
+    if (p) set('path', p)
+  }
+
+  return <>
+    <div className="param-section">출력 파일 (CSV)</div>
+    <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+      <span className="param-label">저장 위치</span>
+      <button className="btn-browse" onClick={handleSave}>📁 폴더/파일 선택</button>
+      {filename && <div className="param-path-display" title={path}>{filename}</div>}
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>실행할 때마다 한 행씩 추가됩니다</div>
+  </>
+}
+
 function LoaderParams({ params, onChange, toolType }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void; toolType: string }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType={toolType} />
+}
+
+// ZMapLoader: 단일 파일 / 폴더(연속검사) 모드 — 이미지 소스를 노드가 단독 소유
+function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'file'
+  const folder = (params.folder as string) ?? ''
+  const index = (params.index as number) ?? 0
+  const [files, setFiles] = useState<{ name: string; path: string }[]>([])
+
+  useEffect(() => {
+    if (mode === 'folder' && folder && window.electronAPI?.listFolderImages) {
+      window.electronAPI.listFolderImages(folder).then(setFiles)
+    } else {
+      setFiles([])
+    }
+  }, [mode, folder])
+
+  const pickFolder = async () => {
+    const dir = await window.electronAPI?.openFolder?.()
+    if (dir) onChange({ ...params, folder: dir, index: 0 })
+  }
+
+  const clampIdx = Math.min(Math.max(0, index), Math.max(0, files.length - 1))
+  const cur = files[clampIdx]
+
   return <>
-    <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType={toolType} />
-    {toolType === 'ZMapLoader' && <>
-      <div className="param-section">분해능 (mm/px)</div>
-      <NumField label="X Res" value={params.xResMm as number ?? 1.0} step={0.001} onChange={v => set('xResMm', v)} />
-      <NumField label="Y Res" value={params.yResMm as number ?? 1.0} step={0.001} onChange={v => set('yResMm', v)} />
-      <NumField label="Z Res" value={params.zResMm as number ?? 0.001} step={0.0001} onChange={v => set('zResMm', v)} />
+    <div className="param-section">이미지 소스</div>
+    <div className="param-row">
+      <span className="param-label">모드</span>
+      <select className="param-select" value={mode} onChange={e => set('mode', e.target.value)}>
+        <option value="file">단일 파일</option>
+        <option value="folder">폴더 (연속검사)</option>
+      </select>
+    </div>
+    {mode === 'file' ? (
+      <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType="ZMapLoader" />
+    ) : <>
+      <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+        <span className="param-label">폴더</span>
+        <button className="btn-browse" onClick={pickFolder}>📁 폴더 선택</button>
+        {folder && <div className="param-path-display" title={folder}>{folder.split(/[\\/]/).pop()} · 이미지 {files.length}개</div>}
+      </div>
+      {files.length > 0 && (
+        <div className="param-row">
+          <span className="param-label">이미지</span>
+          <div className="zl-idx">
+            <button className="btn-browse" disabled={clampIdx <= 0} onClick={() => set('index', clampIdx - 1)}>◀</button>
+            <span className="zl-idx-cur" title={cur?.name}>{clampIdx + 1}/{files.length}</span>
+            <button className="btn-browse" disabled={clampIdx >= files.length - 1} onClick={() => set('index', clampIdx + 1)}>▶</button>
+          </div>
+        </div>
+      )}
+      {cur && <div className="param-path-display" title={cur.name}>{cur.name}</div>}
+      <div className="param-empty" style={{ fontSize: 10 }}>연속검사(📁 폴더검사)가 이 폴더를 순서대로 검사합니다</div>
     </>}
+    <div className="param-section">분해능 (mm/px)</div>
+    <NumField label="X Res" value={params.xResMm as number ?? 1.0} step={0.001} onChange={v => set('xResMm', v)} />
+    <NumField label="Y Res" value={params.yResMm as number ?? 1.0} step={0.001} onChange={v => set('yResMm', v)} />
+    <NumField label="Z Res" value={params.zResMm as number ?? 0.001} step={0.0001} onChange={v => set('zResMm', v)} />
   </>
 }
 
@@ -183,7 +263,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
-        {(toolType === 'ZMapLoader' || toolType === 'ImageLoader') && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
+        {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     )
@@ -200,7 +282,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
-        {(toolType === 'ZMapLoader' || toolType === 'ImageLoader') && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
+        {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     </div>

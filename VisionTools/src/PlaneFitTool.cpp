@@ -4,6 +4,7 @@
 #include <numeric>
 #include <random>
 #include <cmath>
+#include <Eigen/Dense>
 
 namespace vision {
 
@@ -41,11 +42,13 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     if (!plane.valid)
         return { ToolStatus::Fail, "PlaneFit: 평면 피팅 실패" };
 
-    // RMSE: 전체 ref 포인트의 평면 대비 수직 잔차 RMS
+    // RMSE: 전체 ref 포인트의 평면 대비 수직 잔차 RMS (OpenMP reduction)
     const double len = std::sqrt(1.0 + plane.a * plane.a + plane.b * plane.b);
+    const long np = static_cast<long>(pts.size());
     double sse = 0;
-    for (auto& p : pts) {
-        double resid = (p[2] - (plane.a * p[0] + plane.b * p[1] + plane.c)) / len;
+    #pragma omp parallel for reduction(+:sse)
+    for (long i = 0; i < np; ++i) {
+        double resid = (pts[i][2] - (plane.a * pts[i][0] + plane.b * pts[i][1] + plane.c)) / len;
         sse += resid * resid;
     }
     double rmse = std::sqrt(sse / pts.size());
@@ -61,8 +64,10 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     m_result.inlierCount   = plane.inliers;
     m_result.valid         = true;
 
-    // 3D 뷰용: 전체 ZMap을 격자 다운샘플 (목표 개수는 파라미터)
-    const size_t target = static_cast<size_t>(std::max(1, m_params.maxCloudPoints));
+    // 3D 뷰용: 전체 ZMap을 격자 다운샘플 (목표 개수는 파라미터, 메모리 보호용 하드 상한)
+    const size_t HARD_CAP = 500000;
+    const size_t target = std::min(HARD_CAP,
+        static_cast<size_t>(std::max(1, m_params.maxCloudPoints)));
     const size_t total  = static_cast<size_t>(map.width) * map.height;
     const int    step   = std::max(1, static_cast<int>(std::sqrt(
                               static_cast<double>(total) / target)));
@@ -99,8 +104,9 @@ PlaneFitTool::extractPoints(const ZMap& map, const PlaneFitParams::ROI& roi) con
     std::vector<Pt3> pts;
     pts.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0));
 
-    for (int col = x0; col < x1; ++col)
-        for (int row = y0; row < y1; ++row)
+    // row-major 순회 (data가 [row*width+col] 이므로 캐시 효율적)
+    for (int row = y0; row < y1; ++row)
+        for (int col = x0; col < x1; ++col)
             if (map.valid(col, row))
                 pts.push_back({ map.xMm(col), map.yMm(row),
                                  static_cast<double>(map.zMm(col, row)) });
@@ -109,46 +115,29 @@ PlaneFitTool::extractPoints(const ZMap& map, const PlaneFitParams::ROI& roi) con
 
 // ─────────────────────────────────────────────────────────────────────
 //  fitLS — 최소제곱법: z = a*x + b*y + c
+//  중심화(centroid 차감) + Eigen ColPivHouseholderQR
+//  → 좌표가 큰 경우(수천 mm) 정규방정식의 조건수 제곱 문제를 회피
 // ─────────────────────────────────────────────────────────────────────
 PlaneFitTool::Plane PlaneFitTool::fitLS(const std::vector<Pt3>& pts) const {
     if (pts.size() < 3) return {};
+    const Eigen::Index n = static_cast<Eigen::Index>(pts.size());
 
-    double Sxx=0,Sxy=0,Sx=0, Syy=0,Sy=0, Sn=0;
-    double Sxz=0,Syz=0,Sz=0;
+    double cx = 0, cy = 0, cz = 0;
+    for (const auto& p : pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
+    cx /= pts.size(); cy /= pts.size(); cz /= pts.size();
 
-    for (auto& p : pts) {
-        double x = p[0], y = p[1], z = p[2];
-        Sxx += x*x; Sxy += x*y; Sx += x;
-        Syy += y*y; Sy  += y;   Sn += 1;
-        Sxz += x*z; Syz += y*z; Sz += z;
+    // (z-cz) = a·(x-cx) + b·(y-cy)
+    Eigen::MatrixXd A(n, 2);
+    Eigen::VectorXd rhs(n);
+    for (Eigen::Index i = 0; i < n; ++i) {
+        A(i, 0) = pts[i][0] - cx;
+        A(i, 1) = pts[i][1] - cy;
+        rhs(i)  = pts[i][2] - cz;
     }
-
-    double A[3][4] = {
-        { Sxx, Sxy, Sx, Sxz },
-        { Sxy, Syy, Sy, Syz },
-        { Sx,  Sy,  Sn, Sz  }
-    };
-
-    for (int i = 0; i < 3; ++i) {
-        int piv = i;
-        for (int j = i+1; j < 3; ++j)
-            if (std::abs(A[j][i]) > std::abs(A[piv][i])) piv = j;
-        std::swap(A[i], A[piv]);
-        if (std::abs(A[i][i]) < 1e-12) return {};
-        for (int j = i+1; j < 3; ++j) {
-            double f = A[j][i] / A[i][i];
-            for (int k = i; k < 4; ++k) A[j][k] -= f * A[i][k];
-        }
-    }
-
-    double sol[3] = {};
-    for (int i = 2; i >= 0; --i) {
-        sol[i] = A[i][3];
-        for (int j = i+1; j < 3; ++j) sol[i] -= A[i][j] * sol[j];
-        sol[i] /= A[i][i];
-    }
-
-    return { sol[0], sol[1], sol[2], true, static_cast<int>(pts.size()) };
+    const Eigen::Vector2d sol = A.colPivHouseholderQr().solve(rhs);
+    const double a = sol(0), b = sol(1);
+    const double c = cz - a * cx - b * cy;   // 원좌표 평면으로 복원
+    return { a, b, c, true, static_cast<int>(pts.size()) };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -162,11 +151,13 @@ PlaneFitTool::Plane PlaneFitTool::fitRANSAC(const std::vector<Pt3>& pts) const {
 
     Plane best;
     int bestCount = 0;
+    const long np = static_cast<long>(pts.size());
 
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(0, static_cast<int>(pts.size()) - 1);
 
-    for (int iter = 0; iter < maxIt; ++iter) {
+    int dynMaxIt = maxIt;   // inlier 비율에 따라 동적으로 줄어듦(조기 종료)
+    for (int iter = 0; iter < dynMaxIt; ++iter) {
         int i0 = dist(rng), i1, i2;
         do { i1 = dist(rng); } while (i1 == i0);
         do { i2 = dist(rng); } while (i2 == i0 || i2 == i1);
@@ -185,12 +176,20 @@ PlaneFitTool::Plane PlaneFitTool::fitRANSAC(const std::vector<Pt3>& pts) const {
         double len = std::sqrt(1.0 + a*a + b*b);
 
         int inliers = 0;
-        for (auto& p : pts)
-            if (std::abs(p[2] - (a*p[0] + b*p[1] + c)) / len < thresh) ++inliers;
+        #pragma omp parallel for reduction(+:inliers)
+        for (long i = 0; i < np; ++i)
+            if (std::abs(pts[i][2] - (a*pts[i][0] + b*pts[i][1] + c)) / len < thresh) ++inliers;
 
         if (inliers > bestCount) {
             bestCount = inliers;
             best = { a, b, c, true, inliers };
+            // 동적 반복수: inlier 비율 w로 99% 신뢰 도달에 필요한 반복수 추정
+            double w = static_cast<double>(inliers) / static_cast<double>(np);
+            double denom = std::log(1.0 - w * w * w);
+            if (denom < 0) {
+                int est = static_cast<int>(std::ceil(std::log(1.0 - 0.99) / denom));
+                if (est < dynMaxIt) dynMaxIt = std::max(est, 10);
+            }
         }
     }
     if (!best.valid) return {};
@@ -212,99 +211,31 @@ PlaneFitTool::Plane PlaneFitTool::fitRANSAC(const std::vector<Pt3>& pts) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  fitSVD — PCA 기반, Jacobi 고유값 분해
+//  fitSVD — PCA(직교거리 최소화): 중심화 후 공분산 행렬의 최소 고유벡터 = 법선
+//  Eigen SelfAdjointEigenSolver 사용 (3×3 대칭, 고유값 오름차순)
 // ─────────────────────────────────────────────────────────────────────
 PlaneFitTool::Plane PlaneFitTool::fitSVD(const std::vector<Pt3>& pts) const {
     if (pts.size() < 3) return {};
 
-    double cx=0, cy=0, cz=0;
-    for (auto& p : pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
+    double cx = 0, cy = 0, cz = 0;
+    for (const auto& p : pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
     const double n = static_cast<double>(pts.size());
     cx /= n; cy /= n; cz /= n;
 
-    // Scatter matrix
-    double S[3][3] = {};
-    for (auto& p : pts) {
-        double v[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                S[i][j] += v[i] * v[j];
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+    for (const auto& p : pts) {
+        const Eigen::Vector3d d(p[0] - cx, p[1] - cy, p[2] - cz);
+        cov.noalias() += d * d.transpose();
     }
 
-    double evals[3], evecs[3][3];
-    jacobi3(S, evals, evecs);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
+    const Eigen::Vector3d normal = es.eigenvectors().col(0);   // 최소 고유값
 
-    // Normal = eigenvector for smallest eigenvalue (index 0 after ascending sort)
-    double na = evecs[0][0], nb = evecs[1][0], nc = evecs[2][0];
+    const double nc = normal(2);
     if (std::abs(nc) < 1e-12) return {};
-
-    double a = -na/nc, b = -nb/nc;
-    double c = cz - a*cx - b*cy;
-
+    const double a = -normal(0) / nc, b = -normal(1) / nc;
+    const double c = cz - a * cx - b * cy;
     return { a, b, c, true, static_cast<int>(pts.size()) };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  jacobi3 — 3×3 대칭 행렬 Jacobi 고유값 분해
-//  결과: evals (오름차순), evecs (열 = 고유벡터)
-// ─────────────────────────────────────────────────────────────────────
-void PlaneFitTool::jacobi3(double A[3][3], double evals[3], double evecs[3][3]) {
-    double M[3][3];
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            M[i][j]     = A[i][j];
-            evecs[i][j] = (i == j) ? 1.0 : 0.0;
-        }
-    }
-
-    for (int iter = 0; iter < 100; ++iter) {
-        int p = 0, q = 1;
-        double maxVal = std::abs(M[0][1]);
-        if (std::abs(M[0][2]) > maxVal) { maxVal = std::abs(M[0][2]); p=0; q=2; }
-        if (std::abs(M[1][2]) > maxVal) { maxVal = std::abs(M[1][2]); p=1; q=2; }
-        if (maxVal < 1e-14) break;
-
-        double theta = (M[q][q] - M[p][p]) / (2.0 * M[p][q]);
-        double t     = (theta >= 0 ? 1.0 : -1.0)
-                       / (std::abs(theta) + std::sqrt(1.0 + theta*theta));
-        double c2 = 1.0 / std::sqrt(1.0 + t*t);
-        double s2 = t * c2;
-
-        M[p][p] -= t * M[p][q];
-        M[q][q] += t * M[p][q];
-        M[p][q] = M[q][p] = 0.0;
-
-        for (int r = 0; r < 3; ++r) {
-            if (r == p || r == q) continue;
-            double Mrp = c2 * M[r][p] - s2 * M[r][q];
-            double Mrq = s2 * M[r][p] + c2 * M[r][q];
-            M[r][p] = M[p][r] = Mrp;
-            M[r][q] = M[q][r] = Mrq;
-        }
-        for (int r = 0; r < 3; ++r) {
-            double Vp = c2 * evecs[r][p] - s2 * evecs[r][q];
-            double Vq = s2 * evecs[r][p] + c2 * evecs[r][q];
-            evecs[r][p] = Vp;
-            evecs[r][q] = Vq;
-        }
-    }
-
-    // Sort ascending by eigenvalue
-    int idx[3] = {0, 1, 2};
-    double ev[3] = { M[0][0], M[1][1], M[2][2] };
-    for (int i = 0; i < 2; ++i)
-        for (int j = 0; j < 2-i; ++j)
-            if (ev[idx[j]] > ev[idx[j+1]]) std::swap(idx[j], idx[j+1]);
-
-    for (int i = 0; i < 3; ++i) evals[i] = ev[idx[i]];
-
-    double tmp[3][3];
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            tmp[i][j] = evecs[i][idx[j]];
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            evecs[i][j] = tmp[i][j];
 }
 
 } // namespace vision

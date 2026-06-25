@@ -61,8 +61,12 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     m_result.valid   = true;
     m_result.allPass = allPass;
 
-    // 평면 정보를 그대로 다음 노드로 전달
-    return { ToolStatus::Ok, "", std::make_shared<VisionData>(*input) };
+    // 출력: 측정된 높이값 배열을 첨부 (+ 입력 zmap/plane은 미리보기/체인용으로 통과)
+    auto out = std::make_shared<VisionData>(*input);
+    out->heights = std::make_shared<std::vector<double>>();
+    out->heights->reserve(m_result.measures.size());
+    for (const auto& m : m_result.measures) out->heights->push_back(m.distance);
+    return { ToolStatus::Ok, "", out };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -84,11 +88,21 @@ HeightFromPlaneTool::extractPoints(const ZMap& map,
     std::vector<Pt3> pts;
     pts.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0));
 
-    for (int col = x0; col < x1; ++col)
-        for (int row = y0; row < y1; ++row)
-            if (map.valid(col, row))
-                pts.push_back({ map.xMm(col), map.yMm(row),
-                                static_cast<double>(map.zMm(col, row)) });
+    // 원형(타원) ROI면 내접 타원 내부 픽셀만
+    const double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
+    const double rx = std::max(1.0, (x1 - x0) * 0.5), ry = std::max(1.0, (y1 - y0) * 0.5);
+
+    // row-major 순회 (data가 [row*width+col] 이므로 캐시 효율적)
+    for (int row = y0; row < y1; ++row)
+        for (int col = x0; col < x1; ++col) {
+            if (!map.valid(col, row)) continue;
+            if (roi.isCircle) {
+                double nx = (col - cx) / rx, ny = (row - cy) / ry;
+                if (nx * nx + ny * ny > 1.0) continue;
+            }
+            pts.push_back({ map.xMm(col), map.yMm(row),
+                            static_cast<double>(map.zMm(col, row)) });
+        }
     return pts;
 }
 
@@ -114,15 +128,16 @@ HeightFromPlaneTool::aggregate(const std::vector<Pt3>& pts) const {
         return { sx / n, sy / n, sz / n };
     }
     case HeightFromPlaneParams::Aggregation::HighTail: {
-        std::vector<Pt3> sorted = pts;
-        std::sort(sorted.begin(), sorted.end(),
-                  [](const Pt3& a, const Pt3& b){ return a[2] < b[2]; });
+        std::vector<Pt3> buf = pts;
         int n = std::max(1, static_cast<int>(
-            std::ceil(sorted.size() * m_params.highTailPct / 100.f)));
-        int start = static_cast<int>(sorted.size()) - n;
+            std::ceil(buf.size() * m_params.highTailPct / 100.f)));
+        int start = static_cast<int>(buf.size()) - n;
+        // 상위 n개만 필요 → nth_element로 부분선택 (O(N))
+        std::nth_element(buf.begin(), buf.begin() + start, buf.end(),
+                         [](const Pt3& a, const Pt3& b){ return a[2] < b[2]; });
         double sx = 0, sy = 0, sz = 0;
-        for (int i = start; i < static_cast<int>(sorted.size()); ++i) {
-            sx += sorted[i][0]; sy += sorted[i][1]; sz += sorted[i][2];
+        for (int i = start; i < static_cast<int>(buf.size()); ++i) {
+            sx += buf[i][0]; sy += buf[i][1]; sz += buf[i][2];
         }
         return { sx / n, sy / n, sz / n };
     }

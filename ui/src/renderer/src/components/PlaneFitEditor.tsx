@@ -14,13 +14,15 @@ interface Props extends PlaneFitSettings {
   preview?: string
   zMin?: number
   zMax?: number
+  resXMm?: number
+  resYMm?: number
   onChange: (next: PlaneFitSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'ref', label: 'Reference' }]
 
 export default function PlaneFitEditor(props: Props) {
-  const { rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, preview, zMin, zMax, onChange } = props
+  const { rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, preview, zMin, zMax, resXMm, resYMm, onChange } = props
 
   const emit = (patch: Partial<PlaneFitSettings>) =>
     onChange({ rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, ...patch })
@@ -33,6 +35,8 @@ export default function PlaneFitEditor(props: Props) {
         preview={preview}
         zMin={zMin}
         zMax={zMax}
+        resXMm={resXMm}
+        resYMm={resYMm}
         onChange={r => emit({ rois: r })}
       />
 
@@ -61,9 +65,9 @@ export default function PlaneFitEditor(props: Props) {
 
       <div className="param-section">3D 뷰</div>
       <div className="param-row">
-        <span className="param-label">최대 포인트 수</span>
-        <input className="param-input" type="number" step="10000" min="1000" value={maxCloudPoints}
-          onChange={e => emit({ maxCloudPoints: parseInt(e.target.value) || 1000 })} />
+        <span className="param-label">최대 포인트 수 (≤50만)</span>
+        <input className="param-input" type="number" step="10000" min="1000" max="500000" value={maxCloudPoints}
+          onChange={e => emit({ maxCloudPoints: Math.min(500000, parseInt(e.target.value) || 1000) })} />
       </div>
     </div>
   )

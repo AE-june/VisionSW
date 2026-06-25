@@ -2,6 +2,8 @@ import { useState, useRef, useCallback } from 'react'
 import ParamPanel from './ParamPanel'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
+import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
+import { LineCenterOverlay, ScanArrow } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
 import type { Roi } from './RoiCanvas'
@@ -26,8 +28,13 @@ interface NodeResult {
   cloud?: [number, number, number][]
   // HeightFromPlane
   measures?: HeightMeasure[]; allPass?: boolean
-  // ZMap 실제 z 범위
+  // LineCenter
+  cx?: number; cy?: number; cxMm?: number; cyMm?: number; angleDeg?: number; pointCount?: number
+  imgW?: number; imgH?: number
+  // ZMap 실제 z 범위 + 분해능
   zMin?: number; zMax?: number
+  xResMm?: number; yResMm?: number
+  elapsedMs?: number
 }
 
 interface Props {
@@ -39,11 +46,16 @@ interface Props {
   upstreamPreview?: string
   upstreamZMin?: number
   upstreamZMax?: number
+  upstreamResX?: number
+  upstreamResY?: number
+  width: number
+  onWidthChange: (w: number) => void
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
+  onRun?: (nodeId: string) => void
   onClose: () => void
 }
 
-function ResultView({ toolType, result, rois }: { toolType: string; result?: NodeResult; rois?: Roi[] }) {
+function ResultView({ toolType, result, rois, scanDir }: { toolType: string; result?: NodeResult; rois?: Roi[]; scanDir?: string }) {
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
@@ -53,6 +65,18 @@ function ResultView({ toolType, result, rois }: { toolType: string; result?: Nod
   // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이
   const measureRois = (rois ?? []).filter(r => r.type === 'measure')
 
+  // LineCenter: 검색 ROI(읽기전용) 표시 + 스캔방향 화살표 + 찾은 라인/중심 오버레이
+  const searchRois = (rois ?? []).filter(r => r.type === 'search')
+  const lineOverlay = toolType === 'LineCenter' && result.imgW
+    ? <>
+        <ScanArrow roi={searchRois[0]} scanDir={scanDir ?? 'lr'} imgW={result.imgW} imgH={result.imgH!} />
+        {result.cx !== undefined && (
+          <LineCenterOverlay cx={result.cx} cy={result.cy!} angleDeg={result.angleDeg ?? 0}
+            imgW={result.imgW} imgH={result.imgH!} roi={searchRois[0]} />
+        )}
+      </>
+    : undefined
+
   return (
     <div className="node-result-view">
       {result.preview && (
@@ -61,8 +85,9 @@ function ResultView({ toolType, result, rois }: { toolType: string; result?: Nod
             preview={result.preview}
             zMin={zMin}
             zMax={zMax}
-            rois={toolType === 'HeightMeasure' ? measureRois : undefined}
+            rois={toolType === 'HeightMeasure' ? measureRois : toolType === 'LineCenter' ? searchRois : undefined}
             roiTypeLabel={() => 'ROI'}
+            overlay={lineOverlay}
             overlayFor={(_roi, idx) => {
               const m = result.measures?.[idx]
               return m ? (
@@ -99,6 +124,27 @@ function ResultView({ toolType, result, rois }: { toolType: string; result?: Nod
         />
       )}
 
+      {toolType === 'LineCenter' && result.cx !== undefined && (
+        <div className="node-result-measures">
+          <div className="node-result-row">
+            <span className="node-result-label">중심 (px)</span>
+            <span className="node-result-val">({result.cx.toFixed(1)}, {result.cy!.toFixed(1)})</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">중심 (mm)</span>
+            <span className="node-result-val">({result.cxMm!.toFixed(3)}, {result.cyMm!.toFixed(3)})</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">각도</span>
+            <span className="node-result-val">{result.angleDeg!.toFixed(2)}°</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">전경 픽셀</span>
+            <span className="node-result-val">{result.pointCount}</span>
+          </div>
+        </div>
+      )}
+
       {toolType === 'HeightMeasure' && result.measures && result.measures.length > 0 && (
         <div className="node-result-measures">
           {result.measures.map((m, i) => (
@@ -117,9 +163,8 @@ function ResultView({ toolType, result, rois }: { toolType: string; result?: Nod
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, onParamChange, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, width, onWidthChange, onParamChange, onRun, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>('params')
-  const [width, setWidth] = useState(280)
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
 
   const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -129,7 +174,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
     const onMove = (ev: MouseEvent) => {
       if (!dragStartRef.current) return
       const dx = dragStartRef.current.mx - ev.clientX   // drag left = wider
-      setWidth(Math.max(220, Math.min(600, dragStartRef.current.w + dx)))
+      onWidthChange(Math.max(220, Math.min(600, dragStartRef.current.w + dx)))
     }
     const onUp = () => {
       dragStartRef.current = null
@@ -138,14 +183,19 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [width])
+  }, [width, onWidthChange])
 
   return (
     <div className="node-panel" style={{ width }}>
       <div className="node-panel-resize-handle" onMouseDown={onResizeMouseDown} />
       <div className="node-panel-header">
         <span>{label}</span>
-        <button className="param-close" onClick={onClose}>✕</button>
+        <span className="node-panel-header-actions">
+          {onRun && (
+            <button className="node-panel-run" title="이 노드 실행" onClick={() => onRun(nodeId)}>▶ 실행</button>
+          )}
+          <button className="param-close" onClick={onClose}>✕</button>
+        </span>
       </div>
 
       <div className="node-panel-tabs">
@@ -163,8 +213,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
         </button>
       </div>
 
-      {tab === 'params' && (
-        <div className="node-panel-body">
+      <div className="node-panel-body" style={{ display: tab === 'params' ? undefined : 'none' }}>
           {toolType === 'PlaneFit' ? (
             <PlaneFitEditor
               rois={(params.rois as PlaneFitROI[]) ?? []}
@@ -175,7 +224,24 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
               zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
               onChange={(next) => onParamChange(nodeId, { ...params, ...next })}
+            />
+          ) : toolType === 'LineCenter' ? (
+            <LineCenterEditor
+              rois={(params.rois as Roi[]) ?? []}
+              threshold={(params.threshold as number) ?? 1}
+              scanDir={(params.scanDir as string) ?? 'lr'}
+              polarity={(params.polarity as string) ?? 'd2l'}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              onChange={(next: LineCenterSettings) =>
+                onParamChange(nodeId, { ...params, ...next })
+              }
             />
           ) : toolType === 'HeightMeasure' ? (
             <HeightFromPlaneEditor
@@ -188,6 +254,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
               zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
@@ -203,14 +271,11 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               embedded
             />
           )}
-        </div>
-      )}
+      </div>
 
-      {tab === 'result' && (
-        <div className="node-panel-body">
-          <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]} />
-        </div>
-      )}
+      <div className="node-panel-body" style={{ display: tab === 'result' ? undefined : 'none' }}>
+        <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]} scanDir={params.scanDir as string} />
+      </div>
     </div>
   )
 }

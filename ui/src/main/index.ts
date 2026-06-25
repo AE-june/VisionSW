@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join } from 'path'
+import { join, basename } from 'path'
+import { writeFile, readFile, readdir } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { startEngine, stopEngine, registerEngineIpc, engineEvents, isEngineReady } from './engine'
 
@@ -57,6 +58,41 @@ ipcMain.handle('dialog:openFile', async (_event, filters: Electron.FileFilter[])
     filters: filters ?? [{ name: 'All Files', extensions: ['*'] }]
   })
   return result.canceled ? null : result.filePaths[0]
+})
+
+// 저장 다이얼로그 (폴더 선택 + 파일명 입력)
+ipcMain.handle('dialog:saveFile', async (_event, filters: Electron.FileFilter[]) => {
+  const result = await dialog.showSaveDialog({
+    filters: filters ?? [{ name: 'All Files', extensions: ['*'] }]
+  })
+  return result.canceled ? null : result.filePath
+})
+
+// 폴더검사: 폴더 선택
+ipcMain.handle('dialog:openFolder', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+// 폴더검사: 폴더 내 이미지 파일 목록 (자연 정렬)
+ipcMain.handle('folder:listImages', async (_event, dir: string) => {
+  const exts = new Set(['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'])
+  const entries = await readdir(dir, { withFileTypes: true })
+  const files = entries
+    .filter(e => e.isFile() && exts.has(e.name.slice(e.name.lastIndexOf('.')).toLowerCase()))
+    .map(e => e.name)
+  // 자연 정렬 (img2 < img10)
+  files.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+  return files.map(name => ({ name: basename(name), path: join(dir, name) }))
+})
+
+// 레시피 저장/불러오기 (텍스트 파일 읽기/쓰기)
+ipcMain.handle('recipe:save', async (_event, filePath: string, content: string) => {
+  await writeFile(filePath, content, 'utf-8')
+  return true
+})
+ipcMain.handle('recipe:load', async (_event, filePath: string) => {
+  return await readFile(filePath, 'utf-8')
 })
 
 app.whenReady().then(() => {

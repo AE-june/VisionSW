@@ -4,11 +4,13 @@ interface Props {
   onRun: () => void
   onStop: () => void
   onToggleResult: () => void
-  onOpenFile: () => void
+  onSaveRecipe: () => void
+  onLoadRecipe: () => void
   onRestartEngine: () => void
+  onOpenFolderInspect: () => void
 }
 
-export default function Toolbar({ running, engineConnected, onRun, onStop, onToggleResult, onOpenFile, onRestartEngine }: Props) {
+export default function Toolbar({ running, engineConnected, onRun, onStop, onToggleResult, onSaveRecipe, onLoadRecipe, onRestartEngine, onOpenFolderInspect }: Props) {
   return (
     <div className="toolbar">
       <span className="app-title">VisionSW</span>
@@ -19,9 +21,10 @@ export default function Toolbar({ running, engineConnected, onRun, onStop, onTog
       >
         {running ? '■ Stop' : '▶ Run'}
       </button>
+      <button className="btn-folder" title="폴더검사 / 연속검사" onClick={onOpenFolderInspect}>📁 폴더검사</button>
       <div className="toolbar-divider" />
-      <button className="btn-icon" title="레시피 열기" onClick={onOpenFile}>📂</button>
-      <button className="btn-icon" title="레시피 저장">💾</button>
+      <button className="btn-icon" title="레시피 열기" onClick={onLoadRecipe}>📂</button>
+      <button className="btn-icon" title="레시피 저장" onClick={onSaveRecipe}>💾</button>
       <div className="toolbar-spacer" />
       <span className="status-item" style={{ fontSize: 11, marginRight: 6 }}>
         {engineConnected

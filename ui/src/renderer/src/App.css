@@ -78,6 +78,64 @@
 }
 .btn-icon:hover { background: #2e2e2e; color: #fff; }
 
+.btn-folder {
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.btn-folder:hover { background: #2e2e2e; color: #fff; border-color: #00bcd4; }
+
+.zl-idx { display: flex; align-items: center; gap: 6px; }
+.zl-idx-cur { color: #ccc; font-size: 11px; font-family: monospace; min-width: 44px; text-align: center; }
+
+/* ── 폴더검사 모달 ── */
+.fi-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+}
+.fi-panel {
+  width: 520px; max-width: 92vw; max-height: 86vh;
+  background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.fi-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; font-size: 13px; font-weight: 600; color: #ddd;
+  background: #1c1c1c; border-bottom: 1px solid #2e2e2e;
+}
+.fi-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.fi-row { display: flex; align-items: center; gap: 10px; }
+.fi-sub { color: #888; font-size: 11px; }
+.fi-folder {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #bbb; font-size: 11px; font-family: monospace;
+}
+.fi-check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #ccc; }
+.fi-warn { color: #ffb74d; font-size: 11px; }
+.fi-progress { color: #aaa; font-size: 11px; font-family: monospace; }
+.fi-bar { height: 6px; background: #2a2a2a; border-radius: 3px; overflow: hidden; }
+.fi-bar-fill { height: 100%; background: #00bcd4; transition: width 0.15s; }
+.fi-results { display: flex; flex-direction: column; border: 1px solid #2e2e2e; border-radius: 4px; }
+.fi-res-head, .fi-res-row {
+  display: grid; grid-template-columns: 1fr 70px 70px; gap: 6px;
+  padding: 3px 8px; font-size: 11px; align-items: center;
+}
+.fi-res-head { color: #888; background: #232323; border-bottom: 1px solid #2e2e2e; }
+.fi-res-scroll { max-height: 240px; overflow-y: auto; }
+.fi-res-row { border-bottom: 1px solid #242424; }
+.fi-res-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ccc; }
+.fi-res-pass { font-weight: 600; text-align: center; }
+.fi-res-pass.pass { color: #66bb6a; }
+.fi-res-pass.fail { color: #ef5350; }
+.fi-res-pass.err  { color: #ffb74d; }
+.fi-res-ms { text-align: right; color: #999; font-family: monospace; }
+
 .btn-panel {
   background: transparent;
   border: 1px solid #3a3a3a;
@@ -237,20 +295,27 @@
   background: #2a2a2a;
   color: #00bcd4;
 }
-.tool-node-body {
+/* 포트 행 — 핸들과 라벨을 같은 행에 정렬 */
+.tool-node-ports {
+  padding: 4px 0;
+}
+.port-row {
+  position: relative;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  min-height: 28px;
-  gap: 12px;
+  min-height: 22px;
 }
-.port-col {
+.port-slot {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  padding: 0 12px;
+  min-width: 0;
 }
-.port-col.left  { align-items: flex-start; }
-.port-col.right { align-items: flex-end; }
+.port-slot.right { margin-left: auto; }
+/* 핸들을 행 좌/우 끝, 수직 중앙에 */
+.port-row .react-flow__handle.th-in  { left: 0;  top: 50%; }
+.port-row .react-flow__handle.th-out { right: 0; top: 50%; }
 .port-label {
   font-size: 10px;
   opacity: 0.85;
@@ -259,14 +324,12 @@
 
 /* React Flow 핸들 */
 .react-flow__handle {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   cursor: crosshair;
 }
-.react-flow__handle:hover {
-  transform: scale(1.3);
-}
+/* 마우스 오버 시 커지는 효과 제거 */
 
 /* ── 노드 인라인 결과 ── */
 .tool-node-result {
@@ -345,6 +408,12 @@
   background: #1c1c1c;
   flex-shrink: 0;
 }
+.node-panel-header-actions { display: flex; align-items: center; gap: 6px; }
+.node-panel-run {
+  border: 1px solid #2e7d32; background: #1b3a1c; color: #7fd186;
+  font-size: 11px; padding: 2px 8px; border-radius: 3px; cursor: pointer;
+}
+.node-panel-run:hover { background: #245026; color: #a5e6aa; }
 .node-panel-tabs {
   display: flex;
   border-bottom: 1px solid #2e2e2e;
@@ -445,6 +514,39 @@
   font-style: italic;
   text-align: center;
   margin-top: 6px;
+}
+
+.status-time {
+  color: #ffb74d;
+  font-family: monospace;
+}
+
+/* ── 노드 포트/연결 hover ───────────────────────────────────── */
+/* 연결 드래그 중/엣지의 점선 흐름(dashdraw) 애니메이션 제거 */
+.react-flow__connection path,
+.react-flow__connectionline path,
+.react-flow__edge path,
+.react-flow__edge.animated path {
+  animation: none !important;
+  stroke-dasharray: none !important;
+}
+.react-flow__handle.connectingfrom,
+.react-flow__handle.connectingto,
+.react-flow__handle.connectionindicator {
+  animation: none !important;
+}
+/* 포트 라벨 hover 강조 */
+.port-label-hover {
+  background: rgba(255,255,255,0.18);
+  border-radius: 3px;
+  font-weight: bold;
+  filter: brightness(1.4);
+}
+/* 엣지 hover/선택 시 선 강조 */
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #fff;
+  stroke-width: 3;
 }
 .node-result-badge {
   margin: 8px 12px 4px;
@@ -818,6 +920,21 @@
 .pfe-roi-handle.h-sw { left: 0;    top: 100%; cursor: nesw-resize; }
 .pfe-roi-handle.h-w  { left: 0;    top: 50%;  cursor: ew-resize; }
 
+/* 회전 핸들 — 박스 위쪽 바깥 중앙 */
+.pfe-roi-rot {
+  position: absolute;
+  left: 50%; top: -18px;
+  width: 11px; height: 11px;
+  transform: translate(-50%, -50%);
+  background: #ffca28;
+  border: 1px solid #333;
+  border-radius: 50%;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.pfe-roi-editable:hover .pfe-roi-rot { opacity: 0.95; }
+
 .pfe-roi-label {
   position: absolute;
   left: 0;
@@ -837,19 +954,22 @@
 
 .pfe-roi-del {
   position: absolute;
-  right: 0;
-  bottom: 100%;          /* 박스 위쪽 바깥 (라벨 반대편) */
-  margin-bottom: 2px;
-  font-size: 11px;
-  line-height: 1;
-  padding: 1px 4px;
+  top: 0; right: 0;
+  transform: translate(50%, -50%);   /* 박스 우상단 모서리 배지 — 누르기 쉬운 위치 */
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  padding: 0;
   border: none;
-  background: rgba(0,0,0,0.7);
-  color: #aaa;
+  background: rgba(0,0,0,0.8);
+  color: #ddd;
   cursor: pointer;
-  border-radius: 2px;
+  border-radius: 50%;
+  opacity: 0;                 /* 기본 숨김 — hover 시에만 */
+  transition: opacity 0.1s;   /* pointer-events 유지 → 배지까지 도달/클릭 가능 */
 }
-.pfe-roi-del:hover { color: #f44; background: rgba(0,0,0,0.9); }
+.pfe-roi:hover .pfe-roi-del { opacity: 1; }
+.pfe-roi-del:hover { color: #fff; background: #f44; }
 
 .pfe-colormap-bar {
   display: flex;
@@ -867,9 +987,16 @@
   background: linear-gradient(to right,
     #0000ff, #00bcd4, #00e676, #ffeb3b, #ff5252);
 }
-.pfe-cm-sliders { display: flex; align-items: center; gap: 4px; flex: 1; }
-.pfe-cm-sliders input[type=range] { flex: 1; min-width: 40px; }
-.pfe-cm-range-label { font-family: monospace; white-space: nowrap; }
+/* insworks 스타일: 위 슬라이더(상한) / 컬러바 / 아래 슬라이더(하한) 세로 스택 */
+.pfe-cm-stack { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.pfe-cm-srow { display: flex; align-items: center; gap: 6px; }
+.pfe-cm-srow input[type=range] { flex: 1; min-width: 40px; }
+.pfe-cm-stack .pfe-cm-gradient { flex: 0 0 auto; width: 100%; height: 10px; }
+.pfe-cm-num {
+  flex: 0 0 56px; width: 56px; box-sizing: border-box;
+  background: #1a1a1a; border: 1px solid #333; color: #ddd;
+  font-size: 10px; padding: 2px 3px; border-radius: 2px; font-family: monospace;
+}
 
 .pfe-roi-summary {
   display: flex;
@@ -879,6 +1006,33 @@
 }
 .pfe-roi-count.ref     { color: #00bcd4; }
 .pfe-roi-count.measure { color: #ff5722; }
+
+/* ROI 좌표 입력 폼 */
+.roi-coord-list { margin-top: 10px; font-size: 11px; }
+.roi-coord-head {
+  display: flex; justify-content: space-between; align-items: center;
+  color: #bbb; margin-bottom: 5px; font-weight: bold;
+}
+.roi-unit-toggle { display: inline-flex; gap: 3px; }
+.roi-unit-toggle .pfe-btn { padding: 1px 7px; }
+.roi-coord-row {
+  display: flex; align-items: center; gap: 4px;
+  margin-bottom: 3px;
+}
+.roi-coord-idx { color: #888; text-align: center; flex: 0 0 16px; }
+.roi-field { display: flex; align-items: center; gap: 2px; flex: 1 1 0; min-width: 0; }
+.roi-field-label { color: #888; font-size: 10px; flex: 0 0 auto; }
+.roi-coord-row input {
+  width: 100%; min-width: 0; box-sizing: border-box;
+  background: #1a1a1a; border: 1px solid #333; color: #ddd;
+  font-size: 10px; padding: 2px 3px; border-radius: 2px;
+}
+.roi-coord-row .param-select { font-size: 10px; padding: 1px; }
+.roi-shape-sel { flex: 0 0 auto; }
+.roi-coord-del {
+  border: none; background: none; color: #777; cursor: pointer; font-size: 12px;
+}
+.roi-coord-del:hover { color: #f44; }
 .pfe-drawing-hint {
   margin-left: auto;
   color: #555;

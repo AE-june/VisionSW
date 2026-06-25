@@ -5,6 +5,8 @@
 #include "LineFitHeightMeasure.h"
 #include "PlaneFitTool.h"
 #include "HeightFromPlaneTool.h"
+#include "CsvWriterTool.h"
+#include "LineCenterTool.h"
 #include "IZMapLoader.h"
 #include "VisionData.h"
 #include "ZMap.h"
@@ -210,6 +212,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 roi.yPct = r.value("yPct", 0.f);
                 roi.wPct = r.value("wPct", 1.f);
                 roi.hPct = r.value("hPct", 1.f);
+                roi.isCircle = (r.value("shape", std::string("rect")) == "circle");
                 params.measureRois.push_back(roi);
             }
         }
@@ -225,6 +228,33 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.toleranceMm  = p.value("toleranceMm",  0.05f);
 
         return std::make_shared<HeightFromPlaneTool>(params);
+    }
+    if (type == "LineCenter") {
+        LineCenterParams params;
+        // rois 배열의 첫 ROI를 검색 영역으로 사용 (xPct/yPct/wPct/hPct)
+        if (p.contains("rois") && p["rois"].is_array() && !p["rois"].empty()) {
+            const auto& r = p["rois"][0];
+            params.xPct = r.value("xPct", 0.f);
+            params.yPct = r.value("yPct", 0.f);
+            params.wPct = r.value("wPct", 1.f);
+            params.hPct = r.value("hPct", 1.f);
+            params.angleDeg = r.value("angleDeg", 0.f);
+        }
+        std::string sdir = p.value("scanDir", "lr");
+        if      (sdir == "rl") params.scanDir = ScanDir::Rl;
+        else if (sdir == "tb") params.scanDir = ScanDir::Tb;
+        else if (sdir == "bt") params.scanDir = ScanDir::Bt;
+        else                   params.scanDir = ScanDir::Lr;
+        params.polarity  = (p.value("polarity", "d2l") == "l2d")
+                         ? Polarity::LightToDark : Polarity::DarkToLight;
+        params.threshold = p.value("threshold", 1.f);
+        return std::make_shared<LineCenterTool>(params);
+    }
+    if (type == "CsvWriter") {
+        CsvWriterParams params;
+        params.path = p.value("path", "");
+        params.label = p.value("label", "");
+        return std::make_shared<CsvWriterTool>(params);
     }
     if (type == "ThicknessMeasure") {
         ThicknessMeasure::Params params;
