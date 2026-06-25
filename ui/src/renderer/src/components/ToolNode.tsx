@@ -187,7 +187,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
                     style={{ color: PORT_COLORS[inT] }}
                     onMouseEnter={() => setHoveredPort(`input-${i}`)}
                     onMouseLeave={() => setHoveredPort(null)}
-                  >{inT}</span>
+                  >{def.inputLabels?.[i] ?? inT}</span>
                 )}
               </span>
               <span className="port-slot right">
@@ -197,7 +197,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
                     style={{ color: PORT_COLORS[outT] }}
                     onMouseEnter={() => setHoveredPort(`output-${i}`)}
                     onMouseLeave={() => setHoveredPort(null)}
-                  >{outT}</span>
+                  >{def.outputLabels?.[i] ?? outT}</span>
                 )}
               </span>
               {outT !== undefined && (

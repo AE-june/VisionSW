@@ -171,7 +171,11 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
                 if (o->plane   && !merged->plane)   merged->plane   = o->plane;
                 if (o->heights && !merged->heights) merged->heights = o->heights;
-                if (o->point   && !merged->point)   merged->point   = o->point;
+                if (o->points) {   // 여러 입력의 기준점들을 모두 이어붙임
+                    if (!merged->points) merged->points = std::make_shared<std::vector<RefPoint>>();
+                    merged->points->insert(merged->points->end(), o->points->begin(), o->points->end());
+                }
+                if (o->origin  && !merged->origin)  merged->origin  = o->origin;
                 if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
             }
             if (any) inputData = merged;
@@ -248,13 +252,16 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         if (ns.type == "LineCenter") {
             auto* m = dynamic_cast<LineCenterTool*>(tool.get());
             if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["cx"]         = r.cx;
-                jr["cy"]         = r.cy;
-                jr["cxMm"]       = r.cxMm;
-                jr["cyMm"]       = r.cyMm;
-                jr["angleDeg"]   = r.angleDeg;
-                jr["pointCount"] = r.pointCount;
+                json arr = json::array();
+                for (const auto& l : m->lastResult().lines) {
+                    arr.push_back({
+                        {"cx", l.cx}, {"cy", l.cy},
+                        {"cxMm", l.cxMm}, {"cyMm", l.cyMm},
+                        {"angleDeg", l.angleDeg},
+                        {"roiIndex", l.roiIndex}, {"pointCount", l.pointCount}
+                    });
+                }
+                jr["lines"] = arr;
                 if (result.output && result.output->zmap) {
                     jr["imgW"] = result.output->zmap->width;
                     jr["imgH"] = result.output->zmap->height;

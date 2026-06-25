@@ -21,6 +21,7 @@ export interface Roi {
   wPct: number
   hPct: number
   angleDeg?: number           // 중심 기준 회전 (deg, 시계방향). 기본 0
+  polarity?: string           // LineCenter 전용: 에지 극성 'd2l'(흑→백) | 'l2d'(백→흑)
 }
 
 interface DrawState { startX: number; startY: number; curX: number; curY: number }
@@ -416,14 +417,20 @@ export default function ImageViewer({
             </div>
           )}
 
-          {overlay}
-
           {drawStyle && drawMode && (
             <div className={`pfe-roi pfe-roi-${drawMode} pfe-roi-drawing`}
               style={{ ...drawStyle, borderRadius: drawShape === 'circle' ? '50%' : undefined,
                 borderWidth: `${2 / zoom}px` }} />
           )}
         </div>
+
+        {/* 오버레이(라인/중심/화살표)도 scale 레이어 밖(화면 좌표)에 그려 확대해도 선명 */}
+        {overlay && (
+          <div style={{ position: 'absolute', left: pan.x, top: pan.y,
+            width: csize.w * zoom, height: csize.h * zoom, pointerEvents: 'none' }}>
+            {overlay}
+          </div>
+        )}
 
         {/* ROI는 scale 레이어 밖(화면 좌표)에 그려 항상 선명하게 — 테두리/글자 흐림 방지 */}
         <div className="pfe-roi-layer">

@@ -65,7 +65,18 @@ struct RefPoint {
     double cx = 0, cy = 0;       // 픽셀 단위 (col, row)
     double cxMm = 0, cyMm = 0;   // mm 단위
     double angleDeg = 0;         // 라인 방향 (주축 각도)
+    int    roiIndex = -1;        // 어느 검색 ROI에서 나왔는지
     bool   valid = false;
+};
+
+// ─────────────────────────────────────────────
+//  선택된 출력 좌표 — LineCenter 결과창에서 고른
+//  X(어느 라인의 x) / Y(어느 라인의 y). 좌표정렬 툴의 입력.
+// ─────────────────────────────────────────────
+struct OriginCoord {
+    double xPx = 0, yPx = 0;     // 픽셀
+    double xMm = 0, yMm = 0;     // mm
+    bool   hasX = false, hasY = false;
 };
 
 // ─────────────────────────────────────────────
@@ -77,7 +88,8 @@ struct VisionData {
     std::shared_ptr<ZMap>         zmap;
     std::shared_ptr<PlaneModel>   plane;        // fitted plane (PlaneFit → HeightMeasure)
     std::shared_ptr<std::vector<double>> heights; // 측정된 높이값 배열 (HeightMeasure 출력)
-    std::shared_ptr<RefPoint>     point;        // 검출된 기준점 (LineCenter → 좌표정렬)
+    std::shared_ptr<std::vector<RefPoint>> points; // 검출된 기준점들 (LineCenter)
+    std::shared_ptr<OriginCoord>  origin;        // 선택된 출력 좌표 X/Y (LineCenter → 좌표정렬)
     std::string                   sourceId;     // sensor / file origin
     int64_t                       timestampUs = 0;
 
@@ -86,7 +98,8 @@ struct VisionData {
     bool hasZMap()    const { return zmap  && !zmap->empty(); }
     bool hasPlane()   const { return plane && plane->valid; }
     bool hasHeights() const { return heights && !heights->empty(); }
-    bool hasPoint()   const { return point && point->valid; }
+    bool hasPoints()  const { return points && !points->empty(); }
+    bool hasOrigin()  const { return origin && (origin->hasX || origin->hasY); }
 };
 
 using VisionDataPtr = std::shared_ptr<VisionData>;

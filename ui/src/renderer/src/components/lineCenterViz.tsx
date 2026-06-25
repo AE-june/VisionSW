@@ -5,8 +5,8 @@ const svgStyle: React.CSSProperties = {
 }
 
 // 검색 ROI 내에서 찾은 라인과 중심점을 이미지 좌표계 위에 그림
-export function LineCenterOverlay({ cx, cy, angleDeg, imgW, imgH, roi }: {
-  cx: number; cy: number; angleDeg: number; imgW: number; imgH: number; roi?: Roi
+export function LineCenterOverlay({ cx, cy, angleDeg, imgW, imgH, roi, label }: {
+  cx: number; cy: number; angleDeg: number; imgW: number; imgH: number; roi?: Roi; label?: string
 }) {
   const rad = (angleDeg * Math.PI) / 180
   const dx = Math.cos(rad), dy = Math.sin(rad)
@@ -39,14 +39,20 @@ export function LineCenterOverlay({ cx, cy, angleDeg, imgW, imgH, roi }: {
       ;[x1, y1] = p(tmin);[x2, y2] = p(tmax)
     }
   }
-  const r = Math.max(2, Math.min(imgW, imgH) * 0.012)
+  const r = Math.max(2, Math.min(imgW, imgH) * 0.015)
+  const fs = Math.max(8, Math.min(imgW, imgH) * 0.035)
 
   return (
     <svg viewBox={`0 0 ${imgW} ${imgH}`} preserveAspectRatio="none" style={svgStyle}>
       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#00e676" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#ff5252" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-      <line x1={cx - r} y1={cy} x2={cx + r} y2={cy} stroke="#ff5252" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-      <line x1={cx} y1={cy - r} x2={cx} y2={cy + r} stroke="#ff5252" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+      {/* 중심: 십자가만 */}
+      <line x1={cx - r} y1={cy} x2={cx + r} y2={cy} stroke="#ff5252" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      <line x1={cx} y1={cy - r} x2={cx} y2={cy + r} stroke="#ff5252" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      {label && (
+        <text x={cx + r * 1.3} y={cy - r * 0.8} fill="#ff5252" fontSize={fs} fontWeight="bold"
+          stroke="#000" strokeWidth={fs * 0.18} paintOrder="stroke"
+          style={{ userSelect: 'none' }}>{label}</text>
+      )}
     </svg>
   )
 }

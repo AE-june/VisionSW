@@ -1,4 +1,4 @@
-export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Any'
+export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Point' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -6,6 +6,8 @@ export interface ToolDef {
   category: string
   inputs: PortType[]
   outputs: PortType[]
+  inputLabels?: string[]    // 포트 표시 라벨 (없으면 타입명)
+  outputLabels?: string[]
   defaultParams: Record<string, unknown>
 }
 
@@ -15,6 +17,7 @@ export const PORT_COLORS: Record<PortType, string> = {
   Heights:       '#ffc107',
   Image2D:       '#ff9800',
   PointCloud3D:  '#9c27b0',
+  Point:         '#ec407a',
   Any:           '#888',
 }
 
@@ -31,8 +34,8 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'LineCenter', label: 'Line Center', category: '정렬',
-    inputs: ['ZMap'], outputs: ['ZMap'],
-    defaultParams: { rois: [], threshold: 1, scanDir: 'lr', polarity: 'd2l' },
+    inputs: ['ZMap'], outputs: ['Point'],
+    defaultParams: { rois: [], threshold: 1, xRoi: 0, yRoi: 0 },
   },
   {
     type: 'NoiseFilter', label: 'Noise Filter', category: '필터',

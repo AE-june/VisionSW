@@ -22,24 +22,34 @@ enum class ScanDir { Lr, Rl, Tb, Bt };
 enum class Polarity { DarkToLight, LightToDark };
 
 struct LineCenterParams {
-    // 검색 ROI (이미지 전체 대비 %, RoiCanvas와 동일)
-    float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
-
-    // 검색 ROI 회전 (중심 기준, deg, 시계방향). 대각선 라인 검색용
-    float angleDeg = 0.f;
+    // 검색 ROI (이미지 전체 대비 %, RoiCanvas와 동일). 여러 개 → 여러 라인 검색.
+    // 에지 극성은 ROI마다 개별 지정.
+    struct ROI {
+        float xPct = 0, yPct = 0, wPct = 1, hPct = 1, angleDeg = 0;
+        Polarity polarity = Polarity::DarkToLight;
+    };
+    std::vector<ROI> rois;
 
     // 에지 캘리퍼: 스캔 방향으로 진행하며 임계값 교차점(에지)을 찾아 라인피팅
-    ScanDir  scanDir  = ScanDir::Lr;
-    Polarity polarity = Polarity::DarkToLight;
+    ScanDir  scanDir   = ScanDir::Lr;
     float    threshold = 1.f;   // 이진화 임계값 (raw count)
+
+    // 출력 좌표 선택: X출력은 xRoi 라인의 x, Y출력은 yRoi 라인의 y (ROI 인덱스)
+    int xRoi = 0;
+    int yRoi = 0;
 };
 
 struct LineCenterResult {
-    double cx = 0, cy = 0;       // 라인 중심 (픽셀: col, row)
-    double cxMm = 0, cyMm = 0;   // 라인 중심 (mm)
-    double angleDeg = 0;         // 라인 방향 (주축 각도, deg)
-    int    pointCount = 0;       // 전경 픽셀 수
-    bool   valid = false;
+    // 찾은 라인 하나
+    struct Line {
+        double cx = 0, cy = 0;       // 라인 중심 (픽셀: col, row)
+        double cxMm = 0, cyMm = 0;   // 라인 중심 (mm)
+        double angleDeg = 0;         // 라인 방향 (주축 각도, deg)
+        int    roiIndex = 0;         // 어느 검색 ROI에서 나왔는지
+        int    pointCount = 0;       // 에지점 수
+    };
+    std::vector<Line> lines;         // 찾은 모든 라인
+    bool   valid = false;            // 하나라도 찾으면 true
     std::string message;
 };
 
@@ -55,6 +65,10 @@ public:
 private:
     LineCenterParams m_params;
     LineCenterResult m_result;
+
+    // 단일 ROI에서 라인 검색 (찾으면 out 채우고 true)
+    bool findLine(const ZMap& map, const LineCenterParams::ROI& roi,
+                  LineCenterResult::Line& out) const;
 };
 
 } // namespace vision

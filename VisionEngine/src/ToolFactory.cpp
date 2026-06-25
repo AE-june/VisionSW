@@ -231,23 +231,28 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "LineCenter") {
         LineCenterParams params;
-        // rois 배열의 첫 ROI를 검색 영역으로 사용 (xPct/yPct/wPct/hPct)
-        if (p.contains("rois") && p["rois"].is_array() && !p["rois"].empty()) {
-            const auto& r = p["rois"][0];
-            params.xPct = r.value("xPct", 0.f);
-            params.yPct = r.value("yPct", 0.f);
-            params.wPct = r.value("wPct", 1.f);
-            params.hPct = r.value("hPct", 1.f);
-            params.angleDeg = r.value("angleDeg", 0.f);
+        // rois 배열 → 각각 검색 영역 (xPct/yPct/wPct/hPct/angleDeg)
+        if (p.contains("rois") && p["rois"].is_array()) {
+            for (const auto& r : p["rois"]) {
+                LineCenterParams::ROI roi;
+                roi.xPct = r.value("xPct", 0.f);
+                roi.yPct = r.value("yPct", 0.f);
+                roi.wPct = r.value("wPct", 1.f);
+                roi.hPct = r.value("hPct", 1.f);
+                roi.angleDeg = r.value("angleDeg", 0.f);
+                roi.polarity = (r.value("polarity", "d2l") == "l2d")
+                             ? Polarity::LightToDark : Polarity::DarkToLight;
+                params.rois.push_back(roi);
+            }
         }
         std::string sdir = p.value("scanDir", "lr");
         if      (sdir == "rl") params.scanDir = ScanDir::Rl;
         else if (sdir == "tb") params.scanDir = ScanDir::Tb;
         else if (sdir == "bt") params.scanDir = ScanDir::Bt;
         else                   params.scanDir = ScanDir::Lr;
-        params.polarity  = (p.value("polarity", "d2l") == "l2d")
-                         ? Polarity::LightToDark : Polarity::DarkToLight;
         params.threshold = p.value("threshold", 1.f);
+        params.xRoi = p.value("xRoi", 0);
+        params.yRoi = p.value("yRoi", 0);
         return std::make_shared<LineCenterTool>(params);
     }
     if (type == "CsvWriter") {

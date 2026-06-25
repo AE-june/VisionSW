@@ -3,7 +3,7 @@ import ParamPanel from './ParamPanel'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
-import { LineCenterOverlay, ScanArrow } from './lineCenterViz'
+import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
 import type { Roi } from './RoiCanvas'
@@ -28,8 +28,8 @@ interface NodeResult {
   cloud?: [number, number, number][]
   // HeightFromPlane
   measures?: HeightMeasure[]; allPass?: boolean
-  // LineCenter
-  cx?: number; cy?: number; cxMm?: number; cyMm?: number; angleDeg?: number; pointCount?: number
+  // LineCenter — 찾은 모든 라인
+  lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number }[]
   imgW?: number; imgH?: number
   // ZMap 실제 z 범위 + 분해능
   zMin?: number; zMax?: number
@@ -55,7 +55,11 @@ interface Props {
   onClose: () => void
 }
 
-function ResultView({ toolType, result, rois, scanDir }: { toolType: string; result?: NodeResult; rois?: Roi[]; scanDir?: string }) {
+function ResultView({ toolType, result, rois, nodeId, params, onParamChange }: {
+  toolType: string; result?: NodeResult; rois?: Roi[]
+  nodeId: string; params: Record<string, unknown>
+  onParamChange: (nodeId: string, params: Record<string, unknown>) => void
+}) {
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
@@ -65,16 +69,15 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
   // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이
   const measureRois = (rois ?? []).filter(r => r.type === 'measure')
 
-  // LineCenter: 검색 ROI(읽기전용) 표시 + 스캔방향 화살표 + 찾은 라인/중심 오버레이
+  // LineCenter 결과: 찾은 라인 + 중심(십자가)만 표시 (ROI 박스/화살표 없음)
+  // 라인을 검색 ROI로 클리핑하기 위해 roiIndex로 해당 ROI 참조 (그리진 않음)
   const searchRois = (rois ?? []).filter(r => r.type === 'search')
-  const lineOverlay = toolType === 'LineCenter' && result.imgW
-    ? <>
-        <ScanArrow roi={searchRois[0]} scanDir={scanDir ?? 'lr'} imgW={result.imgW} imgH={result.imgH!} />
-        {result.cx !== undefined && (
-          <LineCenterOverlay cx={result.cx} cy={result.cy!} angleDeg={result.angleDeg ?? 0}
-            imgW={result.imgW} imgH={result.imgH!} roi={searchRois[0]} />
-        )}
-      </>
+  const lineOverlay = toolType === 'LineCenter' && result.imgW && result.lines
+    ? <>{result.lines.map((l, i) => (
+        <LineCenterOverlay key={i} cx={l.cx} cy={l.cy} angleDeg={l.angleDeg}
+          imgW={result.imgW!} imgH={result.imgH!} roi={searchRois[l.roiIndex]}
+          label={`${l.roiIndex + 1}`} />
+      ))}</>
     : undefined
 
   return (
@@ -85,7 +88,7 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
             preview={result.preview}
             zMin={zMin}
             zMax={zMax}
-            rois={toolType === 'HeightMeasure' ? measureRois : toolType === 'LineCenter' ? searchRois : undefined}
+            rois={toolType === 'HeightMeasure' ? measureRois : undefined}
             roiTypeLabel={() => 'ROI'}
             overlay={lineOverlay}
             overlayFor={(_roi, idx) => {
@@ -124,26 +127,50 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
         />
       )}
 
-      {toolType === 'LineCenter' && result.cx !== undefined && (
-        <div className="node-result-measures">
-          <div className="node-result-row">
-            <span className="node-result-label">중심 (px)</span>
-            <span className="node-result-val">({result.cx.toFixed(1)}, {result.cy!.toFixed(1)})</span>
+      {toolType === 'LineCenter' && searchRois.length > 0 && (() => {
+        const found = result.lines ?? []
+        const xRoi = (params.xRoi as number) ?? 0
+        const yRoi = (params.yRoi as number) ?? 0
+        const xLine = found.find(l => l.roiIndex === xRoi)
+        const yLine = found.find(l => l.roiIndex === yRoi)
+        const setSel = (key: 'xRoi' | 'yRoi', v: number) => onParamChange(nodeId, { ...params, [key]: v })
+        return (
+          <div className="node-result-measures">
+            {searchRois.map((_r, i) => {
+              const l = found.find(ln => ln.roiIndex === i)
+              return (
+                <div className="node-result-row" key={i}>
+                  <span className="node-result-label">라인 {i + 1}</span>
+                  <span className={`node-result-val ${l ? '' : 'fail-val'}`}>
+                    {l ? `(${l.cxMm.toFixed(3)}, ${l.cyMm.toFixed(3)}) mm · ${l.angleDeg.toFixed(1)}°` : '검색 실패'}
+                  </span>
+                </div>
+              )
+            })}
+
+            <div className="param-section">출력 좌표 선택</div>
+            <div className="param-row">
+              <span className="param-label">X ← 라인</span>
+              <select className="param-select" value={xRoi}
+                onChange={e => setSel('xRoi', parseInt(e.target.value))}>
+                {found.map(l => <option key={l.roiIndex} value={l.roiIndex}>라인 {l.roiIndex + 1}</option>)}
+              </select>
+              <span className="node-result-val">{xLine ? `${xLine.cxMm.toFixed(3)} mm` : '—'}</span>
+            </div>
+            <div className="param-row">
+              <span className="param-label">Y ← 라인</span>
+              <select className="param-select" value={yRoi}
+                onChange={e => setSel('yRoi', parseInt(e.target.value))}>
+                {found.map(l => <option key={l.roiIndex} value={l.roiIndex}>라인 {l.roiIndex + 1}</option>)}
+              </select>
+              <span className="node-result-val">{yLine ? `${yLine.cyMm.toFixed(3)} mm` : '—'}</span>
+            </div>
+            <div className="param-empty" style={{ fontSize: 10 }}>
+              X 출력 = 선택 라인의 x, Y 출력 = 선택 라인의 y. 같은 라인을 고르면 그 점의 (x,y).
+            </div>
           </div>
-          <div className="node-result-row">
-            <span className="node-result-label">중심 (mm)</span>
-            <span className="node-result-val">({result.cxMm!.toFixed(3)}, {result.cyMm!.toFixed(3)})</span>
-          </div>
-          <div className="node-result-row">
-            <span className="node-result-label">각도</span>
-            <span className="node-result-val">{result.angleDeg!.toFixed(2)}°</span>
-          </div>
-          <div className="node-result-row">
-            <span className="node-result-label">전경 픽셀</span>
-            <span className="node-result-val">{result.pointCount}</span>
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {toolType === 'HeightMeasure' && result.measures && result.measures.length > 0 && (
         <div className="node-result-measures">
@@ -232,8 +259,6 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
             <LineCenterEditor
               rois={(params.rois as Roi[]) ?? []}
               threshold={(params.threshold as number) ?? 1}
-              scanDir={(params.scanDir as string) ?? 'lr'}
-              polarity={(params.polarity as string) ?? 'd2l'}
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
               zMax={upstreamZMax ?? result?.zMax}
@@ -274,7 +299,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
       </div>
 
       <div className="node-panel-body" style={{ display: tab === 'result' ? undefined : 'none' }}>
-        <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]} scanDir={params.scanDir as string} />
+        <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]}
+          nodeId={nodeId} params={params} onParamChange={onParamChange} />
       </div>
     </div>
   )
