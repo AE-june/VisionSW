@@ -63,7 +63,8 @@ private:
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
 
     std::vector<Pt3> extractPoints(const ZMap& map,
-                                   const PlaneFitParams::ROI& roi) const;
+                                   const PlaneFitParams::ROI& roi,
+                                   int offCol = 0, int offRow = 0) const;
 
     struct Plane { double a = 0, b = 0, c = 0; bool valid = false; int inliers = 0; };
     Plane fitLS    (const std::vector<Pt3>& pts) const;   // 중심화 + Eigen QR

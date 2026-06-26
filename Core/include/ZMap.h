@@ -12,9 +12,13 @@ namespace vision {
 //  ZMap  — 규칙적인 격자(grid)의 높이맵
 //
 //  좌표 변환:
-//    실제 X (mm) = col * xResMm
-//    실제 Y (mm) = row * yResMm
+//    실제 X (mm) = (col - originCol) * xResMm
+//    실제 Y (mm) = (row - originRow) * yResMm
 //    실제 Z (mm) = data[row * width + col] * zResMm
+//
+//  originCol/originRow: 좌표계 원점(px). 기본 0 = 좌상단.
+//    Align 노드가 검출 기준점으로 설정하면 그 점이 (0,0)mm가 되고
+//    이 ZMap을 입력받는 하류 툴이 변환된 좌표계를 그대로 사용한다.
 //
 //  NaN → 유효하지 않은 픽셀
 // ─────────────────────────────────────────────────────────────────────
@@ -24,6 +28,8 @@ struct ZMap {
     float xResMm  = 1.f;   // X 분해능 (mm/pixel)
     float yResMm  = 1.f;   // Y 분해능 (mm/pixel)
     float zResMm  = 1.f;   // Z 분해능 (mm/count) — raw → mm 변환 계수
+    float originCol = 0.f; // 좌표계 원점 X (px) — Align이 설정
+    float originRow = 0.f; // 좌표계 원점 Y (px) — Align이 설정
 
     std::vector<float> data;   // [row * width + col], NaN = 무효
 
@@ -39,11 +45,11 @@ struct ZMap {
         return rawAt(col, row) * zResMm;
     }
 
-    // mm 단위 X 반환
-    float xMm(int col) const { return col * xResMm; }
+    // mm 단위 X 반환 (원점 기준 상대 좌표)
+    float xMm(int col) const { return (col - originCol) * xResMm; }
 
-    // mm 단위 Y 반환
-    float yMm(int row) const { return row * yResMm; }
+    // mm 단위 Y 반환 (원점 기준 상대 좌표)
+    float yMm(int row) const { return (row - originRow) * yResMm; }
 
     bool valid(int col, int row) const {
         return !std::isnan(rawAt(col, row));

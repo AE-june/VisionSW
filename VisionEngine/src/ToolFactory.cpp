@@ -7,6 +7,7 @@
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
+#include "AlignTool.h"
 #include "IZMapLoader.h"
 #include "VisionData.h"
 #include "ZMap.h"
@@ -249,6 +250,9 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                          ? Polarity::LightToDark : Polarity::DarkToLight;
         params.threshold = p.value("threshold", 1.f);
         return std::make_shared<LineCenterTool>(params);
+    }
+    if (type == "Align") {
+        return std::make_shared<AlignTool>();
     }
     if (type == "CsvWriter") {
         CsvWriterParams params;

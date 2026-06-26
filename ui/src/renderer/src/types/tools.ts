@@ -1,4 +1,4 @@
-export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Any'
+export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Point' | 'Image2D' | 'PointCloud3D' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -13,6 +13,7 @@ export const PORT_COLORS: Record<PortType, string> = {
   ZMap:          '#00bcd4',
   Plane:         '#26a69a',
   Heights:       '#ffc107',
+  Point:         '#ec407a',
   Image2D:       '#ff9800',
   PointCloud3D:  '#9c27b0',
   Any:           '#888',
@@ -31,7 +32,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'LineCenter', label: 'Line Center', category: '정렬',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['ZMap'], outputs: ['ZMap', 'Point'],
     defaultParams: { rois: [], threshold: 1, scanDir: 'lr', polarity: 'd2l' },
   },
   {
@@ -88,6 +89,11 @@ export const TOOL_DEFS: ToolDef[] = [
       nominalMm: 0,
       toleranceMm: 0.05,
     },
+  },
+  {
+    type: 'Align', label: '좌표 정렬', category: '정렬',
+    inputs: ['ZMap', 'Point'], outputs: ['ZMap'],
+    defaultParams: {},
   },
   {
     type: 'CsvWriter', label: 'CSV Writer', category: '출력',

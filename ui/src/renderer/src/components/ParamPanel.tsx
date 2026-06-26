@@ -266,6 +266,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
+        {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     )
@@ -285,6 +286,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
+        {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     </div>

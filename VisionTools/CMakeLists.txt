@@ -7,6 +7,7 @@ add_library(VisionTools STATIC
     src/HeightFromPlaneTool.cpp
     src/CsvWriterTool.cpp
     src/LineCenterTool.cpp
+    src/AlignTool.cpp
 )
 
 target_include_directories(VisionTools

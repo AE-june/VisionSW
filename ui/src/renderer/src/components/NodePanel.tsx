@@ -31,6 +31,8 @@ interface NodeResult {
   // LineCenter
   cx?: number; cy?: number; cxMm?: number; cyMm?: number; angleDeg?: number; pointCount?: number
   imgW?: number; imgH?: number
+  // Align (좌표정렬)
+  offCol?: number; offRow?: number; offXMm?: number; offYMm?: number
   // ZMap 실제 z 범위 + 분해능
   zMin?: number; zMax?: number
   xResMm?: number; yResMm?: number
@@ -77,6 +79,19 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
       </>
     : undefined
 
+  // Align: 검출된 기준점(=새 원점)을 십자선으로 표시
+  const alignOverlay = toolType === 'Align' && result.imgW && result.offCol !== undefined
+    ? <svg viewBox={`0 0 ${result.imgW} ${result.imgH!}`} preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+        <line x1={0} y1={result.offRow} x2={result.imgW} y2={result.offRow}
+          stroke="#ffca28" strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
+        <line x1={result.offCol} y1={0} x2={result.offCol} y2={result.imgH!}
+          stroke="#ffca28" strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
+        <circle cx={result.offCol} cy={result.offRow} r={Math.max(3, Math.min(result.imgW, result.imgH!) * 0.012)}
+          fill="none" stroke="#ffca28" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      </svg>
+    : undefined
+
   return (
     <div className="node-result-view">
       {result.preview && (
@@ -87,7 +102,7 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
             zMax={zMax}
             rois={toolType === 'HeightMeasure' ? measureRois : toolType === 'LineCenter' ? searchRois : undefined}
             roiTypeLabel={() => 'ROI'}
-            overlay={lineOverlay}
+            overlay={lineOverlay ?? alignOverlay}
             overlayFor={(_roi, idx) => {
               const m = result.measures?.[idx]
               return m ? (
@@ -141,6 +156,19 @@ function ResultView({ toolType, result, rois, scanDir }: { toolType: string; res
           <div className="node-result-row">
             <span className="node-result-label">전경 픽셀</span>
             <span className="node-result-val">{result.pointCount}</span>
+          </div>
+        </div>
+      )}
+
+      {toolType === 'Align' && result.offCol !== undefined && (
+        <div className="node-result-measures">
+          <div className="node-result-row">
+            <span className="node-result-label">원점 (px)</span>
+            <span className="node-result-val">({result.offCol.toFixed(1)}, {result.offRow!.toFixed(1)})</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">이동량 (mm)</span>
+            <span className="node-result-val">({result.offXMm!.toFixed(3)}, {result.offYMm!.toFixed(3)})</span>
           </div>
         </div>
       )}
