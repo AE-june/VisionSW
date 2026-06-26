@@ -71,7 +71,8 @@ private:
 
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
     std::vector<Pt3> extractPoints(const ZMap& map,
-                                   const HeightFromPlaneParams::ROI& roi) const;
+                                   const HeightFromPlaneParams::ROI& roi,
+                                   int offCol = 0, int offRow = 0) const;
 
     // ROI 내 점들 → (대표 x, 대표 y, 대표 z)
     Pt3 aggregate(const std::vector<Pt3>& pts) const;

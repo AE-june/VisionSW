@@ -8,6 +8,7 @@
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
+#include "AlignTool.h"
 #include <crow.h>
 #include <nlohmann/json.hpp>
 
@@ -262,6 +263,20 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                     });
                 }
                 jr["lines"] = arr;
+                if (result.output && result.output->zmap) {
+                    jr["imgW"] = result.output->zmap->width;
+                    jr["imgH"] = result.output->zmap->height;
+                }
+            }
+        }
+        if (ns.type == "Align") {
+            auto* m = dynamic_cast<AlignTool*>(tool.get());
+            if (m && m->lastResult().valid) {
+                const auto& r = m->lastResult();
+                jr["offCol"] = r.offCol;
+                jr["offRow"] = r.offRow;
+                jr["offXMm"] = r.offXMm;
+                jr["offYMm"] = r.offYMm;
                 if (result.output && result.output->zmap) {
                     jr["imgW"] = result.output->zmap->width;
                     jr["imgH"] = result.output->zmap->height;

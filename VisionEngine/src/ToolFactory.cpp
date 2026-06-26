@@ -7,6 +7,7 @@
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
+#include "AlignTool.h"
 #include "IZMapLoader.h"
 #include "VisionData.h"
 #include "ZMap.h"
@@ -254,6 +255,9 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.xRoi = p.value("xRoi", 0);
         params.yRoi = p.value("yRoi", 0);
         return std::make_shared<LineCenterTool>(params);
+    }
+    if (type == "Align") {
+        return std::make_shared<AlignTool>();
     }
     if (type == "CsvWriter") {
         CsvWriterParams params;

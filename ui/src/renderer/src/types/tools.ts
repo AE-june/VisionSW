@@ -93,6 +93,11 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    type: 'Align', label: '좌표 정렬', category: '정렬',
+    inputs: ['ZMap', 'Point'], outputs: ['ZMap'],
+    defaultParams: {},
+  },
+  {
     type: 'CsvWriter', label: 'CSV Writer', category: '출력',
     inputs: ['Heights'], outputs: [],
     defaultParams: { path: '', label: '' },
