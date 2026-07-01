@@ -407,13 +407,15 @@ export default function App() {
     // ZMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지
     const zEdge = tEdges.find(e => (e.targetHandle ?? 'input-0') === 'input-0') ?? tEdges[0]
     return nodeResults[zEdge.source] as
-      { preview?: string; zMin?: number; zMax?: number; xResMm?: number; yResMm?: number } | undefined
+      { preview?: string; zMin?: number; zMax?: number; xResMm?: number; yResMm?: number; offCol?: number; offRow?: number } | undefined
   })()
   const upstreamPreview = upstreamRes?.preview
   const upstreamZMin = upstreamRes?.zMin
   const upstreamZMax = upstreamRes?.zMax
   const upstreamResX = upstreamRes?.xResMm
   const upstreamResY = upstreamRes?.yResMm
+  const upstreamOriginCol = upstreamRes?.offCol
+  const upstreamOriginRow = upstreamRes?.offRow
 
   return (
     <div className="app">
@@ -459,6 +461,8 @@ export default function App() {
             upstreamZMax={upstreamZMax}
             upstreamResX={upstreamResX}
             upstreamResY={upstreamResY}
+            upstreamOriginCol={upstreamOriginCol}
+            upstreamOriginRow={upstreamOriginRow}
             width={panelWidth}
             onWidthChange={setPanelWidth}
             onParamChange={onParamChange}

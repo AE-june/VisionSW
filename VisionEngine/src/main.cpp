@@ -247,6 +247,10 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                     });
                 }
                 jr["measures"] = measures;
+                if (result.output && result.output->zmap) {
+                    jr["imgW"] = result.output->zmap->width;
+                    jr["imgH"] = result.output->zmap->height;
+                }
                 if (!r.allPass) pipelinePass = false;
             }
         }

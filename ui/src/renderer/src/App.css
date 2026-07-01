@@ -816,33 +816,36 @@
 .pfe-btn.ref.active    { border-color: #00bcd4; color: #00bcd4; background: #1a2f33; }
 .pfe-btn.measure.active { border-color: #ff5722; color: #ff5722; background: #2e1a16; }
 
+/* 표시 박스: 폭은 패널 폭을 따라감(늘리면 따라 늘어남), 높이는 고정. 스크롤 컨테이너.
+   이미지는 zoom=fit에서 전체가 보이고, 줌인하면 콘텐츠가 박스보다 커져 스크롤바로 탐색. */
 .pfe-canvas {
   position: relative;
   width: 100%;
-  aspect-ratio: 4 / 3;
+  height: 420px;
   background: #111;
   border: 1px solid #333;
   border-radius: 4px;
-  overflow: hidden;
+  overflow: auto;
   user-select: none;
   cursor: grab;
 }
 .pfe-canvas.pfe-mode-draw { cursor: crosshair; }
-.pfe-canvas.pfe-mode-pan  { cursor: grabbing; }
+/* 스크롤바 (webkit) */
+.pfe-canvas::-webkit-scrollbar { width: 10px; height: 10px; }
+.pfe-canvas::-webkit-scrollbar-track { background: #1a1a1a; }
+.pfe-canvas::-webkit-scrollbar-thumb { background: #444; border-radius: 5px; }
+.pfe-canvas::-webkit-scrollbar-thumb:hover { background: #666; }
 
-.pfe-viewport {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  transform-origin: 0 0;
-  will-change: transform;
+/* 콘텐츠 = 이미지 표시 영역(스크롤 대상). 자식(canvas/ROI)의 절대좌표 기준. */
+.pfe-content {
+  position: relative;
+  flex: 0 0 auto;
 }
 
-/* ROI 오버레이 레이어 — scale 밖(화면 좌표)이라 항상 선명 */
+/* ROI 오버레이 레이어 — 콘텐츠(이미지) 좌표 기준 */
 .pfe-roi-layer {
   position: absolute;
   inset: 0;
-  overflow: hidden;
   pointer-events: none;
 }
 .pfe-roi-layer .pfe-roi { pointer-events: auto; }

@@ -93,7 +93,7 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
-    type: 'Align', label: '좌표 정렬', category: '정렬',
+    type: 'Align', label: '좌표계 변환', category: '정렬',
     inputs: ['ZMap', 'Point'], outputs: ['ZMap'],
     defaultParams: {},
   },

@@ -27,6 +27,9 @@ interface Props {
   /** mm 단위 좌표 입력용 분해능 (mm/pixel). 있으면 px/mm 토글 표시 */
   resXMm?: number
   resYMm?: number
+  /** 원점 오프셋 (픽셀). 설정된 경우 좌표 표시를 원점 기준 상대값으로 보여줌 */
+  originCol?: number
+  originRow?: number
   /** 이미지 원본 픽셀 크기 콜백 */
   onImageSize?: (w: number, h: number) => void
 }
@@ -35,16 +38,47 @@ let uidCounter = 0
 // 레시피 로드로 들어온 기존 id와도 충돌하지 않도록 카운터 + 랜덤 접미사
 const uid = () => `roi-${Date.now().toString(36)}-${++uidCounter}-${Math.random().toString(36).slice(2, 7)}`
 
-export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enableRotate, resXMm, resYMm, onImageSize }: Props) {
+// 좌표 입력 필드: 편집 중에는 로컬 문자열 버퍼를 그대로 보여줘 자유롭게 지우고 다시 입력할 수 있게 한다.
+// (컨트롤드 number input이 공백을 0으로 강제 되돌리던 문제 해결) 공백으로 확정하면 0.
+function NumField({ value, onCommit, step = 1 }: { value: number; onCommit: (v: number) => void; step?: number }) {
+  const [buf, setBuf] = useState<string | null>(null)
+  return (
+    <input
+      type="number"
+      step={step}
+      value={buf ?? value}
+      onChange={e => {
+        const t = e.target.value
+        setBuf(t)
+        if (t === '' || t === '-' || t === '.' || t === '-.') return   // 편집 중 미완성 값은 커밋 보류
+        const n = Number(t)
+        if (!Number.isNaN(n)) onCommit(n)
+      }}
+      onBlur={() => {
+        if (buf === '' || buf === '-' || buf === '.' || buf === '-.') onCommit(0)   // 공백 확정 → 0
+        setBuf(null)   // 정규(반올림)값 표시로 복귀
+      }}
+    />
+  )
+}
+
+export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enableRotate, resXMm, resYMm, originCol, originRow, onImageSize }: Props) {
   const [drawType, setDrawType] = useState<string | null>(null)
   const [drawShape, setDrawShape] = useState<'rect' | 'circle'>('rect')
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
   const [unit, setUnit] = useState<'px' | 'mm'>('px')
   const [selType, setSelType] = useState<string>(roiTypes[0]?.type ?? '')
 
+  // 저장 좌표는 원점(Align 검출) 기준 상대값. 캔버스(ImageViewer)는 절대 좌표로 그리므로
+  // 렌더링 직전 원점(pct)을 더하고, 변경/생성 결과는 다시 빼서 상대값으로 저장한다.
+  const oPctX = originCol != null && imgSize.w > 0 ? originCol / imgSize.w : 0
+  const oPctY = originRow != null && imgSize.h > 0 ? originRow / imgSize.h : 0
+  const toAbs = (r: Roi): Roi => ({ ...r, xPct: r.xPct + oPctX, yPct: r.yPct + oPctY })
+  const toRel = (r: Roi): Roi => ({ ...r, xPct: r.xPct - oPctX, yPct: r.yPct - oPctY })
+
   const addRoi = (rect: DrawRect) => {
     if (!drawType) return
-    const newRoi: Roi = { id: uid(), type: drawType, shape: drawShape, ...rect }
+    const newRoi: Roi = { id: uid(), type: drawType, shape: drawShape, ...rect, xPct: rect.xPct - oPctX, yPct: rect.yPct - oPctY }
     const spec = roiTypes.find(t => t.type === drawType)
     const updated = spec?.single
       ? [...rois.filter(r => r.type !== drawType), newRoi]
@@ -89,15 +123,15 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
 
   const canMm = !!resXMm && !!resYMm
   const useMm = unit === 'mm' && canMm
-  // pct → 표시값, 표시값 → pct (단위/분해능 반영)
+  // pct(원점 상대) → 표시값. 저장값이 이미 원점 기준이라 분해능만 곱하면 mm.
   const fx = useMm ? imgSize.w * (resXMm ?? 1) : imgSize.w
   const fy = useMm ? imgSize.h * (resYMm ?? 1) : imgSize.h
   const disp = (pct: number, f: number) => f > 0 ? +(pct * f).toFixed(useMm ? 2 : 0) : 0
   const update = (id: string, field: 'xPct' | 'yPct' | 'wPct' | 'hPct', val: number, f: number) => {
-    const pct = f > 0 ? Math.max(0, Math.min(1, val / f)) : 0
+    const pct = f > 0 ? val / f : 0
     onChange(rois.map(r => r.id === id ? { ...r, [field]: pct } : r))
   }
-  // 원형 ROI: 바운딩 박스 ↔ 중심점/반지름 환산
+  // 원형 ROI: 바운딩 박스 ↔ 중심점/반지름 환산 (위치는 음수 허용, 크기만 0~1 클램프)
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
   const cCx = (r: Roi) => disp(r.xPct + r.wPct / 2, fx)
   const cCy = (r: Roi) => disp(r.yPct + r.hPct / 2, fy)
@@ -105,13 +139,13 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
   const updateCircle = (id: string, field: 'cx' | 'cy' | 'r', val: number) => {
     onChange(rois.map(r => {
       if (r.id !== id) return r
-      if (field === 'cx') return { ...r, xPct: clamp01((fx > 0 ? val / fx : 0) - r.wPct / 2) }
-      if (field === 'cy') return { ...r, yPct: clamp01((fy > 0 ? val / fy : 0) - r.hPct / 2) }
+      if (field === 'cx') return { ...r, xPct: (fx > 0 ? val / fx : 0) - r.wPct / 2 }
+      if (field === 'cy') return { ...r, yPct: (fy > 0 ? val / fy : 0) - r.hPct / 2 }
       // r: 반지름 변경 시 중심 고정
       const ccx = r.xPct + r.wPct / 2, ccy = r.yPct + r.hPct / 2
       const wPct = fx > 0 ? clamp01(2 * val / fx) : r.wPct
       const hPct = fy > 0 ? clamp01(2 * val / fy) : r.hPct
-      return { ...r, wPct, hPct, xPct: clamp01(ccx - wPct / 2), yPct: clamp01(ccy - hPct / 2) }
+      return { ...r, wPct, hPct, xPct: ccx - wPct / 2, yPct: ccy - hPct / 2 }
     }))
   }
   const setShape = (id: string, shape: 'rect' | 'circle') =>
@@ -142,8 +176,8 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         drawShape={drawShape}
         onDrawComplete={addRoi}
         onImageSize={(w, h) => { setImgSize({ w, h }); onImageSize?.(w, h) }}
-        rois={rois}
-        onRoisChange={onChange}
+        rois={rois.map(toAbs)}
+        onRoisChange={next => onChange(next.map(toRel))}
         roiTypeLabel={() => 'ROI'}
         overlayFor={overlayFor}
         overlay={overlay}
@@ -178,7 +212,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
                 {fieldsFor(roi).map(f => (
                   <label className="roi-field" key={f.label}>
                     <span className="roi-field-label">{f.label}</span>
-                    <input type="number" value={f.value} onChange={e => f.set(+e.target.value)} />
+                    <NumField value={f.value} onCommit={f.set} step={useMm ? 0.01 : 1} />
                   </label>
                 ))}
                 <button className="roi-coord-del" onClick={() => onChange(rois.filter(r => r.id !== roi.id))}>×</button>

@@ -50,6 +50,8 @@ interface Props {
   upstreamZMax?: number
   upstreamResX?: number
   upstreamResY?: number
+  upstreamOriginCol?: number
+  upstreamOriginRow?: number
   width: number
   onWidthChange: (w: number) => void
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
@@ -57,10 +59,11 @@ interface Props {
   onClose: () => void
 }
 
-function ResultView({ toolType, result, rois, nodeId, params, onParamChange }: {
+function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow }: {
   toolType: string; result?: NodeResult; rois?: Roi[]
   nodeId: string; params: Record<string, unknown>
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
+  originCol?: number; originRow?: number
 }) {
   const zMin = result?.zMin
   const zMax = result?.zMax
@@ -68,8 +71,12 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange }: {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
 
-  // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이
+  // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이.
+  // 저장 좌표는 Align 원점 기준 상대값이므로, 미리보기(절대 좌표) 위에 그릴 땐 원점을 더한다.
+  const oPctX = originCol != null && result.imgW ? originCol / result.imgW : 0
+  const oPctY = originRow != null && result.imgH ? originRow / result.imgH : 0
   const measureRois = (rois ?? []).filter(r => r.type === 'measure')
+    .map(r => ({ ...r, xPct: r.xPct + oPctX, yPct: r.yPct + oPctY }))
 
   // LineCenter 결과: 찾은 라인 + 중심(십자가)만 표시 (ROI 박스/화살표 없음)
   // 라인을 검색 ROI로 클리핑하기 위해 roiIndex로 해당 ROI 참조 (그리진 않음)
@@ -218,7 +225,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange }: {
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, width, onWidthChange, onParamChange, onRun, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>('params')
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
 
@@ -281,6 +288,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               zMax={upstreamZMax ?? result?.zMax}
               resXMm={upstreamResX ?? result?.xResMm}
               resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
               onChange={(next) => onParamChange(nodeId, { ...params, ...next })}
             />
           ) : toolType === 'LineCenter' ? (
@@ -309,6 +318,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               zMax={upstreamZMax ?? result?.zMax}
               resXMm={upstreamResX ?? result?.xResMm}
               resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
@@ -328,7 +339,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
 
       <div className="node-panel-body" style={{ display: tab === 'result' ? undefined : 'none' }}>
         <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]}
-          nodeId={nodeId} params={params} onParamChange={onParamChange} />
+          nodeId={nodeId} params={params} onParamChange={onParamChange}
+          originCol={upstreamOriginCol} originRow={upstreamOriginRow} />
       </div>
     </div>
   )

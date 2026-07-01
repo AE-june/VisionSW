@@ -44,7 +44,11 @@ bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
 
     double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
     long   n = 0;
+    long   perpCount = 0;
+    float  sampleMin = 1e9f, sampleMax = -1e9f;
+    long   validCount = 0, aboveCount = 0;
     for (double p = perpMin; p <= perpMax; p += 1.0) {
+        ++perpCount;
         bool havePrev = false;
         bool prevAbove = false; double prevS = 0;
         for (double k = 0; k <= scanLen; k += 1.0) {
@@ -55,6 +59,8 @@ bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
             // 무효(NaN) 픽셀은 "어두움(below)"으로 취급 — 배경(NaN)↔타겟 경계도 에지로 검출
             bool valid = sampleLocal(lx, ly, v);
             bool above = valid && (v >= thr);
+            if (valid) { ++validCount; if(v<sampleMin)sampleMin=v; if(v>sampleMax)sampleMax=v; }
+            if (above) ++aboveCount;
             if (havePrev) {
                 bool trans = d2l ? (!prevAbove && above)   // 흑→백
                                  : ( prevAbove && !above); // 백→흑
@@ -71,6 +77,11 @@ bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
             prevAbove = above; prevS = s; havePrev = true;
         }
     }
+
+    VISION_LOG_INFO("LineCenter findLine: perpLines={} validPx={} abovePx={} edges={} thr={:.1f} rawRange=[{:.1f},{:.1f}] polarity={}",
+        perpCount, validCount, aboveCount, n, thr,
+        validCount>0?sampleMin:0.f, validCount>0?sampleMax:0.f,
+        d2l ? "d2l" : "l2d");
 
     if (n < 2) return false;
 

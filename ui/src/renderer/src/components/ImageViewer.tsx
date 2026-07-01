@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, type ReactNode } from 'react'
 
 // jet 컬러맵: 0(낮음, 파랑) → 청록 → 녹색 → 노랑 → 1(높음, 빨강)
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
@@ -59,7 +59,7 @@ function resizeRotated(e: EditState, x: number, y: number, aspect: number): Roi 
   return { ...o, wPct, hPct, xPct: ncx / W - wPct / 2, yPct: ncy / H - hPct / 2 }
 }
 
-function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean; aspect?: number }): Roi {
+function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean; aspect?: number; imgW?: number; imgH?: number }): Roi {
   const o = e.orig
   if (e.mode === 'rotate') {
     const W = opts?.aspect && opts.aspect > 0 ? opts.aspect : 1
@@ -110,12 +110,25 @@ function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean;
   if (e.handle.includes('e')) right = clampUnit(x)
   if (e.handle.includes('n')) top = clampUnit(y)
   if (e.handle.includes('s')) bottom = clampUnit(y)
+  // W/H를 정수 픽셀에 스냅 — 고정(anchor)변은 두고 드래그하는 변만 이동시켜 W/H가 정확히 정수 px가 되게.
+  // 줌인할수록 마우스로도 1px 단위 조정 가능(화면 픽셀 해상도가 한계).
+  const iw = opts?.imgW ?? 0, ih = opts?.imgH ?? 0
+  if (iw > 0) {
+    if (e.handle.includes('e'))      right = left + Math.round((right - left) * iw) / iw
+    else if (e.handle.includes('w')) left  = right - Math.round((right - left) * iw) / iw
+  }
+  if (ih > 0) {
+    if (e.handle.includes('s'))      bottom = top + Math.round((bottom - top) * ih) / ih
+    else if (e.handle.includes('n')) top    = bottom - Math.round((bottom - top) * ih) / ih
+  }
+  const minW = iw > 0 ? 1 / iw : 0.002   // 최소 1px
+  const minH = ih > 0 ? 1 / ih : 0.002
   return {
     ...o,
     xPct: Math.min(left, right),
     yPct: Math.min(top, bottom),
-    wPct: Math.max(0.005, Math.abs(right - left)),
-    hPct: Math.max(0.005, Math.abs(bottom - top)),
+    wPct: Math.max(minW, Math.abs(right - left)),
+    hPct: Math.max(minH, Math.abs(bottom - top)),
   }
 }
 
@@ -150,47 +163,59 @@ interface Props {
   enableRotate?: boolean
 }
 
-const MIN_ZOOM = 0.5
-const MAX_ZOOM = 40
+const MAX_ZOOM = 100   // native 스케일 상한 (10000% = 원본 픽셀의 100배)
 
 export default function ImageViewer({
   preview, drawMode, drawShape, onDrawComplete, rois, onRoisChange, roiTypeLabel, overlayFor,
   overlay, toolbarLeft, footer, placeholder, zMin, zMax, onImageSize, enableRotate
 }: Props) {
   const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState<Pan>({ x: 0, y: 0 })
   const [draw, setDraw] = useState<DrawState | null>(null)
   const [edit, setEdit] = useState<EditState | null>(null)
   const [imgAspect, setImgAspect] = useState<number | null>(null)
-  const [csize, setCsize] = useState({ w: 0, h: 0 })
+  const [imgPx, setImgPx] = useState({ w: 0, h: 0 })
+  const [csize, setCsize] = useState({ w: 0, h: 0 })   // 박스(=패널 폭 × 고정 높이). 클리핑/좌표 기준
   const [colormap, setColormap] = useState(false)
   const [autoRange, setAutoRange] = useState(true)
   const [rangeLo, setRangeLo] = useState(0)
   const [rangeHi, setRangeHi] = useState(255)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  // 최신 zoom/pan을 즉시 읽기 위한 ref (빠른 연속 휠에서 stale closure 방지)
   const zoomRef = useRef(1)
-  const panRef = useRef<Pan>({ x: 0, y: 0 })
-  const panStartRef = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  // 스크롤(팬) 드래그 시작 지점 저장
+  const panStartRef = useRef<{ mx: number; my: number; sl: number; st: number } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)   // 스크롤 박스(좌표 기준 & 클리핑)
+  const contentRef = useRef<HTMLDivElement>(null)     // 이미지 크기의 콘텐츠(스크롤 대상)
+  // 휠 줌 후 커서 고정을 위해 적용할 스크롤 위치를 layout 단계에서 반영
+  const pendingScrollRef = useRef<{ sl: number; st: number } | null>(null)
+  const boxRef = useRef({ w: 0, h: 0 })
+  const imgPxRef = useRef({ w: 0, h: 0 })
 
-  // zoom/pan을 state + ref 동시 적용
-  const applyView = useCallback((z: number, p: Pan) => {
-    zoomRef.current = z; panRef.current = p
-    setZoom(z); setPan(p)
-  }, [])
+  // zoom을 state + ref 동시 적용
+  const applyZoom = useCallback((z: number) => { zoomRef.current = z; setZoom(z) }, [])
 
-  // client 좌표 → 이미지 상대 퍼센트(0~1) — 항상 최신 ref 사용
+  // 전체보기 배율: 이미지 전체가 박스에 들어오는 native 스케일 (100%=원본 1:1)
+  const fitZoom = (box: { w: number; h: number }, img: { w: number; h: number }) =>
+    box.w > 0 && box.h > 0 && img.w > 0 && img.h > 0
+      ? Math.min(box.w / img.w, box.h / img.h) : 1
+
+  // 콘텐츠(이미지 표시) 크기 및 박스 안에서의 가운데 정렬 여백
+  const contentBox = (box: { w: number; h: number }, img: { w: number; h: number }, zoom: number) => {
+    const w = (img.w > 0 ? img.w : box.w) * zoom, h = (img.h > 0 ? img.h : box.h) * zoom
+    return { w, h, mL: Math.max(0, (box.w - w) / 2), mT: Math.max(0, (box.h - h) / 2) }
+  }
+
+  // client 좌표 → 이미지 상대 퍼센트(0~1). 콘텐츠 rect는 스크롤/여백이 이미 반영됨.
   const toImgPct = useCallback((clientX: number, clientY: number) => {
-    const r = containerRef.current!.getBoundingClientRect()
+    const c = contentRef.current
+    if (!c) return { x: 0, y: 0 }
+    const cr = c.getBoundingClientRect()
     return {
-      x: (clientX - r.left - panRef.current.x) / (r.width  * zoomRef.current),
-      y: (clientY - r.top  - panRef.current.y) / (r.height * zoomRef.current),
+      x: cr.width > 0 ? (clientX - cr.left) / cr.width : 0,
+      y: cr.height > 0 ? (clientY - cr.top) / cr.height : 0,
     }
   }, [])
 
-  // ── 휠 줌: native non-passive 리스너로 등록 (preventDefault + stopPropagation
-  //    으로 부모 스크롤/스크롤바 전파 차단). 커서 고정 + 델타 비례 지수 줌 ──
+  // ── 휠 줌: 커서 위 이미지 지점을 줌 후에도 커서에 고정 (스크롤 위치 보정) ──
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -198,17 +223,35 @@ export default function ImageViewer({
       e.preventDefault()
       e.stopPropagation()
       const r = el.getBoundingClientRect()
-      const cx = e.clientX - r.left
-      const cy = e.clientY - r.top
-      const z = zoomRef.current, p = panRef.current
-      const nz = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z * Math.exp(-e.deltaY * 0.0015)))
+      const cx = e.clientX - r.left, cy = e.clientY - r.top
+      const z = zoomRef.current
+      const box = { w: r.width, h: r.height }, img = imgPxRef.current
+      const lo = Math.min(fitZoom(box, img), MAX_ZOOM)   // 축소 하한 = 전체보기
+      const nz = Math.max(lo, Math.min(MAX_ZOOM, z * Math.exp(-e.deltaY * 0.0015)))
       if (nz === z) return
-      const scale = nz / z
-      applyView(nz, { x: cx - (cx - p.x) * scale, y: cy - (cy - p.y) * scale })
+      // 커서 아래 이미지 pct
+      const cur = contentRef.current?.getBoundingClientRect()
+      const u = cur && cur.width > 0 ? (e.clientX - cur.left) / cur.width : 0.5
+      const v = cur && cur.height > 0 ? (e.clientY - cur.top) / cur.height : 0.5
+      // 줌 후 콘텐츠에서 커서가 같은 지점을 가리키도록 스크롤 목표 계산
+      const nb = contentBox(box, img, nz)
+      pendingScrollRef.current = { sl: nb.mL + u * nb.w - cx, st: nb.mT + v * nb.h - cy }
+      applyZoom(nz)
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)
-  }, [applyView])
+  }, [applyZoom])
+
+  // 줌 변경 후 커서 고정 스크롤 반영 (렌더 완료 후 동기 적용)
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    const ps = pendingScrollRef.current
+    if (el && ps) {
+      el.scrollLeft = ps.sl
+      el.scrollTop = ps.st
+      pendingScrollRef.current = null
+    }
+  }, [zoom])
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
@@ -217,15 +260,15 @@ export default function ImageViewer({
       const { x, y } = toImgPct(e.clientX, e.clientY)
       setDraw({ startX: x, startY: y, curX: x, curY: y })
     } else {
-      panStartRef.current = { mx: e.clientX, my: e.clientY, px: panRef.current.x, py: panRef.current.y }
+      const el = containerRef.current
+      panStartRef.current = { mx: e.clientX, my: e.clientY, sl: el?.scrollLeft ?? 0, st: el?.scrollTop ?? 0 }
     }
   }, [drawMode, toImgPct])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     if (draw) {
       let { x, y } = toImgPct(e.clientX, e.clientY)
-      // Shift + 원형: 정원 (이미지 픽셀 공간에서 가로=세로). imgAspect는 이미지 로드 즉시
-      // 잡히므로 작은 노드 창에서 csize 미측정이어도 안정적으로 동작.
+      // Shift + 원형: 정원 (이미지 픽셀 공간에서 가로=세로)
       if (e.shiftKey && drawShape === 'circle') {
         const ar = imgAspect ?? (csize.h > 0 ? csize.w / csize.h : 1)  // imgW/imgH
         const dx = x - draw.startX, dy = y - draw.startY
@@ -235,11 +278,14 @@ export default function ImageViewer({
       }
       setDraw(d => d ? { ...d, curX: x, curY: y } : null)
     } else if (panStartRef.current) {
-      const dx = e.clientX - panStartRef.current.mx
-      const dy = e.clientY - panStartRef.current.my
-      applyView(zoomRef.current, { x: panStartRef.current.px + dx, y: panStartRef.current.py + dy })
+      // 드래그로 스크롤(팬)
+      const el = containerRef.current
+      if (el) {
+        el.scrollLeft = panStartRef.current.sl - (e.clientX - panStartRef.current.mx)
+        el.scrollTop = panStartRef.current.st - (e.clientY - panStartRef.current.my)
+      }
     }
-  }, [draw, drawShape, csize, imgAspect, toImgPct, applyView])
+  }, [draw, drawShape, csize, imgAspect, toImgPct])
 
   const onMouseUp = useCallback(() => {
     panStartRef.current = null
@@ -249,32 +295,49 @@ export default function ImageViewer({
     const wPct = Math.abs(draw.curX - draw.startX)
     const hPct = Math.abs(draw.curY - draw.startY)
     setDraw(null)
-    if (wPct < 0.01 || hPct < 0.01) return
+    // 최소 크기 판정을 화면 픽셀 기준으로 — 확대 상태에서도 작은 드래그로 ROI를 추가할 수 있게
+    const cb = contentBox(boxRef.current, imgPxRef.current, zoomRef.current)
+    if (wPct * cb.w < 4 || hPct * cb.h < 4) return
     onDrawComplete?.({
       xPct: Math.max(0, xPct),
       yPct: Math.max(0, yPct),
       wPct: Math.min(wPct, 1 - Math.max(0, xPct)),
       hPct: Math.min(hPct, 1 - Math.max(0, yPct)),
     })
-  }, [draw, onDrawComplete])
+  }, [draw, onDrawComplete, csize])
 
-  const resetView = () => applyView(1, { x: 0, y: 0 })
+  // 리셋 = 전체보기(fit) (여백으로 가운데 정렬됨)
+  const resetView = () => applyZoom(fitZoom(boxRef.current, imgPxRef.current))
 
   // ZMap 실제 z 범위가 도착하면 수동 range 초기값을 그 범위로 맞춤
   useEffect(() => {
     if (zMin !== undefined && zMax !== undefined) { setRangeLo(zMin); setRangeHi(zMax) }
   }, [zMin, zMax])
 
-  // 컨테이너 크기 추적 (ROI를 화면 좌표로 그리기 위함)
+  // 박스(컨테이너) 크기 추적 — 폭=패널 폭(패널을 늘리면 따라감), 높이=고정. 클리핑/좌표 기준.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const update = () => { const r = el.getBoundingClientRect(); setCsize({ w: r.width, h: r.height }) }
+    const update = () => {
+      const r = el.getBoundingClientRect()
+      setCsize({ w: r.width, h: r.height })
+      boxRef.current = { w: r.width, h: r.height }
+    }
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // 이미지 픽셀 크기를 휠/좌표 핸들러에서 읽을 수 있게 ref 동기화 + 처음 준비되면 전체보기로 맞춤
+  const fittedRef = useRef(false)
+  useEffect(() => {
+    imgPxRef.current = imgPx
+    if (imgPx.w > 0 && csize.w > 0 && !fittedRef.current) {
+      fittedRef.current = true
+      applyZoom(fitZoom(csize, imgPx))
+    }
+  }, [imgPx, csize.w, csize.h, applyZoom])
 
   // ROI 이동/리사이즈 드래그 — window 리스너로 캔버스 밖까지 추적
   useEffect(() => {
@@ -282,7 +345,9 @@ export default function ImageViewer({
     const aspect = imgAspect ?? (csize.h > 0 ? csize.w / csize.h : 1)
     const onMove = (ev: MouseEvent) => {
       const { x, y } = toImgPct(ev.clientX, ev.clientY)
-      onRoisChange(rois.map(r => r.id === edit.id ? applyEdit(edit, x, y, { shift: ev.shiftKey, aspect }) : r))
+      onRoisChange(rois.map(r => r.id === edit.id
+        ? applyEdit(edit, x, y, { shift: ev.shiftKey, aspect, imgW: imgPx.w, imgH: imgPx.h })
+        : r))
     }
     const onUp = () => setEdit(null)
     window.addEventListener('mousemove', onMove)
@@ -291,7 +356,7 @@ export default function ImageViewer({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [edit, rois, onRoisChange, toImgPct, imgAspect, csize])
+  }, [edit, rois, onRoisChange, toImgPct, imgAspect, csize.w, csize.h, imgPx])
 
   // preview(grayscale PNG)를 canvas에 그리고, colormap이면 jet 컬러맵 적용
   useEffect(() => {
@@ -300,6 +365,10 @@ export default function ImageViewer({
     const img = new Image()
     img.onload = () => {
       if (img.naturalHeight > 0) setImgAspect(img.naturalWidth / img.naturalHeight)
+      // 새 이미지가 로드되면 전체보기로 다시 맞추도록 플래그 리셋
+      if (imgPxRef.current.w !== img.naturalWidth || imgPxRef.current.h !== img.naturalHeight)
+        fittedRef.current = false
+      setImgPx({ w: img.naturalWidth, h: img.naturalHeight })
       onImageSize?.(img.naturalWidth, img.naturalHeight)
       cv.width = img.naturalWidth
       cv.height = img.naturalHeight
@@ -326,15 +395,17 @@ export default function ImageViewer({
     img.src = `data:image/png;base64,${preview}`
   }, [preview, colormap, autoRange, rangeLo, rangeHi, zMin, zMax])
 
-  const drawStyle = draw ? {
-    left:   `${Math.min(draw.startX, draw.curX) * 100}%`,
-    top:    `${Math.min(draw.startY, draw.curY) * 100}%`,
-    width:  `${Math.abs(draw.curX - draw.startX) * 100}%`,
-    height: `${Math.abs(draw.curY - draw.startY) * 100}%`,
-  } : null
+  const modeClass = drawMode ? ' pfe-mode-draw' : ' pfe-mode-pan'
 
-  const isPanning = !!panStartRef.current
-  const modeClass = drawMode ? ' pfe-mode-draw' : isPanning ? ' pfe-mode-pan' : ''
+  // 콘텐츠(이미지 표시) 크기 + 가운데 여백. 콘텐츠가 박스보다 크면 스크롤바가 생김.
+  const cbox = contentBox(csize, imgPx, zoom)
+  // ROI/그리기 좌표는 콘텐츠(이미지) 기준 0~1 → 콘텐츠 내부 px
+  const drawStyle = draw ? {
+    left:   `${Math.min(draw.startX, draw.curX) * cbox.w}px`,
+    top:    `${Math.min(draw.startY, draw.curY) * cbox.h}px`,
+    width:  `${Math.abs(draw.curX - draw.startX) * cbox.w}px`,
+    height: `${Math.abs(draw.curY - draw.startY) * cbox.h}px`,
+  } : null
 
   return (
     <div className="pfe-root">
@@ -399,49 +470,41 @@ export default function ImageViewer({
       <div
         ref={containerRef}
         className={`pfe-canvas${modeClass}`}
-        style={imgAspect && preview ? { aspectRatio: String(imgAspect) } : undefined}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseUp}
       >
-        <div
-          className="pfe-viewport"
-          style={{ transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}
-        >
-          {preview ? (
-            <canvas ref={canvasRef} className="pfe-bg" />
-          ) : (
-            <div className="pfe-placeholder">
-              {placeholder ?? <>상류 노드를 실행하면<br /><small>이미지가 여기에 표시됩니다</small></>}
-            </div>
-          )}
+        {preview ? (
+          // 콘텐츠 = 이미지 표시 크기. 박스보다 크면 스크롤바가 생기고, 작으면 여백으로 가운데 정렬.
+          <div ref={contentRef} className="pfe-content"
+            style={{ width: `${cbox.w}px`, height: `${cbox.h}px`,
+              marginLeft: `${cbox.mL}px`, marginTop: `${cbox.mT}px` }}>
+            <canvas ref={canvasRef} className="pfe-bg"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
 
-          {drawStyle && drawMode && (
-            <div className={`pfe-roi pfe-roi-${drawMode} pfe-roi-drawing`}
-              style={{ ...drawStyle, borderRadius: drawShape === 'circle' ? '50%' : undefined,
-                borderWidth: `${2 / zoom}px` }} />
-          )}
-        </div>
+            {drawStyle && drawMode && (
+              <div className={`pfe-roi pfe-roi-${drawMode} pfe-roi-drawing`}
+                style={{ ...drawStyle, position: 'absolute',
+                  borderRadius: drawShape === 'circle' ? '50%' : undefined, borderWidth: '2px' }} />
+            )}
 
-        {/* 오버레이(라인/중심/화살표)도 scale 레이어 밖(화면 좌표)에 그려 확대해도 선명 */}
-        {overlay && (
-          <div style={{ position: 'absolute', left: pan.x, top: pan.y,
-            width: csize.w * zoom, height: csize.h * zoom, pointerEvents: 'none' }}>
-            {overlay}
-          </div>
-        )}
+            {/* 오버레이(라인/중심/화살표)는 콘텐츠(이미지)에 정렬 */}
+            {overlay && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                {overlay}
+              </div>
+            )}
 
-        {/* ROI는 scale 레이어 밖(화면 좌표)에 그려 항상 선명하게 — 테두리/글자 흐림 방지 */}
-        <div className="pfe-roi-layer">
+            <div className="pfe-roi-layer">
           {rois?.map((roi, i, arr) => {
             const idxInType = arr.slice(0, i).filter(r => r.type === roi.type).length
             const label = `${roiTypeLabel?.(roi.type) ?? roi.type} ${idxInType + 1}`
             const editable = !!onRoisChange && !drawMode
-            const left = pan.x + roi.xPct * csize.w * zoom
-            const top = pan.y + roi.yPct * csize.h * zoom
-            const width = roi.wPct * csize.w * zoom
-            const height = roi.hPct * csize.h * zoom
+            const left = roi.xPct * cbox.w
+            const top = roi.yPct * cbox.h
+            const width = roi.wPct * cbox.w
+            const height = roi.hPct * cbox.h
             const angle = roi.angleDeg ?? 0
             return (
               <div
@@ -485,7 +548,13 @@ export default function ImageViewer({
               </div>
             )
           })}
-        </div>
+            </div>
+          </div>
+        ) : (
+          <div className="pfe-placeholder">
+            {placeholder ?? <>상류 노드를 실행하면<br /><small>이미지가 여기에 표시됩니다</small></>}
+          </div>
+        )}
       </div>
 
       {footer && <div className="pfe-roi-summary">{footer}</div>}

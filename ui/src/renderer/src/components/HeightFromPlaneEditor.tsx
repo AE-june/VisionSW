@@ -15,13 +15,15 @@ interface Props extends HeightFromPlaneSettings {
   zMax?: number
   resXMm?: number
   resYMm?: number
+  originCol?: number
+  originRow?: number
   onChange: (next: HeightFromPlaneSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'measure', label: 'Measure' }]
 
 export default function HeightFromPlaneEditor(props: Props) {
-  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, resXMm, resYMm, onChange } = props
+  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, onChange } = props
 
   const emit = (patch: Partial<HeightFromPlaneSettings>) =>
     onChange({ rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, ...patch })
@@ -36,6 +38,8 @@ export default function HeightFromPlaneEditor(props: Props) {
         zMax={zMax}
         resXMm={resXMm}
         resYMm={resYMm}
+        originCol={originCol}
+        originRow={originRow}
         enableCircle
         onChange={r => emit({ rois: r })}
       />
