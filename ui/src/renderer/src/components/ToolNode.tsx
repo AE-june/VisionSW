@@ -63,20 +63,6 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
     )
   }
 
-  // LineFitHeight measurement
-  if (toolType === 'LineFitHeight' && result.heightDiff !== undefined) {
-    const pass = result.pass !== false
-    return (
-      <div className="tool-node-result">
-        <div className={`tool-node-measure ${pass ? 'pass' : 'fail'}`}>
-          <span className="measure-label">ΔH</span>
-          <span className="measure-value">{result.heightDiff.toFixed(3)} mm</span>
-          <span className={`measure-badge ${pass ? 'pass' : 'fail'}`}>{pass ? 'PASS' : 'FAIL'}</span>
-        </div>
-      </div>
-    )
-  }
-
   // Image / ZMap preview (로더/필터)
   if (result.preview) {
     return (

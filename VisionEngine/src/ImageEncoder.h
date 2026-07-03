@@ -52,7 +52,11 @@ inline std::string imageToBase64(const Image2D& img) {
 
 // ── ZMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
 
-inline std::string zmapToBase64(const ZMap& zmap) {
+// outMin/outMax/outHasRange(옵션): 정규화하며 구한 실제 z범위를 반환 → 호출부 중복 스캔 방지
+inline std::string zmapToBase64(const ZMap& zmap,
+                                float* outMin = nullptr, float* outMax = nullptr,
+                                bool* outHasRange = nullptr) {
+    if (outHasRange) *outHasRange = false;
     if (zmap.empty()) return {};
 
     // Normalize float → uint8
@@ -60,6 +64,11 @@ inline std::string zmapToBase64(const ZMap& zmap) {
     float zMax = -std::numeric_limits<float>::max();
     for (float v : zmap.data) {
         if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
+    }
+    if (zMin <= zMax) {   // 유효 픽셀 존재
+        if (outMin) *outMin = zMin;
+        if (outMax) *outMax = zMax;
+        if (outHasRange) *outHasRange = true;
     }
     float range = (zMax > zMin) ? (zMax - zMin) : 1.f;
 

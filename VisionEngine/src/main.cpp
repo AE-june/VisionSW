@@ -2,7 +2,6 @@
 #include "JsonBridge.h"
 #include "ImageEncoder.h"
 #include "Logger.h"
-#include "LineFitHeightMeasure.h"
 #include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
 #include "HeightFromPlaneTool.h"
@@ -67,6 +66,8 @@ static std::mutex g_cacheMtx;
 
 static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     const bool useCache = msg.value("useCache", false);
+    // 배치 검사 등 화면 표시가 필요 없을 때 미리보기(PNG 인코딩+z스캔) 생략 → 대폭 가속
+    const bool noPreview = msg.value("noPreview", false);
     // 개별 노드 실행 시 이 노드는 캐시 무시하고 항상 재실행 (상류만 캐시 재사용)
     const std::string forceNode = msg.value("forceNode", std::string());
     std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
@@ -204,17 +205,6 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         jr["elapsedMs"] = elapsedMs;
 
         // Attach measurements for known tool types
-        if (ns.type == "LineFitHeight") {
-            auto* m = dynamic_cast<LineFitHeightMeasure*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["heightDiff"] = r.heightDiff;
-                jr["Qz"]         = r.Qz;
-                jr["refZatQ"]    = r.refZatQ;
-                jr["slope"]      = r.slope;
-                jr["intercept"]  = r.intercept;
-            }
-        }
         if (ns.type == "PlaneFit") {
             auto* m = dynamic_cast<PlaneFitTool*>(tool.get());
             if (m && m->lastResult().valid) {
@@ -307,19 +297,16 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
             }
         }
 
-        // Attach image preview (base64 PNG)
-        if (result.output) {
+        // Attach image preview (base64 PNG). noPreview면 인코딩/스캔 전부 생략(배치 가속).
+        if (result.output && !noPreview) {
             if (result.output->hasImage())
                 jr["preview"] = imageToBase64(*result.output->image);
             else if (result.output->hasZMap()) {
                 const auto& zm = *result.output->zmap;
-                jr["preview"] = zmapToBase64(zm);
-                // 실제 z(raw count) 범위 — 프론트 컬러맵 range를 실제값 단위로 표시
-                float zMin = std::numeric_limits<float>::max();
-                float zMax = -std::numeric_limits<float>::max();
-                for (float v : zm.data)
-                    if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
-                if (zMin <= zMax) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
+                // zmapToBase64가 정규화하며 구한 z범위를 그대로 받음 (중복 스캔 제거)
+                float zMin = 0, zMax = 0; bool hasRange = false;
+                jr["preview"] = zmapToBase64(zm, &zMin, &zMax, &hasRange);
+                if (hasRange) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
                 jr["xResMm"] = zm.xResMm;
                 jr["yResMm"] = zm.yResMm;
             }

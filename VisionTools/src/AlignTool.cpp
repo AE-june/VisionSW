@@ -14,19 +14,21 @@ ToolResult AlignTool::execute(VisionDataPtr input) {
 
     const auto& p = *input->origin;
 
-    m_result.offCol = p.xPx;
-    m_result.offRow = p.yPx;
-    m_result.offXMm = p.xMm;
-    m_result.offYMm = p.yMm;
+    // 선택되지 않은 축(hasX/hasY=false)은 원점 이동 없음(0 유지) — 해당 축 좌표계 변환 안 함.
+    m_result.offCol = p.hasX ? p.xPx : 0.0;
+    m_result.offRow = p.hasY ? p.yPx : 0.0;
+    m_result.offXMm = p.hasX ? p.xMm : 0.0;
+    m_result.offYMm = p.hasY ? p.yMm : 0.0;
     m_result.valid  = true;
 
-    VISION_LOG_INFO("Align: origin=({:.1f},{:.1f})px ({:.3f},{:.3f})mm",
-                    p.xPx, p.yPx, p.xMm, p.yMm);
+    VISION_LOG_INFO("Align: origin=({:.1f},{:.1f})px ({:.3f},{:.3f})mm  [X:{} Y:{}]",
+                    m_result.offCol, m_result.offRow, m_result.offXMm, m_result.offYMm,
+                    p.hasX ? "on" : "off", p.hasY ? "on" : "off");
 
     auto out  = std::make_shared<VisionData>(*input);
     auto zmap = std::make_shared<ZMap>(*input->zmap);
-    zmap->originCol = static_cast<float>(p.xPx);
-    zmap->originRow = static_cast<float>(p.yPx);
+    if (p.hasX) zmap->originCol = static_cast<float>(p.xPx);   // 미선택 축은 기존값(0) 유지
+    if (p.hasY) zmap->originRow = static_cast<float>(p.yPx);
     out->zmap = zmap;
 
     return { ToolStatus::Ok, "", out };

@@ -380,6 +380,7 @@ export default function App() {
             return { id: n.id, type: (n.data as { toolType: string }).toolType, params }
           }),
           edges: baseEdges,
+          noPreview: true,   // 배치 검사: 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
         }
         const r = await runOnce(recipe)
         setBatchResults(prev => [...prev, {

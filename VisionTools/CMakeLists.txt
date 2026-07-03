@@ -2,7 +2,6 @@ add_library(VisionTools STATIC
     src/NoiseFilter.cpp
     src/EdgeDetector.cpp
     src/ThicknessMeasure.cpp
-    src/LineFitHeightMeasure.cpp
     src/PlaneFitTool.cpp
     src/HeightFromPlaneTool.cpp
     src/CsvWriterTool.cpp

@@ -48,19 +48,6 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: {},
   },
   {
-    type: 'LineFitHeight', label: 'LineFit Height', category: '측정',
-    inputs: ['ZMap'], outputs: ['ZMap'],
-    defaultParams: {
-      roiFit1:    { x: 0, y: 0, w: 100, h: 20 },
-      roiFit2:    { x: 0, y: 80, w: 100, h: 20 },
-      roiMeasure: { x: 0, y: 40, w: 100, h: 20 },
-      aggregation: 'Mean',
-      useRansac: false,
-      ransacIterations: 200,
-      ransacThreshold: 0.05,
-    },
-  },
-  {
     type: 'PlaneFit', label: 'Plane Fit', category: '측정',
     inputs: ['ZMap'], outputs: ['Plane'],
     defaultParams: {

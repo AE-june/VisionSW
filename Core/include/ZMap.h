@@ -14,7 +14,7 @@ namespace vision {
 //  좌표 변환:
 //    실제 X (mm) = (col - originCol) * xResMm
 //    실제 Y (mm) = (row - originRow) * yResMm
-//    실제 Z (mm) = data[row * width + col] * zResMm
+//    실제 Z (mm) = (data[row * width + col] - zZeroCount) * zResMm  (16bit 중간값=높이0)
 //
 //  originCol/originRow: 좌표계 원점(px). 기본 0 = 좌상단.
 //    Align 노드가 검출 기준점으로 설정하면 그 점이 (0,0)mm가 되고
@@ -28,6 +28,7 @@ struct ZMap {
     float xResMm  = 1.f;   // X 분해능 (mm/pixel)
     float yResMm  = 1.f;   // Y 분해능 (mm/pixel)
     float zResMm  = 1.f;   // Z 분해능 (mm/count) — raw → mm 변환 계수
+    float zZeroCount = 0.f;// 높이 0에 해당하는 raw count (16bit 센서: 32768). zMm에서 차감.
     float originCol = 0.f; // 좌표계 원점 X (px) — Align이 설정
     float originRow = 0.f; // 좌표계 원점 Y (px) — Align이 설정
 
@@ -40,9 +41,9 @@ struct ZMap {
         return data[static_cast<size_t>(row) * width + col];
     }
 
-    // mm 단위 Z 반환
+    // mm 단위 Z 반환 (중간값 기준: raw count zZeroCount가 높이 0)
     float zMm(int col, int row) const {
-        return rawAt(col, row) * zResMm;
+        return (rawAt(col, row) - zZeroCount) * zResMm;
     }
 
     // mm 단위 X 반환 (원점 기준 상대 좌표)

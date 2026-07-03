@@ -33,10 +33,10 @@ export default function LineCenterEditor(props: Props) {
 
   const searchRois = rois.filter(r => r.type === 'search')
 
-  // 각 검색 ROI 위에 스캔 방향 화살표 (회전 따라감)
+  // 각 검색 ROI 밖에 스캔 방향 화살표 (회전 따라감). zoom을 받아 화면상 크기 고정.
   const arrow = img.w && img.h
-    ? <>{searchRois.map(r => (
-        <ScanArrow key={r.id} roi={r} scanDir={SCAN_DIR} imgW={img.w} imgH={img.h} />
+    ? (zoom: number) => <>{searchRois.map(r => (
+        <ScanArrow key={r.id} roi={r} scanDir={SCAN_DIR} imgW={img.w} imgH={img.h} zoom={zoom} />
       ))}</>
     : undefined
 

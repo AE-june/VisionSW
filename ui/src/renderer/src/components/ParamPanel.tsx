@@ -96,29 +96,6 @@ function PathField({ label, value, onChange, toolType }: {
   )
 }
 
-function LineFitParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
-  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
-  const roi1 = params.roiFit1 as { x: number; y: number; w: number; h: number }
-  const roi2 = params.roiFit2 as typeof roi1
-  const roiM = params.roiMeasure as typeof roi1
-
-  return <>
-    <div className="param-section">ROI</div>
-    <RoiField label="Fit 1"    value={roi1} onChange={v => set('roiFit1', v)} />
-    <RoiField label="Fit 2"    value={roi2} onChange={v => set('roiFit2', v)} />
-    <RoiField label="Measure"  value={roiM} onChange={v => set('roiMeasure', v)} />
-    <div className="param-section">집계</div>
-    <SelectField label="Mode" value={params.aggregation as string}
-      options={['Max', 'Mean', 'HighTail']} onChange={v => set('aggregation', v)} />
-    <div className="param-section">RANSAC</div>
-    <CheckField label="사용" value={params.useRansac as boolean} onChange={v => set('useRansac', v)} />
-    {params.useRansac && <>
-      <NumField label="반복 횟수" value={params.ransacIterations as number} onChange={v => set('ransacIterations', v)} />
-      <NumField label="Threshold (mm)" value={params.ransacThreshold as number} step={0.01} onChange={v => set('ransacThreshold', v)} />
-    </>}
-  </>
-}
-
 function PlaneFitParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const roiRef = params.roiRef     as { x: number; y: number; w: number; h: number }
@@ -259,7 +236,6 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
   if (embedded) {
     return (
       <div className="param-panel-body">
-        {toolType === 'LineFitHeight'    && <LineFitParams    params={params} onChange={handleChange} />}
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
@@ -279,7 +255,6 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         <button className="param-close" onClick={onClose}>✕</button>
       </div>
       <div className="param-panel-body">
-        {toolType === 'LineFitHeight'    && <LineFitParams    params={params} onChange={handleChange} />}
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}

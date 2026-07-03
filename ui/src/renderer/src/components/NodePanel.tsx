@@ -67,6 +67,20 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 }) {
   const zMin = result?.zMin
   const zMax = result?.zMax
+  // 결과 디스플레이 높이 — 구분선 드래그로 상하 조절
+  const [dispH, setDispH] = useState(360)
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const startHDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragRef.current = { startY: e.clientY, startH: dispH }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      setDispH(Math.max(150, Math.min(1000, dragRef.current.startH + (ev.clientY - dragRef.current.startY))))
+    }
+    const onUp = () => { dragRef.current = null; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
   if (!result) {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
@@ -110,6 +124,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
             preview={result.preview}
             zMin={zMin}
             zMax={zMax}
+            resXMm={result.xResMm}
+            resYMm={result.yResMm}
+            canvasHeight={dispH}
             rois={toolType === 'HeightMeasure' ? measureRois : undefined}
             roiTypeLabel={() => 'ROI'}
             overlay={lineOverlay ?? alignOverlay}
@@ -122,6 +139,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               ) : null
             }}
           />
+          <div className="pfe-hsplit" onMouseDown={startHDrag} title="드래그하여 결과 이미지 높이 조절">
+            <span className="pfe-hsplit-grip" />
+          </div>
         </div>
       )}
 
@@ -175,20 +195,22 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               <span className="param-label">X ← 라인</span>
               <select className="param-select" value={xRoi}
                 onChange={e => setSel('xRoi', parseInt(e.target.value))}>
+                <option value={-1}>선택 안함 (X 변환 없음)</option>
                 {found.map(l => <option key={l.roiIndex} value={l.roiIndex}>라인 {l.roiIndex + 1}</option>)}
               </select>
-              <span className="node-result-val">{xLine ? `${xLine.cxMm.toFixed(3)} mm` : '—'}</span>
+              <span className="node-result-val">{xRoi >= 0 && xLine ? `${xLine.cxMm.toFixed(3)} mm` : '—'}</span>
             </div>
             <div className="param-row">
               <span className="param-label">Y ← 라인</span>
               <select className="param-select" value={yRoi}
                 onChange={e => setSel('yRoi', parseInt(e.target.value))}>
+                <option value={-1}>선택 안함 (Y 변환 없음)</option>
                 {found.map(l => <option key={l.roiIndex} value={l.roiIndex}>라인 {l.roiIndex + 1}</option>)}
               </select>
-              <span className="node-result-val">{yLine ? `${yLine.cyMm.toFixed(3)} mm` : '—'}</span>
+              <span className="node-result-val">{yRoi >= 0 && yLine ? `${yLine.cyMm.toFixed(3)} mm` : '—'}</span>
             </div>
             <div className="param-empty" style={{ fontSize: 10 }}>
-              X 출력 = 선택 라인의 x, Y 출력 = 선택 라인의 y. 같은 라인을 고르면 그 점의 (x,y).
+              X 출력 = 선택 라인의 x, Y 출력 = 선택 라인의 y. '선택 안함'이면 다음 좌표계 변환에서 그 축은 변환하지 않습니다.
             </div>
           </div>
         )
@@ -236,7 +258,9 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
     const onMove = (ev: MouseEvent) => {
       if (!dragStartRef.current) return
       const dx = dragStartRef.current.mx - ev.clientX   // drag left = wider
-      onWidthChange(Math.max(220, Math.min(600, dragStartRef.current.w + dx)))
+      // 최대 폭: 창 너비에서 최소 여백(160px)만 남기고 최대한 넓게
+      const maxW = Math.max(600, window.innerWidth - 160)
+      onWidthChange(Math.max(220, Math.min(maxW, dragStartRef.current.w + dx)))
     }
     const onUp = () => {
       dragStartRef.current = null

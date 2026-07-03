@@ -59,9 +59,10 @@ export function LineCenterOverlay({ cx, cy, angleDeg, imgW, imgH, roi, label }: 
 
 const DIR_VEC: Record<string, [number, number]> = { lr: [1, 0], rl: [-1, 0], tb: [0, 1], bt: [0, -1] }
 
-// 검색 ROI의 스캔 방향(방향성)을 화살표로 표시 — 회전과 함께 적용
-export function ScanArrow({ roi, scanDir, imgW, imgH }: {
-  roi?: Roi; scanDir: string; imgW: number; imgH: number
+// 검색 ROI의 스캔 방향(방향성)을 화살표로 표시 — 회전과 함께 적용.
+// zoom(native 스케일, 화면px/원본px)을 받아 화면상 크기를 일정하게 유지하고, ROI 바깥에 그린다.
+export function ScanArrow({ roi, scanDir, imgW, imgH, zoom = 1 }: {
+  roi?: Roi; scanDir: string; imgW: number; imgH: number; zoom?: number
 }) {
   if (!roi || !imgW || !imgH) return null
   const cx = (roi.xPct + roi.wPct / 2) * imgW
@@ -70,14 +71,18 @@ export function ScanArrow({ roi, scanDir, imgW, imgH }: {
   const rr = ((roi.angleDeg ?? 0) * Math.PI) / 180
   const rc = Math.cos(rr), rs = Math.sin(rr)
   const [dlx, dly] = DIR_VEC[scanDir] ?? DIR_VEC.lr
-  const dx = dlx * rc - dly * rs, dy = dlx * rs + dly * rc      // 월드 방향
-  const ext = (Math.abs(dlx) > 0 ? hw : hh) * 0.85
-  const ex = cx + dx * ext, ey = cy + dy * ext                 // 화살촉
-  const sxp = cx - dx * ext, syp = cy - dy * ext               // 꼬리
-  const ah = Math.max(4, Math.min(imgW, imgH) * 0.025)
-  const px = -dy, py = dx                                      // 수직
-  const b1x = ex - dx * ah + px * ah * 0.6, b1y = ey - dy * ah + py * ah * 0.6
-  const b2x = ex - dx * ah - px * ah * 0.6, b2y = ey - dy * ah - py * ah * 0.6
+  const dx = dlx * rc - dly * rs, dy = dlx * rs + dly * rc      // 월드 방향(스캔)
+  const px = -dy, py = dx                                      // 스캔에 수직(월드)
+  // 화면 고정 크기(px) → 이미지 단위로 환산(÷zoom). 줌해도 화면상 크기 일정.
+  const z = zoom > 0 ? zoom : 1
+  const LEN = 34 / z, HEAD = 8 / z, GAP = 10 / z
+  // ROI 측면(스캔에 수직)으로 offset해서 ROI 옆에 나란히 배치, 스캔 방향을 가리킴
+  const perpHalf = Math.abs(dlx) > 0 ? hh : hw                 // 스캔 수직 반치수
+  const ox = cx + px * (perpHalf + GAP), oy = cy + py * (perpHalf + GAP)   // 옆으로 이동한 중심
+  const sxp = ox - dx * (LEN / 2), syp = oy - dy * (LEN / 2)   // 꼬리
+  const ex = ox + dx * (LEN / 2), ey = oy + dy * (LEN / 2)     // 화살촉
+  const b1x = ex - dx * HEAD + px * HEAD * 0.6, b1y = ey - dy * HEAD + py * HEAD * 0.6
+  const b2x = ex - dx * HEAD - px * HEAD * 0.6, b2y = ey - dy * HEAD - py * HEAD * 0.6
   return (
     <svg viewBox={`0 0 ${imgW} ${imgH}`} preserveAspectRatio="none" style={svgStyle}>
       <line x1={sxp} y1={syp} x2={ex} y2={ey} stroke="#29b6f6" strokeWidth={2} vectorEffect="non-scaling-stroke" />

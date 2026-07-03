@@ -2,7 +2,6 @@
 #include "NoiseFilter.h"
 #include "EdgeDetector.h"
 #include "ThicknessMeasure.h"
-#include "LineFitHeightMeasure.h"
 #include "PlaneFitTool.h"
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
@@ -45,6 +44,7 @@ public:
             zmap->xResMm = m_xResMm;
             zmap->yResMm = m_yResMm;
             zmap->zResMm = m_zResMm;   // count당 mm (분해능 그대로 적용)
+            zmap->zZeroCount = 32768.f;// 16bit 중간값 = 높이 0
             zmap->data.resize(static_cast<size_t>(w) * h);
             for (int i = 0; i < w * h; ++i)
                 zmap->data[i] = (raw16[i] == 0)
@@ -70,6 +70,7 @@ public:
         zmap->xResMm = m_xResMm;
         zmap->yResMm = m_yResMm;
         zmap->zResMm = m_zResMm;   // count당 mm (분해능 그대로 적용)
+        zmap->zZeroCount = 128.f;  // 8bit 중간값 = 높이 0
         zmap->data.resize(static_cast<size_t>(w) * h);
         for (int i = 0; i < w * h; ++i)
             zmap->data[i] = (raw8[i] == 0)
@@ -160,21 +161,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.threshold2  = p.value("threshold2", 150.0f);
         params.apertureSize = p.value("apertureSize", 3);
         return std::make_shared<EdgeDetector>(params);
-    }
-    if (type == "LineFitHeight") {
-        LineFitParams params;
-        params.roiFit1      = roiFromJson(p, "roiFit1");
-        params.roiFit2      = roiFromJson(p, "roiFit2");
-        params.roiMeasure   = roiFromJson(p, "roiMeasure");
-        std::string agg = p.value("aggregation", "Max");
-        if      (agg == "Mean")     params.aggregation = ZAggregation::Mean;
-        else if (agg == "HighTail") params.aggregation = ZAggregation::HighTail;
-        else                        params.aggregation = ZAggregation::Max;
-        params.useRansac         = p.value("useRansac",         false);
-        params.ransacIterations  = p.value("ransacIterations",  200);
-        params.ransacThresholdMm = p.value("ransacThreshold",   0.05f);
-        params.referenceMode     = ReferenceMode::Line;
-        return std::make_shared<LineFitHeightMeasure>(params);
     }
     if (type == "PlaneFit") {
         PlaneFitParams params;

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, useRef, type ReactNode } from 'react'
 import ImageViewer, { type Roi, type DrawRect } from './ImageViewer'
 
 export type { Roi } from './ImageViewer'
@@ -16,8 +16,8 @@ interface Props {
   onChange: (rois: Roi[]) => void
   /** ROI별 추가 오버레이 (예: 측정 결과). 같은 type 내 0-based index 전달 */
   overlayFor?: (roi: Roi, indexInType: number) => ReactNode
-  /** 이미지 좌표계 위 임의 오버레이 (예: 스캔 방향 화살표) */
-  overlay?: ReactNode
+  /** 이미지 좌표계 위 임의 오버레이 (예: 스캔 방향 화살표). 함수면 현재 zoom 전달 */
+  overlay?: ReactNode | ((zoom: number) => ReactNode)
   zMin?: number
   zMax?: number
   /** 원형 ROI 그리기 허용 (도형 토글 버튼 표시) */
@@ -68,6 +68,25 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
   const [unit, setUnit] = useState<'px' | 'mm'>('px')
   const [selType, setSelType] = useState<string>(roiTypes[0]?.type ?? '')
+  // 디스플레이(캔버스) 높이 — 구분선 드래그로 좌표 패널과 높이 배분 조절
+  const [dispH, setDispH] = useState(420)
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const startHDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragRef.current = { startY: e.clientY, startH: dispH }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      const h = dragRef.current.startH + (ev.clientY - dragRef.current.startY)
+      setDispH(Math.max(150, Math.min(1000, h)))
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   // 저장 좌표는 원점(Align 검출) 기준 상대값. 캔버스(ImageViewer)는 절대 좌표로 그리므로
   // 렌더링 직전 원점(pct)을 더하고, 변경/생성 결과는 다시 빼서 상대값으로 저장한다.
@@ -151,20 +170,76 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
   const setShape = (id: string, shape: 'rect' | 'circle') =>
     onChange(rois.map(r => r.id === id ? { ...r, shape } : r))
 
+  // 각도(deg) 입력 — 회전 허용(enableRotate) 시에만 노출. 중심 고정, deg 단위.
+  const setAngle = (id: string, deg: number) =>
+    onChange(rois.map(r => r.id === id ? { ...r, angleDeg: deg } : r))
+  const angleField = (roi: Roi) => ({ label: 'A°', value: +(roi.angleDeg ?? 0).toFixed(1), set: (v: number) => setAngle(roi.id, v) })
+
+  // 사각형 중심(Cx,Cy) 기준 편집 — 회전된 ROI에서 좌상단 좌표는 실제 위치와 안 맞으므로
+  // 회전 가능한 편집기에선 중심 기준으로 표시(회전 무관하게 실제 위치 반영). W/H는 중심 고정.
+  const rCx = (r: Roi) => disp(r.xPct + r.wPct / 2, fx)
+  const rCy = (r: Roi) => disp(r.yPct + r.hPct / 2, fy)
+  const updateRectCenter = (id: string, field: 'cx' | 'cy', val: number) => {
+    onChange(rois.map(r => {
+      if (r.id !== id) return r
+      if (field === 'cx') return { ...r, xPct: (fx > 0 ? val / fx : 0) - r.wPct / 2 }
+      return { ...r, yPct: (fy > 0 ? val / fy : 0) - r.hPct / 2 }
+    }))
+  }
+  // 화면(스크린 축) 기준 W/H: 회전된 ROI가 화면에서 차지하는 가로/세로 = 회전 박스의 AABB.
+  // 픽셀 공간에서 계산(회전은 픽셀 기준). 표시는 px/mm.
+  const rectAabbPx = (r: Roi) => {
+    const th = ((r.angleDeg ?? 0) * Math.PI) / 180
+    const c = Math.abs(Math.cos(th)), s = Math.abs(Math.sin(th))
+    const Wpx = r.wPct * imgSize.w, Hpx = r.hPct * imgSize.h
+    return { wPx: Wpx * c + Hpx * s, hPx: Wpx * s + Hpx * c }
+  }
+  const aW = (r: Roi) => { const p = rectAabbPx(r).wPx; return +(useMm ? p * (resXMm ?? 1) : p).toFixed(useMm ? 2 : 0) }
+  const aH = (r: Roi) => { const p = rectAabbPx(r).hPx; return +(useMm ? p * (resYMm ?? 1) : p).toFixed(useMm ? 2 : 0) }
+  const setAabb = (id: string, field: 'w' | 'h', val: number) => {
+    onChange(rois.map(r => {
+      if (r.id !== id) return r
+      const th = ((r.angleDeg ?? 0) * Math.PI) / 180
+      const c = Math.abs(Math.cos(th)), s = Math.abs(Math.sin(th))
+      const det = c * c - s * s
+      if (Math.abs(det) < 0.06) return r   // 45° 부근: AABB 역변환 불안정 → 무시
+      const cur = rectAabbPx(r)
+      const valPx = useMm ? val / (field === 'w' ? (resXMm ?? 1) : (resYMm ?? 1)) : val
+      const tW = field === 'w' ? valPx : cur.wPx
+      const tH = field === 'h' ? valPx : cur.hPx
+      const Wpx = Math.max(1, Math.abs((tW * c - tH * s) / det))
+      const Hpx = Math.max(1, Math.abs((tH * c - tW * s) / det))
+      const w = imgSize.w > 0 ? Wpx / imgSize.w : r.wPct
+      const h = imgSize.h > 0 ? Hpx / imgSize.h : r.hPct
+      const ccx = r.xPct + r.wPct / 2, ccy = r.yPct + r.hPct / 2
+      return { ...r, wPct: w, hPct: h, xPct: ccx - w / 2, yPct: ccy - h / 2 }
+    }))
+  }
+
   // 도형별 입력 필드 정의 — 도형마다 파라미터 이름/개수가 달라도 각 행이 스스로 설명
-  const fieldsFor = (roi: Roi): { label: string; value: number; set: (v: number) => void }[] =>
-    roi.shape === 'circle'
-      ? [
-          { label: 'Cx', value: cCx(roi), set: v => updateCircle(roi.id, 'cx', v) },
-          { label: 'Cy', value: cCy(roi), set: v => updateCircle(roi.id, 'cy', v) },
-          { label: 'R',  value: cR(roi),  set: v => updateCircle(roi.id, 'r',  v) },
-        ]
-      : [
-          { label: 'X', value: disp(roi.xPct, fx), set: v => update(roi.id, 'xPct', v, fx) },
-          { label: 'Y', value: disp(roi.yPct, fy), set: v => update(roi.id, 'yPct', v, fy) },
-          { label: 'W', value: disp(roi.wPct, fx), set: v => update(roi.id, 'wPct', v, fx) },
-          { label: 'H', value: disp(roi.hPct, fy), set: v => update(roi.id, 'hPct', v, fy) },
-        ]
+  const fieldsFor = (roi: Roi): { label: string; value: number; set: (v: number) => void }[] => {
+    if (roi.shape === 'circle')
+      return [
+        { label: 'Cx', value: cCx(roi), set: (v: number) => updateCircle(roi.id, 'cx', v) },
+        { label: 'Cy', value: cCy(roi), set: (v: number) => updateCircle(roi.id, 'cy', v) },
+        { label: 'R',  value: cR(roi),  set: (v: number) => updateCircle(roi.id, 'r',  v) },
+      ]
+    // 회전 가능 편집기: 중심(Cx,Cy) + 화면 기준 폭/높이(AABB) + 각도.
+    if (enableRotate)
+      return [
+        { label: 'Cx', value: rCx(roi), set: (v: number) => updateRectCenter(roi.id, 'cx', v) },
+        { label: 'Cy', value: rCy(roi), set: (v: number) => updateRectCenter(roi.id, 'cy', v) },
+        { label: 'W',  value: aW(roi),  set: (v: number) => setAabb(roi.id, 'w', v) },
+        { label: 'H',  value: aH(roi),  set: (v: number) => setAabb(roi.id, 'h', v) },
+        angleField(roi),
+      ]
+    return [
+      { label: 'X', value: disp(roi.xPct, fx), set: (v: number) => update(roi.id, 'xPct', v, fx) },
+      { label: 'Y', value: disp(roi.yPct, fy), set: (v: number) => update(roi.id, 'yPct', v, fy) },
+      { label: 'W', value: disp(roi.wPct, fx), set: (v: number) => update(roi.id, 'wPct', v, fx) },
+      { label: 'H', value: disp(roi.hPct, fy), set: (v: number) => update(roi.id, 'hPct', v, fy) },
+    ]
+  }
 
   return (
     <div>
@@ -181,10 +256,19 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         roiTypeLabel={() => 'ROI'}
         overlayFor={overlayFor}
         overlay={overlay}
+        canvasHeight={dispH}
         toolbarLeft={toolbarLeft}
         footer={footer}
         enableRotate={enableRotate}
+        resXMm={resXMm}
+        resYMm={resYMm}
       />
+
+      {rois.length > 0 && (
+        <div className="pfe-hsplit" onMouseDown={startHDrag} title="드래그하여 디스플레이/좌표 패널 높이 조절">
+          <span className="pfe-hsplit-grip" />
+        </div>
+      )}
 
       {rois.length > 0 && (
         <div className="roi-coord-list">
@@ -197,6 +281,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
               </span>
             )}
           </div>
+          <div className="roi-coord-rows">
           {rois.map((roi, i, arr) => {
             const idxInType = arr.slice(0, i).filter(r => r.type === roi.type).length
             return (
@@ -219,6 +304,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
               </div>
             )
           })}
+          </div>
         </div>
       )}
     </div>

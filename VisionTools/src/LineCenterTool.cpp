@@ -85,11 +85,18 @@ bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
 
     if (n < 2) return false;
 
-    double cx = sx / n, cy = sy / n;
-    double cxx = sxx / n - cx * cx;
-    double cyy = syy / n - cy * cy;
-    double cxy = sxy / n - cx * cy;
+    // 엣지포인트에 라인 피팅: centroid(mx,my) + 주축 방향(PCA/총최소제곱)
+    double mx = sx / n, my = sy / n;
+    double cxx = sxx / n - mx * mx;
+    double cyy = syy / n - my * my;
+    double cxy = sxy / n - mx * my;
     double angleRad = 0.5 * std::atan2(2.0 * cxy, cxx - cyy);
+    const double dx = std::cos(angleRad), dy = std::sin(angleRad);   // 라인 방향(단위벡터)
+
+    // 라인 중심 = ROI 중앙을 피팅 라인에 투영한 점 (엣지 검출 분포에 안 흔들림).
+    // 피팅 라인은 centroid를 지나므로, ROI 중앙에서 라인에 내린 수선의 발.
+    const double t = (cxRoi - mx) * dx + (cyRoi - my) * dy;
+    const double cx = mx + t * dx, cy = my + t * dy;
 
     out.cx = cx;  out.cy = cy;
     out.cxMm = cx * map.xResMm;  out.cyMm = cy * map.yResMm;

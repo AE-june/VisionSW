@@ -35,7 +35,7 @@ const clampUnit = (v: number) => Math.max(0, Math.min(1, v))
 
 // 회전된 ROI의 리사이즈: 픽셀 공간(W=aspect, H=1)에서 로컬 프레임으로 변환해 처리.
 // 드래그하지 않는 반대편 모서리/변을 고정점(anchor)으로 유지.
-function resizeRotated(e: EditState, x: number, y: number, aspect: number): Roi {
+function resizeRotated(e: EditState, x: number, y: number, aspect: number, imgH?: number): Roi {
   const o = e.orig
   const W = aspect > 0 ? aspect : 1, H = 1
   const rad = ((o.angleDeg ?? 0) * Math.PI) / 180
@@ -50,8 +50,10 @@ function resizeRotated(e: EditState, x: number, y: number, aspect: number): Roi 
   // 포인터를 anchor 기준 로컬 프레임으로
   const ddx = x * W - ax, ddy = y * H - ay
   const lx = ddx * cos + ddy * sin, ly = -ddx * sin + ddy * cos
-  const newW = sx !== 0 ? Math.max(Math.abs(lx), 0.005 * W) : hw * 2
-  const newH = sy !== 0 ? Math.max(Math.abs(ly), 0.005 * H) : hh * 2
+  // 최소 크기 = 1px (이 정규화 공간에선 1px = 1/imgH 단위, 정사각 픽셀 가정)
+  const minLen = imgH && imgH > 0 ? 1 / imgH : 0.002
+  const newW = sx !== 0 ? Math.max(Math.abs(lx), minLen) : hw * 2
+  const newH = sy !== 0 ? Math.max(Math.abs(ly), minLen) : hh * 2
   const cLx = sx !== 0 ? Math.sign(lx) * newW / 2 : 0
   const cLy = sy !== 0 ? Math.sign(ly) * newH / 2 : 0
   const ncx = ax + (cLx * cos - cLy * sin), ncy = ay + (cLx * sin + cLy * cos)
@@ -70,15 +72,15 @@ function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean;
     return { ...o, angleDeg: deg }
   }
   if (e.mode === 'resize' && (o.angleDeg ?? 0) !== 0) {
-    return resizeRotated(e, x, y, opts?.aspect ?? 1)
+    return resizeRotated(e, x, y, opts?.aspect ?? 1, opts?.imgH)
   }
   if (e.mode === 'move') {
     const dx = x - e.startX, dy = y - e.startY
-    return {
-      ...o,
-      xPct: Math.max(0, Math.min(1 - o.wPct, o.xPct + dx)),
-      yPct: Math.max(0, Math.min(1 - o.hPct, o.yPct + dy)),
-    }
+    // 회전된 ROI는 회전 전 박스가 이미지 밖으로 나갈 수 있으므로 좌상단이 아닌 '중심'을 [0,1]로 클램프.
+    // (좌상단 클램프는 넓은 90° 회전 ROI가 한쪽으로 못 움직이는 문제를 유발함)
+    const ncx = clampUnit(o.xPct + o.wPct / 2 + dx)
+    const ncy = clampUnit(o.yPct + o.hPct / 2 + dy)
+    return { ...o, xPct: ncx - o.wPct / 2, yPct: ncy - o.hPct / 2 }
   }
 
   // Shift + 원형 리사이즈: 반대편 모서리를 고정한 채 이미지 픽셀 공간에서 정사각(=정원)으로
@@ -104,31 +106,27 @@ function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean;
     }
   }
 
-  // resize: 핸들에 포함된 방향의 모서리만 마우스 위치로 이동
-  let left = o.xPct, top = o.yPct, right = o.xPct + o.wPct, bottom = o.yPct + o.hPct
-  if (e.handle.includes('w')) left = clampUnit(x)
-  if (e.handle.includes('e')) right = clampUnit(x)
-  if (e.handle.includes('n')) top = clampUnit(y)
-  if (e.handle.includes('s')) bottom = clampUnit(y)
-  // W/H를 정수 픽셀에 스냅 — 고정(anchor)변은 두고 드래그하는 변만 이동시켜 W/H가 정확히 정수 px가 되게.
-  // 줌인할수록 마우스로도 1px 단위 조정 가능(화면 픽셀 해상도가 한계).
+  // resize: 핸들에 포함된 방향의 모서리만 마우스 위치로 이동. 반대편(앵커) 모서리는 고정.
+  // 드래그하는 모서리만 마우스를 따라가고, 뒤집힘(min/max 교차) 없이 앵커 기준으로 크기 계산.
   const iw = opts?.imgW ?? 0, ih = opts?.imgH ?? 0
-  if (iw > 0) {
-    if (e.handle.includes('e'))      right = left + Math.round((right - left) * iw) / iw
-    else if (e.handle.includes('w')) left  = right - Math.round((right - left) * iw) / iw
-  }
-  if (ih > 0) {
-    if (e.handle.includes('s'))      bottom = top + Math.round((bottom - top) * ih) / ih
-    else if (e.handle.includes('n')) top    = bottom - Math.round((bottom - top) * ih) / ih
-  }
   const minW = iw > 0 ? 1 / iw : 0.002   // 최소 1px
   const minH = ih > 0 ? 1 / ih : 0.002
-  return {
-    ...o,
-    xPct: Math.min(left, right),
-    yPct: Math.min(top, bottom),
-    wPct: Math.max(minW, Math.abs(right - left)),
-    hPct: Math.max(minH, Math.abs(bottom - top)),
+  let xPct = o.xPct, yPct = o.yPct, wPct = o.wPct, hPct = o.hPct
+  if (e.handle.includes('e')) {                       // 오른쪽 이동, 왼쪽(xPct) 고정
+    wPct = Math.max(minW, x - o.xPct)
+  } else if (e.handle.includes('w')) {                // 왼쪽 이동, 오른쪽(xPct+wPct) 고정
+    const rightEdge = o.xPct + o.wPct
+    xPct = Math.min(x, rightEdge - minW)
+    wPct = rightEdge - xPct
+  }
+  if (e.handle.includes('s')) {                       // 아래쪽 이동, 위(yPct) 고정
+    hPct = Math.max(minH, y - o.yPct)
+  } else if (e.handle.includes('n')) {                // 위쪽 이동, 아래(yPct+hPct) 고정
+    const bottomEdge = o.yPct + o.hPct
+    yPct = Math.min(y, bottomEdge - minH)
+    hPct = bottomEdge - yPct
+  }
+  return { ...o, xPct, yPct, wPct, hPct
   }
 }
 
@@ -147,8 +145,8 @@ interface Props {
   roiTypeLabel?: (type: string) => string
   /** ROI별 추가 오버레이 (결과 거리 등). 같은 type 내 0-based index */
   overlayFor?: (roi: Roi, indexInType: number) => ReactNode
-  /** 이미지 좌표계 위에 렌더되는 임의 오버레이 */
-  overlay?: ReactNode
+  /** 이미지 좌표계 위에 렌더되는 임의 오버레이. 함수면 현재 zoom(native 스케일)을 받아 렌더 */
+  overlay?: ReactNode | ((zoom: number) => ReactNode)
   /** 툴바 좌측 커스텀 영역 (그리기 버튼 등) */
   toolbarLeft?: ReactNode
   /** 하단 요약/힌트 영역 */
@@ -161,19 +159,29 @@ interface Props {
   onImageSize?: (w: number, h: number) => void
   /** ROI 회전 핸들 표시 (대각선 검색용) */
   enableRotate?: boolean
+  /** 표시 박스(캔버스) 높이(px). 없으면 CSS 기본값(420) */
+  canvasHeight?: number
+  /** 마우스 오버 좌표 표시용 분해능(mm/px). 있으면 mm 좌표도 함께 표시 */
+  resXMm?: number
+  resYMm?: number
 }
 
 const MAX_ZOOM = 100   // native 스케일 상한 (10000% = 원본 픽셀의 100배)
+// ROI가 화면상 이보다 작으면(가로·세로 중 하나라도) 리사이즈 핸들을 숨기고 이동만 허용.
+// 줌인해서 이 크기 이상 보이면 그때부터 리사이즈 핸들 노출.
+const HANDLE_MIN_PX = 30
 
 export default function ImageViewer({
   preview, drawMode, drawShape, onDrawComplete, rois, onRoisChange, roiTypeLabel, overlayFor,
-  overlay, toolbarLeft, footer, placeholder, zMin, zMax, onImageSize, enableRotate
+  overlay, toolbarLeft, footer, placeholder, zMin, zMax, onImageSize, enableRotate, canvasHeight,
+  resXMm, resYMm
 }: Props) {
   const [zoom, setZoom] = useState(1)
   const [draw, setDraw] = useState<DrawState | null>(null)
   const [edit, setEdit] = useState<EditState | null>(null)
   const [imgAspect, setImgAspect] = useState<number | null>(null)
   const [imgPx, setImgPx] = useState({ w: 0, h: 0 })
+  const [hover, setHover] = useState<{ col: number; row: number } | null>(null)   // 마우스 오버 위치(이미지 px)
   const [csize, setCsize] = useState({ w: 0, h: 0 })   // 박스(=패널 폭 × 고정 높이). 클리핑/좌표 기준
   const [colormap, setColormap] = useState(false)
   const [autoRange, setAutoRange] = useState(true)
@@ -266,6 +274,14 @@ export default function ImageViewer({
   }, [drawMode, toImgPct])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
+    // 마우스 오버 좌표(이미지 px) 갱신 — 이미지 영역 안일 때만
+    const p = toImgPct(e.clientX, e.clientY)
+    const img = imgPxRef.current
+    if (img.w > 0 && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) {
+      setHover({ col: p.x * img.w, row: p.y * img.h })
+    } else {
+      setHover(null)
+    }
     if (draw) {
       let { x, y } = toImgPct(e.clientX, e.clientY)
       // Shift + 원형: 정원 (이미지 픽셀 공간에서 가로=세로)
@@ -470,10 +486,11 @@ export default function ImageViewer({
       <div
         ref={containerRef}
         className={`pfe-canvas${modeClass}`}
+        style={canvasHeight ? { height: `${canvasHeight}px` } : undefined}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
+        onMouseLeave={() => { onMouseUp(); setHover(null) }}
       >
         {preview ? (
           // 콘텐츠 = 이미지 표시 크기. 박스보다 크면 스크롤바가 생기고, 작으면 여백으로 가운데 정렬.
@@ -489,10 +506,10 @@ export default function ImageViewer({
                   borderRadius: drawShape === 'circle' ? '50%' : undefined, borderWidth: '2px' }} />
             )}
 
-            {/* 오버레이(라인/중심/화살표)는 콘텐츠(이미지)에 정렬 */}
+            {/* 오버레이(라인/중심/화살표)는 콘텐츠(이미지)에 정렬. 함수면 현재 zoom 전달(크기 고정용) */}
             {overlay && (
               <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                {overlay}
+                {typeof overlay === 'function' ? overlay(zoom) : overlay}
               </div>
             )}
 
@@ -506,6 +523,8 @@ export default function ImageViewer({
             const width = roi.wPct * cbox.w
             const height = roi.hPct * cbox.h
             const angle = roi.angleDeg ?? 0
+            // 화면상 충분히 커야 리사이즈/회전 핸들 노출 (작으면 이동만)
+            const resizable = editable && width >= HANDLE_MIN_PX && height >= HANDLE_MIN_PX
             return (
               <div
                 key={roi.id}
@@ -521,7 +540,8 @@ export default function ImageViewer({
                   setEdit({ id: roi.id, mode: 'move', handle: '', startX: x, startY: y, orig: roi })
                 }) : undefined}
               >
-                <span className="pfe-roi-label">{label}</span>
+                <span className="pfe-roi-label"
+                  style={angle ? { transform: `rotate(${-angle}deg)`, transformOrigin: 'left top' } : undefined}>{label}</span>
                 {editable && (
                   <button className="pfe-roi-del"
                     onMouseDown={e => e.stopPropagation()}
@@ -531,14 +551,14 @@ export default function ImageViewer({
                 {overlayFor && (
                   <div className="pfe-roi-overlay">{overlayFor(roi, idxInType)}</div>
                 )}
-                {editable && enableRotate && roi.shape !== 'circle' && (
+                {resizable && enableRotate && roi.shape !== 'circle' && (
                   <div className="pfe-roi-rot" title="드래그하여 회전 (Shift: 15° 스냅)"
                     onMouseDown={e => {
                       e.stopPropagation(); e.preventDefault()
                       setEdit({ id: roi.id, mode: 'rotate', handle: '', startX: 0, startY: 0, orig: roi })
                     }} />
                 )}
-                {editable && HANDLES.map(h => (
+                {resizable && HANDLES.map(h => (
                   <div key={h} className={`pfe-roi-handle h-${h}`}
                     onMouseDown={e => {
                       e.stopPropagation(); e.preventDefault()
@@ -554,6 +574,20 @@ export default function ImageViewer({
           <div className="pfe-placeholder">
             {placeholder ?? <>상류 노드를 실행하면<br /><small>이미지가 여기에 표시됩니다</small></>}
           </div>
+        )}
+      </div>
+
+      {/* 마우스 오버 좌표 — 디스플레이 패널 바로 아래 별도 줄 */}
+      <div className="pfe-coord-bar">
+        {hover ? (
+          <>
+            <span>px: ({Math.round(hover.col)}, {Math.round(hover.row)})</span>
+            {resXMm && resYMm && (
+              <span>mm: ({(hover.col * resXMm).toFixed(3)}, {(hover.row * resYMm).toFixed(3)})</span>
+            )}
+          </>
+        ) : (
+          <span className="pfe-coord-bar-hint">이미지 위에 마우스를 올리면 좌표 표시</span>
         )}
       </div>
 

@@ -57,7 +57,7 @@ export default function HeightFromPlaneEditor(props: Props) {
       {aggregation === 'HighTail' && (
         <div className="param-row">
           <span className="param-label">High Tail (%)</span>
-          <input className="param-input" type="number" step="1" min="1" max="100" value={highTailPct}
+          <input className="param-input" type="number" step="0.1" min="0.1" max="100" value={highTailPct}
             onChange={e => emit({ highTailPct: parseFloat(e.target.value) || 0 })} />
         </div>
       )}

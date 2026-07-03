@@ -26,11 +26,11 @@ export default function FolderInspectPanel({
   const failCnt = results.filter(r => r.pass === false).length
 
   return (
-    <div className="fi-overlay" onMouseDown={e => { if (e.target === e.currentTarget && !running) onClose() }}>
+    <div className="fi-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="fi-panel">
         <div className="fi-header">
           <span>📁 폴더검사 / 연속검사</span>
-          <button className="param-close" onClick={onClose} disabled={running}>✕</button>
+          <button className="param-close" onClick={onClose}>✕</button>
         </div>
 
         <div className="fi-body">

@@ -373,7 +373,7 @@
 /* ── 노드 패널 (우측, 파라미터+결과 탭) ── */
 .node-panel {
   min-width: 220px;
-  max-width: 600px;
+  max-width: 95vw;
   position: relative;
   background: #1a1a1a;
   border-left: 1px solid #2e2e2e;
@@ -830,6 +830,22 @@
   cursor: grab;
 }
 .pfe-canvas.pfe-mode-draw { cursor: crosshair; }
+/* 마우스 오버 좌표 표시 — 디스플레이 아래 별도 줄 */
+.pfe-coord-bar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 4px;
+  padding: 3px 8px;
+  min-height: 20px;
+  background: #141414;
+  border: 1px solid #2e2e2e;
+  border-radius: 3px;
+  color: #cfe8ff;
+  font-size: 11px; font-family: monospace;
+  white-space: nowrap;
+}
+.pfe-coord-bar-hint { color: #555; font-family: inherit; }
 /* 스크롤바 (webkit) */
 .pfe-canvas::-webkit-scrollbar { width: 10px; height: 10px; }
 .pfe-canvas::-webkit-scrollbar-track { background: #1a1a1a; }
@@ -1011,13 +1027,36 @@
 .pfe-roi-count.measure { color: #ff5722; }
 
 /* ROI 좌표 입력 폼 */
-.roi-coord-list { margin-top: 10px; font-size: 11px; }
+/* 디스플레이 ↔ 좌표 패널 높이 조절 구분선 */
+.pfe-hsplit {
+  height: 10px;
+  margin: 4px 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: row-resize;
+}
+.pfe-hsplit-grip {
+  width: 40px; height: 3px; border-radius: 2px;
+  background: #444;
+}
+.pfe-hsplit:hover .pfe-hsplit-grip { background: #00bcd4; }
+
+.roi-coord-list { margin-top: 4px; font-size: 11px; }
 .roi-coord-head {
   display: flex; justify-content: space-between; align-items: center;
   color: #bbb; margin-bottom: 5px; font-weight: bold;
 }
 .roi-unit-toggle { display: inline-flex; gap: 3px; }
 .roi-unit-toggle .pfe-btn { padding: 1px 7px; }
+/* 좌표 행 목록 — 많아지면 세로 스크롤 (헤더는 위에 고정) */
+.roi-coord-rows {
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.roi-coord-rows::-webkit-scrollbar { width: 8px; }
+.roi-coord-rows::-webkit-scrollbar-track { background: #1a1a1a; }
+.roi-coord-rows::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+.roi-coord-rows::-webkit-scrollbar-thumb:hover { background: #666; }
 .roi-coord-row {
   display: flex; align-items: center; gap: 4px;
   margin-bottom: 3px;
