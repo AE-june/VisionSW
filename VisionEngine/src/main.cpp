@@ -349,7 +349,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 // ── Main ─────────────────────────────────────────────────────────────────
 
 int main() {
-    vision::LoggerInit("D:/GitHub/VisionSWTool/vision_diag.log");
+    vision::LoggerInit("vision_diag.log");
     std::cout << "[VisionEngine] Starting on ws://localhost:9000\n";
 
     crow::SimpleApp app;
