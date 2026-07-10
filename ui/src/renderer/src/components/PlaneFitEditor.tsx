@@ -56,12 +56,12 @@ export default function PlaneFitEditor(props: Props) {
       </div>
       {algorithm === 'RANSAC' && <>
         <div className="param-row">
-          <span className="param-label">Threshold (mm)</span>
+          <span className="param-label" title="점에서 후보 평면까지의 수직거리가 이 값 이하면 인라이어로 취급. 작을수록 엄격. 단위: mm">Threshold (mm)</span>
           <input className="param-input" type="number" step="0.001" value={ransacThreshold}
             onChange={e => emit({ ransacThreshold: parseFloat(e.target.value) || 0 })} />
         </div>
         <div className="param-row">
-          <span className="param-label">Iterations</span>
+          <span className="param-label" title="RANSAC 반복 횟수. 많을수록 정확하지만 느림. 보통 100~500.">Iterations</span>
           <input className="param-input" type="number" step="10" value={ransacIterations}
             onChange={e => emit({ ransacIterations: parseInt(e.target.value) || 0 })} />
         </div>

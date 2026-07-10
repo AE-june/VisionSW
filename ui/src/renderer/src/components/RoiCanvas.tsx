@@ -1,4 +1,4 @@
-import { useState, useRef, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import ImageViewer, { type Roi, type DrawRect } from './ImageViewer'
 
 export type { Roi } from './ImageViewer'
@@ -68,25 +68,6 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
   const [unit, setUnit] = useState<'px' | 'mm'>('px')
   const [selType, setSelType] = useState<string>(roiTypes[0]?.type ?? '')
-  // 디스플레이(캔버스) 높이 — 구분선 드래그로 좌표 패널과 높이 배분 조절
-  const [dispH, setDispH] = useState(420)
-  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
-  const startHDrag = (e: React.MouseEvent) => {
-    e.preventDefault()
-    dragRef.current = { startY: e.clientY, startH: dispH }
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return
-      const h = dragRef.current.startH + (ev.clientY - dragRef.current.startY)
-      setDispH(Math.max(150, Math.min(1000, h)))
-    }
-    const onUp = () => {
-      dragRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
 
   // 저장 좌표는 원점(Align 검출) 기준 상대값. 캔버스(ImageViewer)는 절대 좌표로 그리므로
   // 렌더링 직전 원점(pct)을 더하고, 변경/생성 결과는 다시 빼서 상대값으로 저장한다.
@@ -256,19 +237,12 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         roiTypeLabel={() => 'ROI'}
         overlayFor={overlayFor}
         overlay={overlay}
-        canvasHeight={dispH}
         toolbarLeft={toolbarLeft}
         footer={footer}
         enableRotate={enableRotate}
         resXMm={resXMm}
         resYMm={resYMm}
       />
-
-      {rois.length > 0 && (
-        <div className="pfe-hsplit" onMouseDown={startHDrag} title="드래그하여 디스플레이/좌표 패널 높이 조절">
-          <span className="pfe-hsplit-grip" />
-        </div>
-      )}
 
       {rois.length > 0 && (
         <div className="roi-coord-list">

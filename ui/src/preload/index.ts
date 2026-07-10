@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Force restart / reconnect the VisionEngine
   engineRestart: () => ipcRenderer.invoke('engine:restart'),
 
+  // ZMapLoader 폴더 선택 시 미리 캐시
+  enginePreload: (folder: string, xResMm: number, yResMm: number, zResMm: number) =>
+    ipcRenderer.invoke('engine:preload', folder, xResMm, yResMm, zResMm),
+
   // Subscribe to streamed events from VisionEngine
   onEngineEvent: (cb: (data: unknown) => void) => {
     const handler = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)

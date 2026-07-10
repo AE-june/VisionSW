@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <utility>
 
 namespace vision {
 
@@ -90,6 +91,8 @@ struct VisionData {
     std::shared_ptr<std::vector<double>> heights; // 측정된 높이값 배열 (HeightMeasure 출력)
     std::shared_ptr<std::vector<RefPoint>> points; // 검출된 기준점들 (LineCenter)
     std::shared_ptr<OriginCoord>  origin;        // 선택된 출력 좌표 X/Y (LineCenter → 좌표정렬)
+    // 단계별 미리보기(선택) — (이름, ZMap) 목록. 결과창 드롭다운으로 중간단계 조회용.
+    std::shared_ptr<std::vector<std::pair<std::string, ZMapPtr>>> stages;
     std::string                   sourceId;     // sensor / file origin
     int64_t                       timestampUs = 0;
 

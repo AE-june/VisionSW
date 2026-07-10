@@ -7,7 +7,7 @@ import NodeCanvas from './components/NodeCanvas'
 import ResultPanel from './components/ResultPanel'
 import type { MeasureResult, LogEntry } from './components/ResultPanel'
 import NodePanel from './components/NodePanel'
-import FolderInspectPanel, { type BatchFile, type BatchResult } from './components/FolderInspectPanel'
+import FolderInspectPanel, { type BatchResult, type BatchLoader, type BatchSortKey } from './components/FolderInspectPanel'
 import { HoveredEdgeContext, type HoveredEdge } from './components/hoveredEdge'
 import { TOOL_DEF_MAP } from './types/tools'
 import './App.css'
@@ -25,7 +25,7 @@ declare global {
       engineRestart: () => Promise<{ ok?: boolean }>
       onEngineEvent: (cb: (data: unknown) => void) => () => void
       openFolder: () => Promise<string | null>
-      listFolderImages: (dir: string) => Promise<{ name: string; path: string }[]>
+      listFolderImages: (dir: string) => Promise<{ name: string; path: string; mtimeMs: number }[]>
     }
   }
 }
@@ -41,6 +41,7 @@ export default function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [panelPinned, setPanelPinned] = useState(false)
   const [running, setRunning] = useState(false)
   const [engineConnected, setEngineConnected] = useState(false)
   const [results, setResults] = useState<MeasureResult[]>([])
@@ -55,11 +56,12 @@ export default function App() {
   // ── 폴더검사(연속검사) 상태 ──
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchRunning, setBatchRunning] = useState(false)
-  const [batchFolder, setBatchFolder] = useState<string | null>(null)
-  const [batchFiles, setBatchFiles] = useState<BatchFile[]>([])
+  const [batchLoaders, setBatchLoaders] = useState<BatchLoader[]>([])   // folder 모드 ZMapLoader 목록
+  const [batchSortKey, setBatchSortKey] = useState<BatchSortKey>('name') // 폴더 간 매칭 정렬 기준
   const [batchIndex, setBatchIndex] = useState(0)
   const [batchCycle, setBatchCycle] = useState(1)
   const [batchRepeat, setBatchRepeat] = useState(false)
+  const [batchPreview, setBatchPreview] = useState(false)   // 배치 중 디스플레이 갱신(미리보기 생성) 여부
   const [batchResults, setBatchResults] = useState<BatchResult[]>([])
   // 'done'/'error' 이벤트를 한 실행씩 await하기 위한 resolver, 중지 플래그
   const pendingDoneRef = useRef<((r: { pass: boolean; totalMs: number; error?: boolean }) => void) | null>(null)
@@ -187,28 +189,45 @@ export default function App() {
     if (res.error) setLogs(l => [...l, { level: 'error', msg: res.error! }])
   }, [setNodes])  // stable — reads latest via ref
 
-  // 레시피 저장 — 노드/엣지/파라미터/위치를 JSON으로
-  const handleSaveRecipe = useCallback(async () => {
+  // 현재 열려있는(또는 마지막으로 저장한) 레시피 파일 경로. null이면 아직 저장 안 됨.
+  const [recipePath, setRecipePath] = useState<string | null>(null)
+
+  // 현재 그래프(노드/엣지/파라미터/위치)를 레시피 JSON 문자열로 직렬화
+  const buildRecipeJson = useCallback(() => JSON.stringify({
+    nodes: nodesRef.current.map(n => ({
+      id: n.id,
+      type: (n.data as { toolType: string }).toolType,
+      label: (n.data as { label: string }).label,
+      params: (n.data as { params: Record<string, unknown> }).params ?? {},
+      position: n.position,
+    })),
+    edges: edgesRef.current.map(e => ({
+      id: e.id, source: e.source, target: e.target,
+      sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
+    })),
+  }, null, 2), [])
+
+  const saveToPath = useCallback(async (path: string) => {
+    const api = window.electronAPI
+    if (!api?.saveRecipe) return
+    await api.saveRecipe(path, buildRecipeJson())
+    setRecipePath(path)
+    setLogs(l => [...l, { level: 'info', msg: `레시피 저장됨: ${path}` }])
+  }, [buildRecipeJson])
+
+  // 다른 이름으로 저장 — 항상 경로를 새로 지정
+  const handleSaveRecipeAs = useCallback(async () => {
     const api = window.electronAPI
     if (!api?.saveFile) return
     const path = await api.saveFile([{ name: 'Recipe', extensions: ['json'] }, { name: 'All Files', extensions: ['*'] }])
-    if (!path) return
-    const recipe = {
-      nodes: nodesRef.current.map(n => ({
-        id: n.id,
-        type: (n.data as { toolType: string }).toolType,
-        label: (n.data as { label: string }).label,
-        params: (n.data as { params: Record<string, unknown> }).params ?? {},
-        position: n.position,
-      })),
-      edges: edgesRef.current.map(e => ({
-        id: e.id, source: e.source, target: e.target,
-        sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
-      })),
-    }
-    await api.saveRecipe(path, JSON.stringify(recipe, null, 2))
-    setLogs(l => [...l, { level: 'info', msg: `레시피 저장됨: ${path}` }])
-  }, [])
+    if (path) await saveToPath(path)
+  }, [saveToPath])
+
+  // 저장(Ctrl+S) — 현재 파일 경로가 있으면 그 경로에 덮어쓰기, 없으면 다른 이름으로 저장
+  const handleSaveRecipe = useCallback(async () => {
+    if (recipePath) await saveToPath(recipePath)
+    else await handleSaveRecipeAs()
+  }, [recipePath, saveToPath, handleSaveRecipeAs])
 
   // 레시피 불러오기
   const handleLoadRecipe = useCallback(async () => {
@@ -228,11 +247,25 @@ export default function App() {
       })))
       setEdges(recipe.edges.map(e => ({ ...e, animated: false })))
       setNodeResults({}); setResults([]); setOverallPass(null); setSelectedNodeId(null)
+      setRecipePath(path)   // 이후 Ctrl+S는 이 경로에 덮어쓰기
       setLogs(l => [...l, { level: 'info', msg: `레시피 불러옴: ${path}` }])
     } catch (err) {
       setLogs(l => [...l, { level: 'error', msg: `레시피 로드 실패: ${String(err)}` }])
     }
   }, [setNodes, setEdges, handleNodeRun])
+
+  // 단축키: Ctrl+S 저장(현재 경로), Ctrl+Shift+S 다른 이름으로 저장
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        if (e.shiftKey) handleSaveRecipeAs()
+        else handleSaveRecipe()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleSaveRecipe, handleSaveRecipeAs])
 
   // 엔진 강제 재시작 / 재연결
   const handleRestartEngine = useCallback(async () => {
@@ -272,8 +305,8 @@ export default function App() {
   }, [])
 
   const onPaneClick = useCallback(() => {
-    setSelectedNodeId(null)
-  }, [])
+    if (!panelPinned) setSelectedNodeId(null)
+  }, [panelPinned])
 
   const onParamChange = useCallback((nodeId: string, params: Record<string, unknown>) => {
     setNodes((nds) => nds.map(n =>
@@ -316,17 +349,32 @@ export default function App() {
   }, [])
 
   // ── 폴더검사 ──
-  const handlePickFolder = useCallback(async () => {
-    const api = window.electronAPI
-    if (!api?.openFolder) return
-    const dir = await api.openFolder()
-    if (!dir) return
-    const files = await api.listFolderImages(dir)
-    setBatchFolder(dir)
-    setBatchFiles(files)
-    setBatchResults([])
-    setLogs(l => [...l, { level: 'info', msg: `폴더 선택: ${dir} (이미지 ${files.length}개)` }])
+  // folder 모드인 ZMapLoader 노드 수집 (id, 라벨, 폴더). 여러 로더가 각자 폴더를 순회.
+  const folderLoaderNodes = useCallback(() => nodesRef.current.filter(n => {
+    const d = n.data as { toolType: string; params?: Record<string, unknown> }
+    return d.toolType === 'ZMapLoader' && d.params?.mode === 'folder' && !!d.params?.folder
+  }), [])
+
+  // 폴더별 이미지 나열 후 정렬키(name/time) 적용
+  const listSorted = useCallback(async (folder: string, key: BatchSortKey) => {
+    const files = (await window.electronAPI?.listFolderImages(folder)) ?? []
+    return key === 'time' ? [...files].sort((a, b) => a.mtimeMs - b.mtimeMs) : files  // name은 main에서 이미 정렬
   }, [])
+
+  // 패널이 열려 있거나 그래프가 바뀌면 로더 목록/개수 갱신 (표시용)
+  useEffect(() => {
+    if (!batchOpen) return
+    let cancelled = false
+    const api = window.electronAPI
+    if (!api) return
+    const loaders = folderLoaderNodes()
+    Promise.all(loaders.map(async n => {
+      const d = n.data as { label: string; params: Record<string, unknown> }
+      const files = await api.listFolderImages(d.params.folder as string)
+      return { id: n.id, label: d.label, folder: d.params.folder as string, count: files.length }
+    })).then(infos => { if (!cancelled) setBatchLoaders(infos) })
+    return () => { cancelled = true }
+  }, [batchOpen, nodes, folderLoaderNodes])
 
   const handleBatchStop = useCallback(() => {
     batchStopRef.current = true
@@ -335,14 +383,31 @@ export default function App() {
 
   const handleBatchStart = useCallback(async () => {
     const api = window.electronAPI
-    if (!api || batchFiles.length === 0) return
+    if (!api) return
     const allNodes = nodesRef.current
     const allEdges = edgesRef.current
-    const zmap = allNodes.find(n => (n.data as { toolType: string }).toolType === 'ZMapLoader')
-    if (!zmap) {
-      setLogs(l => [...l, { level: 'error', msg: '폴더검사: ZMapLoader 노드가 없습니다' }])
+    const loaderNodes = folderLoaderNodes()
+    if (loaderNodes.length === 0) {
+      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 폴더 모드 ZMapLoader가 없습니다' }])
       return
     }
+
+    // 각 로더의 폴더를 나열·정렬(name/time). 로더별 파일 배열을 인덱스로 락스텝 순회.
+    const listed = await Promise.all(loaderNodes.map(async n => {
+      const d = n.data as { params: Record<string, unknown> }
+      return { id: n.id, files: await listSorted(d.params.folder as string, batchSortKey) }
+    }))
+    const counts = listed.map(l => l.files.length)
+    const setCount = Math.min(...counts)
+    if (setCount === 0) {
+      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 이미지가 없는 폴더가 있습니다' }])
+      return
+    }
+    if (new Set(counts).size > 1) {
+      setLogs(l => [...l, { level: 'warn', msg: `폴더별 이미지 개수가 다릅니다 (${counts.join('/')}) — 최소 ${setCount}개까지만 검사` }])
+    }
+    const pathById = (i: number) => new Map(listed.map(l => [l.id, l.files[i].path]))
+
     const csv = allNodes.find(n => (n.data as { toolType: string }).toolType === 'CsvWriter')
     const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target }))
 
@@ -350,7 +415,7 @@ export default function App() {
     setBatchRunning(true)
     setRunning(true)
     setBatchResults([])
-    setLogs(l => [...l, { level: 'info', msg: `폴더검사 시작 — ${batchFiles.length}개${batchRepeat ? ' (무한반복)' : ''}` }])
+    setLogs(l => [...l, { level: 'info', msg: `폴더검사 시작 — 로더 ${loaderNodes.length}개 · 세트 ${setCount}개${batchRepeat ? ' (무한반복)' : ''}` }])
 
     const runOnce = (recipe: unknown) =>
       new Promise<{ pass: boolean; totalMs: number; error?: boolean }>((resolve) => {
@@ -368,33 +433,37 @@ export default function App() {
     do {
       cycle++
       setBatchCycle(cycle)
-      for (let i = 0; i < batchFiles.length; i++) {
+      for (let i = 0; i < setCount; i++) {
         if (batchStopRef.current) break
-        const file = batchFiles[i]
         setBatchIndex(i)
+        const paths = pathById(i)
+        // CSV 행 라벨 = 첫 로더의 i번째 파일명
+        const setLabel = listed[0].files[i].name
         const recipe = {
           nodes: allNodes.map(n => {
             const params = { ...((n.data as { params?: Record<string, unknown> }).params ?? {}) }
-            if (n.id === zmap.id) params.path = file.path
-            if (csv && n.id === csv.id) params.label = file.name
+            if (paths.has(n.id)) params.path = paths.get(n.id)   // folder 로더는 i번째 파일로
+            if (csv && n.id === csv.id) params.label = setLabel
             return { id: n.id, type: (n.data as { toolType: string }).toolType, params }
           }),
           edges: baseEdges,
-          noPreview: true,   // 배치 검사: 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
+          // 디스플레이 갱신 OFF면 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
+          noPreview: !batchPreview,
         }
         const r = await runOnce(recipe)
         setBatchResults(prev => [...prev, {
-          file: file.name, pass: r.error ? null : r.pass, totalMs: r.totalMs, error: r.error,
+          file: setLabel, pass: r.error ? null : r.pass, totalMs: r.totalMs, error: r.error,
         }])
       }
     } while (batchRepeat && !batchStopRef.current)
 
+    // 정상 완료 시 진행률을 100%(setCount/setCount)로 고정 — 실행 중 표시하던 (index+1)이
+    // running=false로 바뀌며 하나 줄어드는 현상 방지. 중지된 경우는 멈춘 위치 그대로 둠.
+    if (!batchStopRef.current) setBatchIndex(setCount)
     setBatchRunning(false)
     setRunning(false)
     setLogs(l => [...l, { level: 'info', msg: '폴더검사 완료' }])
-  }, [batchFiles, batchRepeat])
-
-  const hasZMapLoader = nodes.some(n => (n.data as { toolType: string }).toolType === 'ZMapLoader')
+  }, [folderLoaderNodes, listSorted, batchSortKey, batchRepeat, batchPreview])
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
 
@@ -402,7 +471,7 @@ export default function App() {
   const upstreamRes = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
-    if (tt !== 'PlaneFit' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align') return undefined
+    if (tt !== 'PlaneFit' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter') return undefined
     const tEdges = edges.filter(e => e.target === selectedNode.id)
     if (tEdges.length === 0) return undefined
     // ZMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지
@@ -427,6 +496,8 @@ export default function App() {
         onStop={handleStop}
         onToggleResult={() => setResultVisible(v => !v)}
         onSaveRecipe={handleSaveRecipe}
+        onSaveRecipeAs={handleSaveRecipeAs}
+        recipeName={recipePath ? recipePath.split(/[\\/]/).pop()! : null}
         onLoadRecipe={handleLoadRecipe}
         onRestartEngine={handleRestartEngine}
         onOpenFolderInspect={() => setBatchOpen(true)}
@@ -468,22 +539,25 @@ export default function App() {
             onWidthChange={setPanelWidth}
             onParamChange={onParamChange}
             onRun={handleNodeRun}
-            onClose={() => setSelectedNodeId(null)}
+            pinned={panelPinned}
+            onTogglePin={() => setPanelPinned(v => !v)}
+            onClose={() => { setSelectedNodeId(null); setPanelPinned(false) }}
           />
         )}
       </div>
       {batchOpen && (
         <FolderInspectPanel
           running={batchRunning}
-          folder={batchFolder}
-          files={batchFiles}
+          loaders={batchLoaders}
+          sortKey={batchSortKey}
           index={batchIndex}
           cycle={batchCycle}
           repeat={batchRepeat}
+          showPreview={batchPreview}
           results={batchResults}
-          hasZMap={hasZMapLoader}
-          onPickFolder={handlePickFolder}
+          onSortKey={setBatchSortKey}
           onToggleRepeat={setBatchRepeat}
+          onTogglePreview={setBatchPreview}
           onStart={handleBatchStart}
           onStop={handleBatchStop}
           onClose={() => { if (!batchRunning) setBatchOpen(false) }}

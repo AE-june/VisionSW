@@ -14,9 +14,15 @@ target_include_directories(VisionTools
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# 사전빌드된 OpenCV 사용 (D:\Libraries\opencv). vcpkg 빌드 불필요.
+if(NOT DEFINED OpenCV_DIR)
+    set(OpenCV_DIR "D:/Libraries/opencv/build" CACHE PATH "Prebuilt OpenCV dir")
+endif()
+find_package(OpenCV REQUIRED)
+
 target_link_libraries(VisionTools PUBLIC Core Eigen3::Eigen)
+target_link_libraries(VisionTools PUBLIC ${OpenCV_LIBS})
+target_include_directories(VisionTools PUBLIC ${OpenCV_INCLUDE_DIRS})
 if(OpenMP_CXX_FOUND)
     target_link_libraries(VisionTools PUBLIC OpenMP::OpenMP_CXX)
 endif()
-
-# target_link_libraries(VisionTools PRIVATE ${OpenCV_LIBS} ${PCL_LIBRARIES})

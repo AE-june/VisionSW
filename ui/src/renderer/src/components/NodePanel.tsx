@@ -3,10 +3,11 @@ import ParamPanel from './ParamPanel'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
+import NoiseFilterEditor from './NoiseFilterEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
-import type { Roi } from './RoiCanvas'
+import RoiCanvas, { type Roi } from './RoiCanvas'
 
 interface HeightMeasure {
   cx: number; cy: number; z: number
@@ -36,6 +37,8 @@ interface NodeResult {
   // ZMap 실제 z 범위 + 분해능
   zMin?: number; zMax?: number
   xResMm?: number; yResMm?: number
+  // 단계별 미리보기 (ExposureMerge 등) — 결과창 드롭다운으로 선택 조회
+  stages?: { name: string; preview: string; zMin?: number; zMax?: number; xResMm?: number; yResMm?: number }[]
   elapsedMs?: number
 }
 
@@ -56,6 +59,8 @@ interface Props {
   onWidthChange: (w: number) => void
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
   onRun?: (nodeId: string) => void
+  pinned?: boolean
+  onTogglePin?: () => void
   onClose: () => void
 }
 
@@ -65,25 +70,21 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
   originCol?: number; originRow?: number
 }) {
+  const [stageIdx, setStageIdx] = useState(0)
   const zMin = result?.zMin
   const zMax = result?.zMax
-  // 결과 디스플레이 높이 — 구분선 드래그로 상하 조절
-  const [dispH, setDispH] = useState(360)
-  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
-  const startHDrag = (e: React.MouseEvent) => {
-    e.preventDefault()
-    dragRef.current = { startY: e.clientY, startH: dispH }
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return
-      setDispH(Math.max(150, Math.min(1000, dragRef.current.startH + (ev.clientY - dragRef.current.startY))))
-    }
-    const onUp = () => { dragRef.current = null; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
   if (!result) {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
+
+  // 단계별 미리보기가 있으면 선택된 단계를, 없으면 기본 결과 프리뷰를 표시
+  const stages = result.stages
+  const sel = stages && stages.length ? stages[Math.min(stageIdx, stages.length - 1)] : null
+  const dispPreview = sel ? sel.preview : result.preview
+  const dispZMin = sel ? sel.zMin : zMin
+  const dispZMax = sel ? sel.zMax : zMax
+  const dispResX = sel ? sel.xResMm : result.xResMm
+  const dispResY = sel ? sel.yResMm : result.yResMm
 
   // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이.
   // 저장 좌표는 Align 원점 기준 상대값이므로, 미리보기(절대 좌표) 위에 그릴 땐 원점을 더한다.
@@ -118,30 +119,49 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 
   return (
     <div className="node-result-view">
-      {result.preview && (
+      {stages && stages.length > 0 && (
+        <div className="node-stage-select">
+          <span>단계</span>
+          <select className="param-select" value={Math.min(stageIdx, stages.length - 1)}
+            onChange={e => setStageIdx(parseInt(e.target.value))}>
+            {stages.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
+          </select>
+        </div>
+      )}
+      {dispPreview && (
         <div className="node-result-image-wrap">
-          <ImageViewer
-            preview={result.preview}
-            zMin={zMin}
-            zMax={zMax}
-            resXMm={result.xResMm}
-            resYMm={result.yResMm}
-            canvasHeight={dispH}
-            rois={toolType === 'HeightMeasure' ? measureRois : undefined}
-            roiTypeLabel={() => 'ROI'}
-            overlay={lineOverlay ?? alignOverlay}
-            overlayFor={(_roi, idx) => {
-              const m = result.measures?.[idx]
-              return m ? (
-                <span className={`pfe-roi-result ${m.pass ? 'pass' : 'fail'}`}>
-                  {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
-                </span>
-              ) : null
-            }}
-          />
-          <div className="pfe-hsplit" onMouseDown={startHDrag} title="드래그하여 결과 이미지 높이 조절">
-            <span className="pfe-hsplit-grip" />
-          </div>
+          {toolType === 'ExposureMerge' ? (
+            <RoiCanvas
+              rois={(params.reflRois as Roi[]) ?? []}
+              roiTypes={[{ type: 'refl', label: '리플렉션 ROI' }]}
+              preview={dispPreview}
+              zMin={dispZMin}
+              zMax={dispZMax}
+              resXMm={dispResX}
+              resYMm={dispResY}
+              onChange={rois => onParamChange(nodeId, { ...params, reflRois: rois })}
+            />
+          ) : (
+            <ImageViewer
+              preview={dispPreview}
+              zMin={dispZMin}
+              zMax={dispZMax}
+              resXMm={dispResX}
+              resYMm={dispResY}
+              canvasHeight={360}
+              rois={toolType === 'HeightMeasure' ? measureRois : undefined}
+              roiTypeLabel={() => 'ROI'}
+              overlay={lineOverlay ?? alignOverlay}
+              overlayFor={(_roi, idx) => {
+                const m = result.measures?.[idx]
+                return m ? (
+                  <span className={`pfe-roi-result ${m.pass ? 'pass' : 'fail'}`}>
+                    {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
+                  </span>
+                ) : null
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -247,7 +267,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>('params')
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
 
@@ -279,6 +299,11 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
         <span className="node-panel-header-actions">
           {onRun && (
             <button className="node-panel-run" title="이 노드 실행" onClick={() => onRun(nodeId)}>▶ 실행</button>
+          )}
+          {onTogglePin && (
+            <button className="node-panel-pin" title={pinned ? '고정 해제' : '패널 고정'} onClick={onTogglePin}>
+              {pinned ? '📌' : '📍'}
+            </button>
           )}
           <button className="param-close" onClick={onClose}>✕</button>
         </span>
@@ -347,6 +372,18 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
+            />
+          ) : toolType === 'NoiseFilter' ? (
+            <NoiseFilterEditor
+              params={params}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
+              onChange={(next) => onParamChange(nodeId, next)}
             />
           ) : (
             <ParamPanel

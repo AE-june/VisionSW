@@ -85,9 +85,11 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
         plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
 
-    // 출력: 입력 ZMap 복사 + 피팅된 평면 모델 첨부
-    auto out = std::make_shared<VisionData>(*input);
+    // 타입화 출력: plane(a,b,c)만 하류로 전달. 이미지/zmap은 넘기지 않음
+    // (plane 엣지는 plane 정보만). 이 노드 결과창 이미지는 엔진이 입력 zmap으로 폴백해 표시.
+    auto out = std::make_shared<VisionData>();
     out->plane = std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true });
+    out->sourceId = input->sourceId;
     return { ToolStatus::Ok, "", out };
 }
 

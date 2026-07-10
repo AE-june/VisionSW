@@ -33,14 +33,23 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { path: '' },
   },
   {
+    type: 'ExposureMerge', label: '이중노출 머지', category: '필터',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: {
+      enableBfs: true, reflRois: [], seedTol: 100, tolX: 10, tolY: 100, gapK: 2,
+      enableSor: true, sorKernel: 5, sorRatio: 2.0,
+      outputStage: 4,
+    },
+  },
+  {
     type: 'LineCenter', label: 'Line Center', category: '정렬',
     inputs: ['ZMap'], outputs: ['Point'],
     defaultParams: { rois: [], threshold: 1, xRoi: 0, yRoi: 0 },
   },
   {
     type: 'NoiseFilter', label: 'Noise Filter', category: '필터',
-    inputs: ['Any'], outputs: ['Any'],
-    defaultParams: { kernelSize: 3, radius: 1.0, minNeighbors: 5 },
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: { rois: [], filterType: 'median', kernelSizeX: 3, kernelSizeY: 3, stdRatio: 2.0, sigmaRangeMm: 0.02, radius: 1.0, minNeighbors: 5 },
   },
   {
     type: 'EdgeDetector', label: 'Edge Detector', category: '필터',
@@ -88,6 +97,11 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'CsvWriter', label: 'CSV Writer', category: '출력',
     inputs: ['Heights'], outputs: [],
     defaultParams: { path: '', label: '' },
+  },
+  {
+    type: 'ImageSaver', label: '이미지 저장', category: '출력',
+    inputs: ['Any'], outputs: [],
+    defaultParams: { path: '' },
   },
 ]
 

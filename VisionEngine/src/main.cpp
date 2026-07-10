@@ -1,4 +1,5 @@
 #include "ToolFactory.h"
+#include "ZMapCache.h"
 #include "JsonBridge.h"
 #include "ImageEncoder.h"
 #include "Logger.h"
@@ -13,6 +14,7 @@
 
 #include <string>
 #include <vector>
+#include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
@@ -187,6 +189,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         auto result = tool->execute(inputData);
         auto tExec1 = std::chrono::steady_clock::now();
         double elapsedMs = std::chrono::duration<double, std::milli>(tExec1 - tExec0).count();
+        VISION_LOG_INFO("[pipeline] {} [{:.1f} ms]", ns.type, elapsedMs);
         if (result.output) {
             outputs[nodeId] = result.output;
             g_nodeCache[nodeId] = { result.output, ph };   // 캐시 갱신
@@ -194,6 +197,11 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 
         bool ok = (result.status == ToolStatus::Ok);
         if (!ok) pipelinePass = false;
+
+        // 표시용 zmap: 출력에 zmap 있으면 그걸, 없으면(타입화 출력) 입력 zmap으로 폴백.
+        // → 분석 노드(PlaneFit/HeightMeasure 등)도 자기가 다룬 '입력' 이미지를 결과창에 표시.
+        const ZMap* dispZ = (result.output && result.output->hasZMap()) ? result.output->zmap.get()
+                          : (inputData && inputData->hasZMap()) ? inputData->zmap.get() : nullptr;
 
         // Build per-tool result
         json jr;
@@ -237,10 +245,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                     });
                 }
                 jr["measures"] = measures;
-                if (result.output && result.output->zmap) {
-                    jr["imgW"] = result.output->zmap->width;
-                    jr["imgH"] = result.output->zmap->height;
-                }
+                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
                 if (!r.allPass) pipelinePass = false;
             }
         }
@@ -257,10 +262,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                     });
                 }
                 jr["lines"] = arr;
-                if (result.output && result.output->zmap) {
-                    jr["imgW"] = result.output->zmap->width;
-                    jr["imgH"] = result.output->zmap->height;
-                }
+                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
             }
         }
         if (ns.type == "Align") {
@@ -271,10 +273,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 jr["offRow"] = r.offRow;
                 jr["offXMm"] = r.offXMm;
                 jr["offYMm"] = r.offYMm;
-                if (result.output && result.output->zmap) {
-                    jr["imgW"] = result.output->zmap->width;
-                    jr["imgH"] = result.output->zmap->height;
-                }
+                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
             }
         }
         if (ns.type == "CsvWriter") {
@@ -297,19 +296,35 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
             }
         }
 
-        // Attach image preview (base64 PNG). noPreview면 인코딩/스캔 전부 생략(배치 가속).
-        if (result.output && !noPreview) {
-            if (result.output->hasImage())
+        // 프리뷰(base64 PNG). 출력에 이미지 없으면 입력 zmap으로 폴백(dispZ). noPreview면 생략(배치 가속).
+        if (!noPreview) {
+            if (result.output && result.output->hasImage())
                 jr["preview"] = imageToBase64(*result.output->image);
-            else if (result.output->hasZMap()) {
-                const auto& zm = *result.output->zmap;
+            else if (dispZ) {
                 // zmapToBase64가 정규화하며 구한 z범위를 그대로 받음 (중복 스캔 제거)
                 float zMin = 0, zMax = 0; bool hasRange = false;
-                jr["preview"] = zmapToBase64(zm, &zMin, &zMax, &hasRange);
+                jr["preview"] = zmapToBase64(*dispZ, &zMin, &zMax, &hasRange);
                 if (hasRange) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
-                jr["xResMm"] = zm.xResMm;
-                jr["yResMm"] = zm.yResMm;
+                jr["xResMm"] = dispZ->xResMm;
+                jr["yResMm"] = dispZ->yResMm;
             }
+        }
+
+        // 단계별 미리보기(선택) — 결과창 드롭다운용. 각 단계 ZMap을 개별 인코딩.
+        if (result.output && result.output->stages && !noPreview) {
+            json stages = json::array();
+            for (const auto& st : *result.output->stages) {
+                if (!st.second) continue;
+                float zMin = 0, zMax = 0; bool hasRange = false;
+                json s;
+                s["name"]    = st.first;
+                s["preview"] = zmapToBase64(*st.second, &zMin, &zMax, &hasRange);
+                if (hasRange) { s["zMin"] = zMin; s["zMax"] = zMax; }
+                s["xResMm"]  = st.second->xResMm;
+                s["yResMm"]  = st.second->yResMm;
+                stages.push_back(s);
+            }
+            jr["stages"] = stages;
         }
 
         results.push_back(jr);
@@ -334,6 +349,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 // ── Main ─────────────────────────────────────────────────────────────────
 
 int main() {
+    vision::LoggerInit("D:/GitHub/VisionSWTool/vision_diag.log");
     std::cout << "[VisionEngine] Starting on ws://localhost:9000\n";
 
     crow::SimpleApp app;
@@ -366,6 +382,18 @@ int main() {
                 if (cmd == "run") {
                     auto done = runPipeline(msg, conn);
                     conn.send_text(done.dump());
+                    return;
+                }
+                if (cmd == "preload") {
+                    std::string folder = msg.value("folder", "");
+                    if (!folder.empty()) {
+                        float xRes = msg.value("xResMm", 1.0f);
+                        float yRes = msg.value("yResMm", 1.0f);
+                        float zRes = msg.value("zResMm", 0.001f);
+                        int loaded = vision::preloadFolder(folder, xRes, yRes, zRes);
+                        VISION_LOG_INFO("preload: {} files cached from {}", loaded, folder);
+                        conn.send_text(json{{"event","preloadDone"},{"loaded",loaded}}.dump());
+                    }
                     return;
                 }
                 conn.send_text(json{{"event","error"},{"msg","unknown cmd: " + cmd}}.dump());

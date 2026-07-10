@@ -4,6 +4,11 @@ project(VisionSW VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# MSVC: 소스/실행파일 인코딩을 UTF-8로 강제 (한글 문자열 EUC-KR→UTF-8 오류 방지)
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # ─────────────────────────────────────────────────────────────────────
 #  빌드 예시:
 #    cmake -B build \

@@ -17,10 +17,12 @@ struct HeightFromPlaneParams {
     struct ROI {
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
         bool  isCircle = false;   // true면 ROI 사각 영역에 내접하는 타원
+        std::vector<std::array<float, 2>> poly;   // 폴리곤 꼭짓점(pct). 비어있지 않으면 폴리곤으로 판정
         bool valid() const { return wPct > 0.f && hPct > 0.f; }
     };
 
     std::vector<ROI> measureRois;   // 높이를 측정할 영역들 (>=1)
+    std::vector<ROI> maskRois;      // 측정에서 제외할 영역들 (사각/원/폴리곤)
 
     enum class Aggregation {
         Mean,       // ROI 내 유효 Z 평균
@@ -70,12 +72,27 @@ private:
     HeightFromPlaneResult m_result;
 
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
+
+    // 마스크 ROI를 픽셀 좌표로 미리 해석한 형태 (execute당 1회 계산 → 픽셀 루프에서 재사용)
+    struct MaskPx {
+        bool isPoly = false;
+        int  x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // 사각 경계 (px)
+        bool isCircle = false;
+        double cx = 0, cy = 0, rx = 1, ry = 1; // 내접 타원 (px)
+        std::vector<std::array<double, 2>> poly;   // 폴리곤 꼭짓점 (px)
+    };
+    std::vector<MaskPx> resolveMasks(const ZMap& map, int offCol, int offRow) const;
+
     std::vector<Pt3> extractPoints(const ZMap& map,
                                    const HeightFromPlaneParams::ROI& roi,
-                                   int offCol = 0, int offRow = 0) const;
+                                   int offCol, int offRow,
+                                   const std::vector<MaskPx>& masks) const;
 
-    // ROI 내 점들 → (대표 x, 대표 y, 대표 z)
-    Pt3 aggregate(const std::vector<Pt3>& pts) const;
+    // (col,row)가 마스크(제외) 영역 안이면 true — 측정에서 제외
+    bool masked(const std::vector<MaskPx>& masks, int col, int row) const;
+
+    // ROI 내 점들 → (대표 x, 대표 y, 대표 z). HighTail은 pts를 부분정렬하므로 non-const.
+    Pt3 aggregate(std::vector<Pt3>& pts) const;
 };
 
 } // namespace vision

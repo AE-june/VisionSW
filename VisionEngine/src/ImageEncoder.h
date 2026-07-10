@@ -44,10 +44,10 @@ inline void stbiCallback(void* ctx, void* data, int size) {
 //  미리보기는 다운스케일하지 않는다 — 모든 노드가 초기 로드 해상도를 그대로 사용
 
 inline std::string imageToBase64(const Image2D& img) {
-    std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, img.width, img.height, img.channels,
-                           img.data.data(), img.width * img.channels);
-    return base64Encode(png);
+    std::vector<uint8_t> jpg;
+    stbi_write_jpg_to_func(stbiCallback, &jpg, img.width, img.height, img.channels,
+                           img.data.data(), 85);
+    return base64Encode(jpg);
 }
 
 // ── ZMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
@@ -79,10 +79,10 @@ inline std::string zmapToBase64(const ZMap& zmap,
                 : static_cast<uint8_t>((v - zMin) / range * 255.f);
     }
 
-    std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, zmap.width, zmap.height, 1,
-                           gray.data(), zmap.width);
-    return base64Encode(png);
+    std::vector<uint8_t> jpg;
+    stbi_write_jpg_to_func(stbiCallback, &jpg, zmap.width, zmap.height, 1,
+                           gray.data(), 85);
+    return base64Encode(jpg);
 }
 
 } // namespace vision

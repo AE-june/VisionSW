@@ -77,6 +77,31 @@
   border-radius: 4px;
 }
 .btn-icon:hover { background: #2e2e2e; color: #fff; }
+.node-stage-select {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  font-size: 12px; color: #bbb;
+}
+.node-stage-select select { flex: 1; }
+.recipe-name {
+  margin-left: 6px; font-size: 11px; color: #888; font-family: monospace;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 파일 드롭다운 메뉴 */
+.tb-menu { position: relative; display: inline-block; }
+.tb-menu-list {
+  position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 100;
+  min-width: 200px; padding: 4px;
+  background: #2a2a2a; border: 1px solid #444; border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
+.tb-menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  width: 100%; padding: 6px 10px; border: none; background: transparent;
+  color: #ddd; font-size: 12px; text-align: left; cursor: pointer; border-radius: 4px;
+}
+.tb-menu-item:hover { background: #3a3a3a; color: #fff; }
+.tb-menu-key { color: #777; font-size: 11px; font-family: monospace; }
+.tb-menu-sep { height: 1px; margin: 4px 2px; background: #444; }
 
 .btn-folder {
   background: transparent;
@@ -118,6 +143,21 @@
 }
 .fi-check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #ccc; }
 .fi-warn { color: #ffb74d; font-size: 11px; }
+.fi-warn-text { color: #ffb74d; }
+.fi-opt-label { color: #aaa; font-size: 12px; }
+/* 폴더 모드 로더 목록 */
+.fi-loaders { display: flex; flex-direction: column; gap: 4px; }
+.fi-loader-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; background: #242424; border-radius: 4px;
+}
+.fi-loader-label { color: #ddd; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.fi-loader-folder {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #999; font-size: 11px; font-family: monospace;
+}
+.fi-loader-count { color: #8bc34a; font-size: 11px; font-family: monospace; }
+.fi-loader-count.warn { color: #ffb74d; }
 .fi-progress { color: #aaa; font-size: 11px; font-family: monospace; }
 .fi-bar { height: 6px; background: #2a2a2a; border-radius: 3px; overflow: hidden; }
 .fi-bar-fill { height: 100%; background: #00bcd4; transition: width 0.15s; }
@@ -414,6 +454,11 @@
   font-size: 11px; padding: 2px 8px; border-radius: 3px; cursor: pointer;
 }
 .node-panel-run:hover { background: #245026; color: #a5e6aa; }
+.node-panel-pin {
+  border: none; background: transparent; font-size: 14px; cursor: pointer;
+  padding: 0 2px; line-height: 1; opacity: 0.6;
+}
+.node-panel-pin:hover { opacity: 1; }
 .node-panel-tabs {
   display: flex;
   border-bottom: 1px solid #2e2e2e;
@@ -630,6 +675,36 @@
 }
 .param-input:focus { outline: none; border-color: #00bcd4; }
 .param-path { font-size: 10px; }
+.param-tip {
+  display: inline-block;
+  margin-left: 3px;
+  color: #555;
+  font-size: 9px;
+  cursor: help;
+  position: relative;
+  line-height: 1;
+}
+.param-tip::after {
+  content: attr(data-tip);
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 5px);
+  transform: none;
+  background: #1a2030;
+  border: 1px solid #3a6ea8;
+  color: #c8d8f0;
+  font-size: 11px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  white-space: normal;
+  width: 240px;
+  z-index: 9999;
+  pointer-events: none;
+  line-height: 1.6;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+}
+.param-tip:hover::after { display: block; }
 .param-select {
   flex: 1;
   background: #252525;
@@ -694,10 +769,24 @@
 /* ── 결과 패널 ── */
 .result-panel {
   display: flex;
-  height: 180px;
+  position: relative;
   border-top: 1px solid #2e2e2e;
   background: #1a1a1a;
   flex-shrink: 0;
+}
+
+.result-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 5;
+}
+.result-resize-handle:hover {
+  background: #4dd0e1;
+  opacity: 0.5;
 }
 
 .result-left {
@@ -893,6 +982,8 @@
 }
 .pfe-roi-ref     { border-color: #00bcd4; background: rgba(0,188,212,0.1); }
 .pfe-roi-measure { border-color: #ff5722; background: rgba(255,87,34,0.1); }
+.pfe-roi-mask    { border-color: #e53935; border-style: dashed;
+                   background: rgba(229,57,53,0.18); }
 .pfe-roi-drawing { pointer-events: none; opacity: 0.7; }
 
 .pfe-roi-overlay {
@@ -970,6 +1061,7 @@
 }
 .pfe-roi-ref     .pfe-roi-label { color: #00bcd4; }
 .pfe-roi-measure .pfe-roi-label { color: #ff5722; }
+.pfe-roi-mask    .pfe-roi-label { color: #e53935; }
 
 .pfe-roi-del {
   position: absolute;

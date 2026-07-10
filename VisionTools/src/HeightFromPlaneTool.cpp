@@ -29,9 +29,17 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     const int offCol = static_cast<int>(std::lround(map.originCol));
     const int offRow = static_cast<int>(std::lround(map.originRow));
 
+    if (plane) {
+        VISION_LOG_INFO("HeightMeasure [DIAG] plane: a={:.6f} b={:.6f} c={:.6f}  src={}",
+            plane->a, plane->b, plane->c, input->sourceId);
+    }
+
+    // 마스크 경계를 픽셀 좌표로 1회 해석 → 픽셀 루프에서 재사용 (픽셀마다 재계산 방지)
+    const auto masks = resolveMasks(map, offCol, offRow);
+
     bool allPass = true;
     for (const auto& roi : m_params.measureRois) {
-        auto pts = extractPoints(map, roi, offCol, offRow);
+        auto pts = extractPoints(map, roi, offCol, offRow, masks);
 
         HeightMeasure hm;
         if (pts.empty()) {
@@ -56,9 +64,8 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
             hm.pass = true;
         }
 
-        VISION_LOG_INFO("HeightMeasure: Q=({:.3f},{:.3f},{:.4f})  dist={:.4f} mm  pts={}  {}",
-            hm.cx, hm.cy, hm.z, hm.distance, hm.pointCount,
-            hm.pass ? "PASS" : "FAIL");
+        VISION_LOG_INFO("HeightMeasure [DIAG] roi={} rawZ={:.4f} planeH={:.4f} pts={}",
+            m_result.measures.size(), hm.z, hm.distance, hm.pointCount);
 
         m_result.measures.push_back(hm);
     }
@@ -66,11 +73,13 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     m_result.valid   = true;
     m_result.allPass = allPass;
 
-    // 출력: 측정된 높이값 배열을 첨부 (+ 입력 zmap/plane은 미리보기/체인용으로 통과)
-    auto out = std::make_shared<VisionData>(*input);
+    // 타입화 출력: 측정된 높이값 배열만 전달 (이미지/plane 미포함).
+    // 높이는 입력 zmap을 입력 plane 기준으로 측정 — 결과창 이미지는 엔진이 입력 zmap으로 폴백 표시.
+    auto out = std::make_shared<VisionData>();
     out->heights = std::make_shared<std::vector<double>>();
     out->heights->reserve(m_result.measures.size());
     for (const auto& m : m_result.measures) out->heights->push_back(m.distance);
+    out->sourceId = input->sourceId;
     return { ToolStatus::Ok, "", out };
 }
 
@@ -80,7 +89,8 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
 std::vector<HeightFromPlaneTool::Pt3>
 HeightFromPlaneTool::extractPoints(const ZMap& map,
                                    const HeightFromPlaneParams::ROI& roi,
-                                   int offCol, int offRow) const {
+                                   int offCol, int offRow,
+                                   const std::vector<MaskPx>& masks) const {
     int x0 = static_cast<int>(roi.xPct * map.width)               + offCol;
     int y0 = static_cast<int>(roi.yPct * map.height)              + offRow;
     int x1 = static_cast<int>((roi.xPct + roi.wPct) * map.width)  + offCol;
@@ -106,10 +116,73 @@ HeightFromPlaneTool::extractPoints(const ZMap& map,
                 double nx = (col - cx) / rx, ny = (row - cy) / ry;
                 if (nx * nx + ny * ny > 1.0) continue;
             }
+            if (masked(masks, col, row)) continue;   // 제외 영역 픽셀은 측정에서 뺀다
             pts.push_back({ map.xMm(col), map.yMm(row),
                             static_cast<double>(map.zMm(col, row)) });
         }
     return pts;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  resolveMasks — 마스크 ROI(pct)를 픽셀 좌표로 1회 해석.
+//   기존에는 masked()가 픽셀마다 pct×dim 곱셈을 반복했으나, 여기서 미리 계산해
+//   픽셀 루프는 정수 비교/타원 판정만 수행하도록 한다. (판정 규칙은 기존과 동일)
+// ─────────────────────────────────────────────────────────────────────
+std::vector<HeightFromPlaneTool::MaskPx>
+HeightFromPlaneTool::resolveMasks(const ZMap& map, int offCol, int offRow) const {
+    std::vector<MaskPx> out;
+    out.reserve(m_params.maskRois.size());
+    for (const auto& mk : m_params.maskRois) {
+        MaskPx m;
+        if (!mk.poly.empty()) {   // 폴리곤: 꼭짓점을 px로 변환해 보관
+            m.isPoly = true;
+            m.poly.reserve(mk.poly.size());
+            for (const auto& v : mk.poly)
+                m.poly.push_back({ v[0] * map.width + offCol,
+                                   v[1] * map.height + offRow });
+        } else {                  // 사각형 / 원(내접 타원)
+            m.x0 = static_cast<int>(mk.xPct * map.width)  + offCol;
+            m.y0 = static_cast<int>(mk.yPct * map.height) + offRow;
+            m.x1 = static_cast<int>((mk.xPct + mk.wPct) * map.width)  + offCol;
+            m.y1 = static_cast<int>((mk.yPct + mk.hPct) * map.height) + offRow;
+            m.isCircle = mk.isCircle;
+            if (mk.isCircle) {
+                m.cx = (m.x0 + m.x1) * 0.5; m.cy = (m.y0 + m.y1) * 0.5;
+                m.rx = std::max(1, m.x1 - m.x0) * 0.5;
+                m.ry = std::max(1, m.y1 - m.y0) * 0.5;
+            }
+        }
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  masked — (col,row)가 마스크(제외) 영역 안인가. 사각형/원/폴리곤 지원.
+// ─────────────────────────────────────────────────────────────────────
+bool HeightFromPlaneTool::masked(const std::vector<MaskPx>& masks,
+                                 int col, int row) const {
+    for (const auto& mk : masks) {
+        if (mk.isPoly) {   // 폴리곤: ray-casting (px 좌표)
+            const int nv = static_cast<int>(mk.poly.size());
+            bool in = false;
+            for (int i = 0, j = nv - 1; i < nv; j = i++) {
+                double xi = mk.poly[i][0], yi = mk.poly[i][1];
+                double xj = mk.poly[j][0], yj = mk.poly[j][1];
+                if (((yi > row) != (yj > row)) &&
+                    (col < (xj - xi) * (row - yi) / (yj - yi) + xi)) in = !in;
+            }
+            if (in) return true;
+        } else {                  // 사각형 / 원(내접 타원)
+            if (col < mk.x0 || col >= mk.x1 || row < mk.y0 || row >= mk.y1) continue;
+            if (mk.isCircle) {
+                double nx = (col - mk.cx) / mk.rx, ny = (row - mk.cy) / mk.ry;
+                if (nx * nx + ny * ny > 1.0) continue;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -119,7 +192,7 @@ HeightFromPlaneTool::extractPoints(const ZMap& map,
 //   HighTail: 상위 highTailPct% Z의 평균 (위치도 그 점들의 평균)
 // ─────────────────────────────────────────────────────────────────────
 HeightFromPlaneTool::Pt3
-HeightFromPlaneTool::aggregate(const std::vector<Pt3>& pts) const {
+HeightFromPlaneTool::aggregate(std::vector<Pt3>& pts) const {
     switch (m_params.aggregation) {
     case HeightFromPlaneParams::Aggregation::Max: {
         const Pt3* best = &pts[0];
@@ -134,16 +207,16 @@ HeightFromPlaneTool::aggregate(const std::vector<Pt3>& pts) const {
         return { sx / n, sy / n, sz / n };
     }
     case HeightFromPlaneParams::Aggregation::HighTail: {
-        std::vector<Pt3> buf = pts;
+        // pts를 직접 부분정렬 (호출측에서 이후 재사용 안 함 → 복사 제거)
         int n = std::max(1, static_cast<int>(
-            std::ceil(buf.size() * m_params.highTailPct / 100.f)));
-        int start = static_cast<int>(buf.size()) - n;
+            std::ceil(pts.size() * m_params.highTailPct / 100.f)));
+        int start = static_cast<int>(pts.size()) - n;
         // 상위 n개만 필요 → nth_element로 부분선택 (O(N))
-        std::nth_element(buf.begin(), buf.begin() + start, buf.end(),
+        std::nth_element(pts.begin(), pts.begin() + start, pts.end(),
                          [](const Pt3& a, const Pt3& b){ return a[2] < b[2]; });
         double sx = 0, sy = 0, sz = 0;
-        for (int i = start; i < static_cast<int>(buf.size()); ++i) {
-            sx += buf[i][0]; sy += buf[i][1]; sz += buf[i][2];
+        for (int i = start; i < static_cast<int>(pts.size()); ++i) {
+            sx += pts[i][0]; sy += pts[i][1]; sz += pts[i][2];
         }
         return { sx / n, sy / n, sz / n };
     }

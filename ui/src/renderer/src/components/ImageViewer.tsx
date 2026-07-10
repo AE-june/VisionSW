@@ -181,12 +181,31 @@ export default function ImageViewer({
   const [edit, setEdit] = useState<EditState | null>(null)
   const [imgAspect, setImgAspect] = useState<number | null>(null)
   const [imgPx, setImgPx] = useState({ w: 0, h: 0 })
-  const [hover, setHover] = useState<{ col: number; row: number } | null>(null)   // 마우스 오버 위치(이미지 px)
+  const [hover, setHover] = useState<{ col: number; row: number; val: number | null } | null>(null)   // 마우스 오버 위치(이미지 px)
   const [csize, setCsize] = useState({ w: 0, h: 0 })   // 박스(=패널 폭 × 고정 높이). 클리핑/좌표 기준
   const [colormap, setColormap] = useState(false)
   const [autoRange, setAutoRange] = useState(true)
   const [rangeLo, setRangeLo] = useState(0)
   const [rangeHi, setRangeHi] = useState(255)
+  // 디스플레이(캔버스) 높이 — 하단 구분선 드래그로 상하 조절. canvasHeight는 초기값.
+  const [canvasH, setCanvasH] = useState(canvasHeight ?? 420)
+  const hDragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const startHDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    hDragRef.current = { startY: e.clientY, startH: canvasH }
+    const onMove = (ev: MouseEvent) => {
+      if (!hDragRef.current) return
+      const h = hDragRef.current.startH + (ev.clientY - hDragRef.current.startY)
+      setCanvasH(Math.max(150, Math.min(1000, h)))
+    }
+    const onUp = () => {
+      hDragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const zoomRef = useRef(1)
   // 스크롤(팬) 드래그 시작 지점 저장
@@ -278,7 +297,20 @@ export default function ImageViewer({
     const p = toImgPct(e.clientX, e.clientY)
     const img = imgPxRef.current
     if (img.w > 0 && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) {
-      setHover({ col: p.x * img.w, row: p.y * img.h })
+      const col = p.x * img.w, row = p.y * img.h
+      let val: number | null = null
+      const cv = canvasRef.current
+      if (cv) {
+        const ctx = cv.getContext('2d')
+        if (ctx) {
+          const px = ctx.getImageData(Math.floor(col), Math.floor(row), 1, 1).data
+          const gray = px[0]  // R채널 = grayscale
+          val = (zMin !== undefined && zMax !== undefined)
+            ? (gray === 0 ? null : zMin + (gray / 255) * (zMax - zMin))
+            : gray
+        }
+      }
+      setHover({ col, row, val })
     } else {
       setHover(null)
     }
@@ -408,7 +440,7 @@ export default function ImageViewer({
         ctx.putImageData(id, 0, 0)
       }
     }
-    img.src = `data:image/png;base64,${preview}`
+    img.src = `data:image/jpeg;base64,${preview}`
   }, [preview, colormap, autoRange, rangeLo, rangeHi, zMin, zMax])
 
   const modeClass = drawMode ? ' pfe-mode-draw' : ' pfe-mode-pan'
@@ -486,7 +518,7 @@ export default function ImageViewer({
       <div
         ref={containerRef}
         className={`pfe-canvas${modeClass}`}
-        style={canvasHeight ? { height: `${canvasHeight}px` } : undefined}
+        style={{ height: `${canvasH}px` }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -577,6 +609,13 @@ export default function ImageViewer({
         )}
       </div>
 
+      {/* 디스플레이 높이 조절 — 캔버스 바로 아래 구분선을 상하로 드래그 */}
+      {preview && (
+        <div className="pfe-hsplit" onMouseDown={startHDrag} title="드래그하여 디스플레이 높이 조절">
+          <span className="pfe-hsplit-grip" />
+        </div>
+      )}
+
       {/* 마우스 오버 좌표 — 디스플레이 패널 바로 아래 별도 줄 */}
       <div className="pfe-coord-bar">
         {hover ? (
@@ -584,6 +623,11 @@ export default function ImageViewer({
             <span>px: ({Math.round(hover.col)}, {Math.round(hover.row)})</span>
             {resXMm && resYMm && (
               <span>mm: ({(hover.col * resXMm).toFixed(3)}, {(hover.row * resYMm).toFixed(3)})</span>
+            )}
+            {hover.val !== null && (
+              <span>val: {(zMin !== undefined && zMax !== undefined)
+                ? hover.val.toFixed(1)
+                : Math.round(hover.val)}</span>
             )}
           </>
         ) : (

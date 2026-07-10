@@ -1,3 +1,5 @@
+import { useRef, useState, useCallback } from 'react'
+
 export interface MeasureResult {
   id: string
   tool: string
@@ -69,8 +71,30 @@ export default function ResultPanel({ results, logs, overallPass, onClear }: Pro
   const statusClass = overallPass === null ? '' : overallPass ? 'pass' : 'fail'
   const statusText = overallPass === null ? 'READY' : overallPass ? 'PASS' : 'FAIL'
 
+  const [height, setHeight] = useState(180)
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragRef.current = { startY: e.clientY, startH: height }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      const delta = dragRef.current.startY - ev.clientY  // 위로 끌면 커짐
+      const next = Math.min(window.innerHeight - 120, Math.max(80, dragRef.current.startH + delta))
+      setHeight(next)
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [height])
+
   return (
-    <div className="result-panel">
+    <div className="result-panel" style={{ height }}>
+      <div className="result-resize-handle" onMouseDown={onResizeStart} />
       <div className="result-left">
         <div className="panel-header">측정 결과</div>
         <div className={`result-status ${statusClass}`}>{statusText}</div>

@@ -115,7 +115,9 @@ ToolResult LineCenterTool::execute(VisionDataPtr input) {
 
     const auto& map = *input->zmap;
 
-    auto out = std::make_shared<VisionData>(*input);
+    // 타입화 출력: 검출 기준점(points)/원점(origin)만 전달. 이미지/zmap 미포함.
+    auto out = std::make_shared<VisionData>();
+    out->sourceId = input->sourceId;
     auto pts = std::make_shared<std::vector<RefPoint>>();
 
     for (size_t i = 0; i < m_params.rois.size(); ++i) {

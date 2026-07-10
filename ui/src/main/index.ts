@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join, basename } from 'path'
-import { writeFile, readFile, readdir } from 'fs/promises'
+import { writeFile, readFile, readdir, stat } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { startEngine, stopEngine, registerEngineIpc, engineEvents, isEngineReady } from './engine'
 
@@ -74,16 +74,21 @@ ipcMain.handle('dialog:openFolder', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
-// 폴더검사: 폴더 내 이미지 파일 목록 (자연 정렬)
+// 폴더검사: 폴더 내 이미지 파일 목록 (이름 자연 정렬 + 수정시각)
 ipcMain.handle('folder:listImages', async (_event, dir: string) => {
   const exts = new Set(['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'])
   const entries = await readdir(dir, { withFileTypes: true })
-  const files = entries
+  const names = entries
     .filter(e => e.isFile() && exts.has(e.name.slice(e.name.lastIndexOf('.')).toLowerCase()))
     .map(e => e.name)
-  // 자연 정렬 (img2 < img10)
-  files.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
-  return files.map(name => ({ name: basename(name), path: join(dir, name) }))
+  // 자연 정렬 (img2 < img10) — 기본 반환 순서. 시간순은 렌더러에서 mtimeMs로 재정렬.
+  names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+  return Promise.all(names.map(async name => {
+    const path = join(dir, name)
+    let mtimeMs = 0
+    try { mtimeMs = (await stat(path)).mtimeMs } catch { /* 접근 불가 파일은 0 */ }
+    return { name: basename(name), path, mtimeMs }
+  }))
 })
 
 // 레시피 저장/불러오기 (텍스트 파일 읽기/쓰기)

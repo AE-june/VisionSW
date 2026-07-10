@@ -20,7 +20,10 @@ interface Props extends HeightFromPlaneSettings {
   onChange: (next: HeightFromPlaneSettings) => void
 }
 
-const ROI_TYPES = [{ type: 'measure', label: 'Measure' }]
+const ROI_TYPES = [
+  { type: 'measure', label: '측정' },
+  { type: 'mask', label: '제외(마스크)' },
+]
 
 export default function HeightFromPlaneEditor(props: Props) {
   const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, onChange } = props

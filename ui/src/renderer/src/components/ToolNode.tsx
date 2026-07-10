@@ -68,7 +68,7 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
     return (
       <div className="tool-node-result">
         <img
-          src={`data:image/png;base64,${result.preview}`}
+          src={`data:image/jpeg;base64,${result.preview}`}
           className="tool-node-preview"
           alt="result"
         />

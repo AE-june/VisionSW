@@ -43,6 +43,8 @@ function connectWs() {
 
   socket.on('close', () => {
     wsReady = false
+    if (ws !== socket) return  // 명시적으로 교체된 소켓 — 재연결 루프 중복 방지
+    ws = null
     if (retryCount < ENGINE_MAX_RETRIES) {
       retryCount++
       setTimeout(connectWs, ENGINE_RECONNECT_MS)
@@ -67,7 +69,14 @@ export function startEngine() {
     engineProcess.stdout?.on('data', (d) => process.stdout.write('[C++] ' + d))
     engineProcess.stderr?.on('data', (d) => process.stderr.write('[C++] ' + d))
     engineProcess.on('error', (e) => console.error('[engine] spawn error:', e.message))
-    engineProcess.on('exit', (code) => console.log('[engine] exit code:', code))
+    engineProcess.on('exit', (code) => {
+      console.log('[engine] exit code:', code)
+      engineProcess = null
+      if (code !== 0) {
+        console.warn('[engine] crashed — restarting in 1s...')
+        setTimeout(() => { retryCount = 0; startEngine() }, 1000)
+      }
+    })
   } catch (e) {
     console.warn('[engine] Could not spawn VisionEngine.exe — using standalone WebSocket mode')
   }
@@ -118,6 +127,12 @@ export function registerEngineIpc() {
 
   ipcMain.handle('engine:restart', async () => {
     restartEngine()
+    return { ok: true }
+  })
+
+  ipcMain.handle('engine:preload', async (_event, folder: string, xResMm: number, yResMm: number, zResMm: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'preload', folder, xResMm, yResMm, zResMm }))
     return { ok: true }
   })
 }
