@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, type ReactNode } from 'react'
+import { getViewState, patchViewState } from './viewStore'
 
 // jet 컬러맵: 0(낮음, 파랑) → 청록 → 녹색 → 노랑 → 1(높음, 빨강)
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
@@ -164,6 +165,8 @@ interface Props {
   /** 마우스 오버 좌표 표시용 분해능(mm/px). 있으면 mm 좌표도 함께 표시 */
   resXMm?: number
   resYMm?: number
+  /** 뷰 상태(zoom/colormap/범위/높이) 세션 유지용 키. 있으면 마운트 시 복원·변경 시 저장 */
+  viewKey?: string
 }
 
 const MAX_ZOOM = 100   // native 스케일 상한 (10000% = 원본 픽셀의 100배)
@@ -174,21 +177,29 @@ const HANDLE_MIN_PX = 30
 export default function ImageViewer({
   preview, drawMode, drawShape, onDrawComplete, rois, onRoisChange, roiTypeLabel, overlayFor,
   overlay, toolbarLeft, footer, placeholder, zMin, zMax, onImageSize, enableRotate, canvasHeight,
-  resXMm, resYMm
+  resXMm, resYMm, viewKey
 }: Props) {
-  const [zoom, setZoom] = useState(1)
+  // 세션에 저장된 뷰 상태 복원 (없으면 기본값). 최초 렌더에서만 useState 초기값으로 사용됨.
+  const restored = viewKey ? getViewState(viewKey) : {}
+  const [zoom, setZoom] = useState(restored.zoom ?? 1)
   const [draw, setDraw] = useState<DrawState | null>(null)
   const [edit, setEdit] = useState<EditState | null>(null)
   const [imgAspect, setImgAspect] = useState<number | null>(null)
   const [imgPx, setImgPx] = useState({ w: 0, h: 0 })
   const [hover, setHover] = useState<{ col: number; row: number; val: number | null } | null>(null)   // 마우스 오버 위치(이미지 px)
   const [csize, setCsize] = useState({ w: 0, h: 0 })   // 박스(=패널 폭 × 고정 높이). 클리핑/좌표 기준
-  const [colormap, setColormap] = useState(false)
-  const [autoRange, setAutoRange] = useState(true)
-  const [rangeLo, setRangeLo] = useState(0)
-  const [rangeHi, setRangeHi] = useState(255)
+  const [colormap, setColormap] = useState(restored.colormap ?? false)
+  const [autoRange, setAutoRange] = useState(restored.autoRange ?? true)
+  const [rangeLo, setRangeLo] = useState(restored.rangeLo ?? 0)
+  const [rangeHi, setRangeHi] = useState(restored.rangeHi ?? 255)
   // 디스플레이(캔버스) 높이 — 하단 구분선 드래그로 상하 조절. canvasHeight는 초기값.
-  const [canvasH, setCanvasH] = useState(canvasHeight ?? 420)
+  const [canvasH, setCanvasH] = useState(restored.canvasH ?? canvasHeight ?? 420)
+
+  // 뷰 상태 변경 시 세션 스토어에 기록 (다음 마운트에서 복원)
+  useEffect(() => {
+    if (!viewKey) return
+    patchViewState(viewKey, { zoom, colormap, autoRange, rangeLo, rangeHi, canvasH })
+  }, [viewKey, zoom, colormap, autoRange, rangeLo, rangeHi, canvasH])
   const hDragRef = useRef<{ startY: number; startH: number } | null>(null)
   const startHDrag = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -207,7 +218,7 @@ export default function ImageViewer({
     window.addEventListener('mouseup', onUp)
   }
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const zoomRef = useRef(1)
+  const zoomRef = useRef(restored.zoom ?? 1)
   // 스크롤(팬) 드래그 시작 지점 저장
   const panStartRef = useRef<{ mx: number; my: number; sl: number; st: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)   // 스크롤 박스(좌표 기준 & 클리핑)
@@ -357,9 +368,14 @@ export default function ImageViewer({
   // 리셋 = 전체보기(fit) (여백으로 가운데 정렬됨)
   const resetView = () => applyZoom(fitZoom(boxRef.current, imgPxRef.current))
 
-  // ZMap 실제 z 범위가 도착하면 수동 range 초기값을 그 범위로 맞춤
+  // ZMap 실제 z 범위가 도착하면 수동 range 초기값을 그 범위로 맞춤.
+  // 단, 세션에 저장된 수동 범위를 복원한 경우 첫 실행은 건너뛰어 사용자 설정을 덮어쓰지 않는다.
+  const skipRangeInit = useRef(restored.rangeLo !== undefined)
   useEffect(() => {
-    if (zMin !== undefined && zMax !== undefined) { setRangeLo(zMin); setRangeHi(zMax) }
+    if (zMin !== undefined && zMax !== undefined) {
+      if (skipRangeInit.current) { skipRangeInit.current = false; return }
+      setRangeLo(zMin); setRangeHi(zMax)
+    }
   }, [zMin, zMax])
 
   // 박스(컨테이너) 크기 추적 — 폭=패널 폭(패널을 늘리면 따라감), 높이=고정. 클리핑/좌표 기준.
@@ -377,8 +393,9 @@ export default function ImageViewer({
     return () => ro.disconnect()
   }, [])
 
-  // 이미지 픽셀 크기를 휠/좌표 핸들러에서 읽을 수 있게 ref 동기화 + 처음 준비되면 전체보기로 맞춤
-  const fittedRef = useRef(false)
+  // 이미지 픽셀 크기를 휠/좌표 핸들러에서 읽을 수 있게 ref 동기화 + 처음 준비되면 전체보기로 맞춤.
+  // 세션에 저장된 zoom을 복원한 경우 이미 맞춰진 것으로 간주해 자동 전체보기를 건너뛴다.
+  const fittedRef = useRef(restored.zoom !== undefined)
   useEffect(() => {
     imgPxRef.current = imgPx
     if (imgPx.w > 0 && csize.w > 0 && !fittedRef.current) {
@@ -413,8 +430,10 @@ export default function ImageViewer({
     const img = new Image()
     img.onload = () => {
       if (img.naturalHeight > 0) setImgAspect(img.naturalWidth / img.naturalHeight)
-      // 새 이미지가 로드되면 전체보기로 다시 맞추도록 플래그 리셋
-      if (imgPxRef.current.w !== img.naturalWidth || imgPxRef.current.h !== img.naturalHeight)
+      // 이미지 '크기'가 실제로 바뀌면 전체보기로 다시 맞추도록 플래그 리셋.
+      // 단, 최초 로드(이전 크기 0)에서는 리셋하지 않음 — 복원된 zoom을 자동 전체보기가 덮어쓰지 않게.
+      if (imgPxRef.current.w > 0 &&
+          (imgPxRef.current.w !== img.naturalWidth || imgPxRef.current.h !== img.naturalHeight))
         fittedRef.current = false
       setImgPx({ w: img.naturalWidth, h: img.naturalHeight })
       onImageSize?.(img.naturalWidth, img.naturalHeight)

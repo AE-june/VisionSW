@@ -18,13 +18,14 @@ interface Props extends PlaneFitSettings {
   resYMm?: number
   originCol?: number
   originRow?: number
+  viewKey?: string
   onChange: (next: PlaneFitSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'ref', label: 'Reference' }]
 
 export default function PlaneFitEditor(props: Props) {
-  const { rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, onChange } = props
+  const { rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, viewKey, onChange } = props
 
   const emit = (patch: Partial<PlaneFitSettings>) =>
     onChange({ rois, algorithm, ransacThreshold, ransacIterations, maxCloudPoints, ...patch })
@@ -41,6 +42,7 @@ export default function PlaneFitEditor(props: Props) {
         resYMm={resYMm}
         originCol={originCol}
         originRow={originRow}
+        viewKey={viewKey}
         onChange={r => emit({ rois: r })}
       />
 

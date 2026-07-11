@@ -10,6 +10,7 @@ interface Props {
   resYMm?: number
   originCol?: number
   originRow?: number
+  viewKey?: string
   onChange: (next: Record<string, unknown>) => void
 }
 
@@ -17,7 +18,7 @@ interface Props {
 const ROI_TYPES = [{ type: 'filter', label: '필터 영역' }]
 
 export default function NoiseFilterEditor(props: Props) {
-  const { params, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, onChange } = props
+  const { params, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, viewKey, onChange } = props
   const rois = (params.rois as Roi[]) ?? []
 
   return (
@@ -32,6 +33,7 @@ export default function NoiseFilterEditor(props: Props) {
         resYMm={resYMm}
         originCol={originCol}
         originRow={originRow}
+        viewKey={viewKey}
         onChange={r => onChange({ ...params, rois: r })}
       />
       <div className="param-empty" style={{ fontSize: 10 }}>

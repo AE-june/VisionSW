@@ -32,6 +32,8 @@ interface Props {
   originRow?: number
   /** 이미지 원본 픽셀 크기 콜백 */
   onImageSize?: (w: number, h: number) => void
+  /** 뷰 상태 세션 유지용 키 (ImageViewer로 전달) */
+  viewKey?: string
 }
 
 let uidCounter = 0
@@ -62,7 +64,7 @@ function NumField({ value, onCommit, step = 1 }: { value: number; onCommit: (v: 
   )
 }
 
-export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enableRotate, resXMm, resYMm, originCol, originRow, onImageSize }: Props) {
+export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enableRotate, resXMm, resYMm, originCol, originRow, onImageSize, viewKey }: Props) {
   const [drawType, setDrawType] = useState<string | null>(null)
   const [drawShape, setDrawShape] = useState<'rect' | 'circle'>('rect')
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
@@ -242,6 +244,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         enableRotate={enableRotate}
         resXMm={resXMm}
         resYMm={resYMm}
+        viewKey={viewKey}
       />
 
       {rois.length > 0 && (

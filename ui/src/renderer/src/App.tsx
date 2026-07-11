@@ -682,6 +682,7 @@ export default function App() {
         </HoveredEdgeContext.Provider>
         {selectedNode && (
           <NodePanel
+            key={selectedNode.id}
             nodeId={selectedNode.id}
             toolType={(selectedNode.data as { toolType: string }).toolType}
             label={(selectedNode.data as { label: string }).label}

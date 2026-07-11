@@ -17,6 +17,7 @@ interface Props extends HeightFromPlaneSettings {
   resYMm?: number
   originCol?: number
   originRow?: number
+  viewKey?: string
   onChange: (next: HeightFromPlaneSettings) => void
 }
 
@@ -26,7 +27,7 @@ const ROI_TYPES = [
 ]
 
 export default function HeightFromPlaneEditor(props: Props) {
-  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, onChange } = props
+  const { rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, preview, zMin, zMax, resXMm, resYMm, originCol, originRow, viewKey, onChange } = props
 
   const emit = (patch: Partial<HeightFromPlaneSettings>) =>
     onChange({ rois, aggregation, highTailPct, useTolerance, nominalMm, toleranceMm, ...patch })
@@ -43,6 +44,7 @@ export default function HeightFromPlaneEditor(props: Props) {
         resYMm={resYMm}
         originCol={originCol}
         originRow={originRow}
+        viewKey={viewKey}
         enableCircle
         onChange={r => emit({ rois: r })}
       />

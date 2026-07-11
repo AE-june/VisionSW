@@ -16,13 +16,14 @@ interface Props extends LineCenterSettings {
   zMax?: number
   resXMm?: number
   resYMm?: number
+  viewKey?: string
   onChange: (next: LineCenterSettings) => void
 }
 
 const ROI_TYPES = [{ type: 'search', label: 'Search' }]
 
 export default function LineCenterEditor(props: Props) {
-  const { rois, threshold, preview, zMin, zMax, resXMm, resYMm, onChange } = props
+  const { rois, threshold, preview, zMin, zMax, resXMm, resYMm, viewKey, onChange } = props
   const [img, setImg] = useState({ w: 0, h: 0 })
 
   const emit = (patch: Partial<LineCenterSettings>) =>
@@ -53,6 +54,7 @@ export default function LineCenterEditor(props: Props) {
         enableRotate
         overlay={arrow}
         onImageSize={(w, h) => setImg({ w, h })}
+        viewKey={viewKey}
         onChange={r => emit({ rois: r })}
       />
 

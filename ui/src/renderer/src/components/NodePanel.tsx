@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import ParamPanel from './ParamPanel'
+import { getViewState, patchViewState } from './viewStore'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
@@ -64,11 +65,11 @@ interface Props {
   onClose: () => void
 }
 
-function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow }: {
+function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow, viewKey }: {
   toolType: string; result?: NodeResult; rois?: Roi[]
   nodeId: string; params: Record<string, unknown>
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
-  originCol?: number; originRow?: number
+  originCol?: number; originRow?: number; viewKey?: string
 }) {
   const [stageIdx, setStageIdx] = useState(0)
   const zMin = result?.zMin
@@ -117,6 +118,27 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
       </svg>
     : undefined
 
+  // HeightMeasure: 각 ROI에서 실제 측정된 대표 점 위치를 십자 마커로 표시.
+  // cx,cy는 원점 기준 상대 mm → 픽셀(원점 오프셋 더함)로 변환.
+  const measureOverlay = toolType === 'HeightMeasure' && result.imgW && result.measures && dispResX && dispResY
+    ? <svg viewBox={`0 0 ${result.imgW} ${result.imgH!}`} preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+        {result.measures.map((m, i) => {
+          if (m.pointCount === 0) return null
+          const px = m.cx / dispResX! + (originCol ?? 0)
+          const py = m.cy / dispResY! + (originRow ?? 0)
+          const r = Math.max(3, Math.min(result.imgW!, result.imgH!) * 0.006)
+          return (
+            <g key={i}>
+              <circle cx={px} cy={py} r={r} fill="none" stroke="#ff4081" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              <line x1={px - r * 1.8} y1={py} x2={px + r * 1.8} y2={py} stroke="#ff4081" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+              <line x1={px} y1={py - r * 1.8} x2={px} y2={py + r * 1.8} stroke="#ff4081" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+            </g>
+          )
+        })}
+      </svg>
+    : undefined
+
   return (
     <div className="node-result-view">
       {stages && stages.length > 0 && (
@@ -139,6 +161,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               zMax={dispZMax}
               resXMm={dispResX}
               resYMm={dispResY}
+              viewKey={viewKey}
               onChange={rois => onParamChange(nodeId, { ...params, reflRois: rois })}
             />
           ) : (
@@ -148,10 +171,11 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               zMax={dispZMax}
               resXMm={dispResX}
               resYMm={dispResY}
+              viewKey={viewKey}
               canvasHeight={360}
               rois={toolType === 'HeightMeasure' ? measureRois : undefined}
               roiTypeLabel={() => 'ROI'}
-              overlay={lineOverlay ?? alignOverlay}
+              overlay={lineOverlay ?? alignOverlay ?? measureOverlay}
               overlayFor={(_roi, idx) => {
                 const m = result.measures?.[idx]
                 return m ? (
@@ -255,7 +279,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
             <div className="node-result-row" key={i}>
               <span className="node-result-label">ROI {i + 1}</span>
               <span className={`node-result-val ${m.pass ? '' : 'fail-val'}`}>
-                {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
+                {m.pointCount === 0
+                  ? '빈 ROI'
+                  : `${m.distance.toFixed(4)} mm @ (${m.cx.toFixed(2)}, ${m.cy.toFixed(2)}) mm`}
               </span>
             </div>
           ))}
@@ -268,7 +294,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 }
 
 export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
-  const [tab, setTab] = useState<'params' | 'result'>('params')
+  const [tab, setTab] = useState<'params' | 'result'>(() => getViewState(nodeId).tab ?? 'params')
+  // 선택 탭을 노드별로 세션 유지 (패널 토글·노드 전환에도 복원)
+  useEffect(() => { patchViewState(nodeId, { tab }) }, [nodeId, tab])
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
 
   const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -339,6 +367,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               resYMm={upstreamResY ?? result?.yResMm}
               originCol={upstreamOriginCol}
               originRow={upstreamOriginRow}
+              viewKey={nodeId}
               onChange={(next) => onParamChange(nodeId, { ...params, ...next })}
             />
           ) : toolType === 'LineCenter' ? (
@@ -350,6 +379,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               zMax={upstreamZMax ?? result?.zMax}
               resXMm={upstreamResX ?? result?.xResMm}
               resYMm={upstreamResY ?? result?.yResMm}
+              viewKey={nodeId}
               onChange={(next: LineCenterSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
@@ -369,6 +399,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               resYMm={upstreamResY ?? result?.yResMm}
               originCol={upstreamOriginCol}
               originRow={upstreamOriginRow}
+              viewKey={nodeId}
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
@@ -383,6 +414,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               resYMm={upstreamResY ?? result?.yResMm}
               originCol={upstreamOriginCol}
               originRow={upstreamOriginRow}
+              viewKey={nodeId}
               onChange={(next) => onParamChange(nodeId, next)}
             />
           ) : (
@@ -401,7 +433,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
       <div className="node-panel-body" style={{ display: tab === 'result' ? undefined : 'none' }}>
         <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]}
           nodeId={nodeId} params={params} onParamChange={onParamChange}
-          originCol={upstreamOriginCol} originRow={upstreamOriginRow} />
+          originCol={upstreamOriginCol} originRow={upstreamOriginRow} viewKey={`${nodeId}:result`} />
       </div>
     </div>
   )
