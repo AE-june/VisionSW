@@ -72,11 +72,17 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   originCol?: number; originRow?: number; viewKey?: string
 }) {
   const [stageIdx, setStageIdx] = useState(0)
+  // cloud 출력 노드: 3D↔2D를 드롭다운으로 전환. ZMapToCloud는 3D, PlaneFit은 2D를 기본으로.
+  const [cloudView, setCloudView] = useState(toolType === 'ZMapToCloud')
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
+
+  // cloud를 가진 모든 노드(PlaneFit/ZMapToCloud 등)에서 이미지/3D를 드롭다운으로 전환 (따로 쌓지 않음)
+  const hasCloud = !!result.cloud && result.cloud.length > 0
+  const showCloud = hasCloud && cloudView
 
   // 단계별 미리보기가 있으면 선택된 단계를, 없으면 기본 결과 프리뷰를 표시
   const stages = result.stages
@@ -150,7 +156,22 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
           </select>
         </div>
       )}
-      {dispPreview && (
+      {hasCloud && (
+        <div className="node-stage-select">
+          <span>보기</span>
+          <select className="param-select" value={showCloud ? 'cloud' : 'image'}
+            onChange={e => setCloudView(e.target.value === 'cloud')}>
+            <option value="cloud">3D 포인트클라우드</option>
+            <option value="image">2D 이미지</option>
+          </select>
+        </div>
+      )}
+      {showCloud && (
+        toolType === 'PlaneFit'
+          ? <PlaneView3D a={result.planeA!} b={result.planeB!} c={result.planeC!} points={result.cloud!} />
+          : <PlaneView3D points={result.cloud!} showPlane={false} />
+      )}
+      {dispPreview && !showCloud && (
         <div className="node-result-image-wrap">
           {toolType === 'ExposureMerge' ? (
             <RoiCanvas
@@ -206,12 +227,6 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         </div>
       )}
 
-      {toolType === 'PlaneFit' && result.cloud && result.cloud.length > 0 && (
-        <PlaneView3D
-          a={result.planeA!} b={result.planeB!} c={result.planeC!}
-          points={result.cloud}
-        />
-      )}
 
       {toolType === 'LineCenter' && searchRois.length > 0 && (() => {
         const found = result.lines ?? []

@@ -24,6 +24,8 @@
 #include <ctime>
 #include <thread>
 #include <atomic>
+#include <fstream>
+#include <iomanip>
 
 // stb for PNG/JPG loading
 #define STB_IMAGE_IMPLEMENTATION
@@ -195,33 +197,16 @@ public:
     }
 };
 
-// ── ExposureMerge: ZMap 입력(인터리브 홀짝 이중노출) → BFS 리플렉션 제거 + 머지 ─
-//   ZMapLoader로 인터리브 Z PNG를 읽어 연결. I/L은 sourceId 경로에서 자동 파생.
-//   짝/홀 행 = 저/장 노출. 겹침은 저노출 우선(리플 자동배제).
-//   장노출에서 BFS 플러드필로 리플렉션 픽셀 제거 후 머지.
+// ── ExposureSplit (이중노출 분리): 인터리브 홀짝 이중노출 ZMap → 저노출/장노출 분리.
+//   짝/홀 행 = 저/장 노출. 저노출은 상/하부 구간 8배 행확장(makeZLow),
+//   장노출은 2배 복원(makeZ). 출력: 1.저노출(확장) / 2.장노출 중 선택.
+//   (머지/리플렉션 제거는 별도 '이중노출 머지'(ExposureMerge2) 노드로 분리됨)
 class ExposureMergeTool : public IAlgorithmTool {
+    int   m_outputStage;   // 0=저노출(확장), 1=장노출
+    bool  m_skipStages;    // true면 결과창 미리보기용 다른 단계는 만들지 않음(배치 가속/메모리 절약)
 public:
-    struct ReflRoiPct { float xPct, yPct, wPct, hPct; };
-private:
-    bool  m_enableBfs, m_enableSor;
-    int   m_sorK, m_outputStage;
-    float m_sorRatio;
-    std::vector<ReflRoiPct> m_reflRois;
-    float m_seedTol, m_tolX, m_tolY;
-    int   m_gapK;
-    // true면 결과창에 쓸 단계별 미리보기가 필요 없다는 뜻 — 실제 출력에 쓰는
-    // 단계 하나만 업샘플링해서 만들고 나머지 4개(각 수십~수백MB)는 만들지 않는다.
-    // (폴더검사에서 이미지 한 장당 이 노드가 최대 5개의 원본 해상도 ZMap 사본을
-    //  만들어내는 게 워커 여러 개 동시 실행 시 OOM의 주된 원인이었음)
-    bool  m_skipStages;
-public:
-    ExposureMergeTool(bool enableBfs, bool enableSor, int sorK, float sorRatio,
-                      std::vector<ReflRoiPct> reflRois, float seedTol, float tolX, float tolY, int gapK,
-                      int outputStage, bool skipStages)
-        : m_enableBfs(enableBfs), m_enableSor(enableSor),
-          m_sorK(sorK), m_sorRatio(sorRatio),
-          m_reflRois(std::move(reflRois)), m_seedTol(seedTol), m_tolX(tolX), m_tolY(tolY), m_gapK(gapK),
-          m_outputStage(outputStage), m_skipStages(skipStages) {}
+    ExposureMergeTool(int outputStage, bool skipStages)
+        : m_outputStage(outputStage), m_skipStages(skipStages) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -242,7 +227,7 @@ public:
 
 
         const int n = h / 2;                 // 홀짝 쌍 개수 = 출력 행 수
-        const int si = std::clamp(m_outputStage, 0, 4);   // 실제 출력으로 쓸 단계 인덱스
+        const int si = std::clamp(m_outputStage, 0, 1);   // 0=저노출(확장), 1=장노출
         const float NaN = std::numeric_limits<float>::quiet_NaN();
         // 입력 ZMap 데이터(raw count float, 무효=NaN)를 그대로 사용
         auto zAt = [&](int row, int c) -> float { return zm.data[(size_t)row * w + c]; };
@@ -253,100 +238,13 @@ public:
         auto hiRow = [&](int r){ return evenIsLow ? 2*r+1 : 2*r;   };
 
         // ① 홀짝 분리 → 저노출(low)/장노출(high) 배열 (n×w, 무효=NaN)
-        std::vector<float> low((size_t)n*w), high((size_t)n*w), sub((size_t)n*w);
+        std::vector<float> low((size_t)n*w), high((size_t)n*w);
         for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
             size_t i = (size_t)r*w + c;
             low[i]  = zAt(loRow(r), c);
             high[i] = zAt(hiRow(r), c);
         }
         lap("홀짝 분리");
-        // ③ BFS 플러드필로 장노출 리플렉션 제거 (enableBfs AND ROI 설정 시에만 적용)
-        std::vector<float> highClean = high;
-        long bfsRemoved = 0;
-        if (m_enableBfs && !m_reflRois.empty()) {
-            // ROI를 n×w 픽셀 공간으로 변환 (percentage → pixel)
-            struct PixRoi { int x0,y0,x1,y1; };
-            std::vector<PixRoi> pixRois;
-            for (auto& r : m_reflRois) {
-                int rx = (int)(r.xPct * w), ry = (int)(r.yPct * n);
-                int rw2 = (int)(r.wPct * w), rh2 = (int)(r.hPct * n);
-                if (rw2 > 0 && rh2 > 0)
-                    pixRois.push_back({ rx, ry, rx+rw2, ry+rh2 });
-            }
-            auto inRoi = [&](int r, int c) -> bool {
-                for (auto& roi : pixRois) if (c>=roi.x0&&c<roi.x1&&r>=roi.y0&&r<roi.y1) return true;
-                return false;
-            };
-
-            // 씨앗: 저/장 양쪽 유효이고 |차이| ≤ seedTol → 확실한 실제 표면
-            std::vector<bool> visited((size_t)n*w, false);
-            std::deque<int> q;
-            for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-                size_t i = (size_t)r*w+c;
-                if (!std::isnan(low[i]) && !std::isnan(high[i]) &&
-                    std::fabs(low[i]-high[i]) <= m_seedTol) {
-                    visited[i] = true; q.push_back((int)i);
-                }
-            }
-
-            // BFS: 축별 허용치 + gapK 갭 점프
-            auto tryRay = [&](int r, int c, float z, int dr, int dc, float tolPerStep) {
-                for (int k = 1; k <= m_gapK+1; ++k) {
-                    int nr = r+dr*k, nc = c+dc*k;
-                    if (nr<0||nr>=n||nc<0||nc>=w) break;
-                    int ni = nr*w+nc;
-                    if (visited[ni]) break;
-                    if (std::isnan(high[ni])) continue;       // NaN 갭: 계속 진행
-                    if (std::fabs(high[ni]-z) <= tolPerStep*k) { visited[ni]=true; q.push_back(ni); }
-                    break;                                     // 유효 픽셀 발견: 수락 여부 무관 종료
-                }
-            };
-            while (!q.empty()) {
-                int idx = q.front(); q.pop_front();
-                int r = idx/w, c = idx%w;
-                float z = high[idx];
-                tryRay(r,c,z, 0,-1,m_tolX); tryRay(r,c,z, 0,1,m_tolX);
-                tryRay(r,c,z,-1, 0,m_tolY); tryRay(r,c,z, 1,0,m_tolY);
-            }
-
-            // ROI 내 미방문 유효 픽셀 = 리플렉션 → NaN
-            for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-                if (!inRoi(r,c)) continue;
-                size_t i = (size_t)r*w+c;
-                if (!visited[i] && !std::isnan(highClean[i])) { highClean[i]=NaN; ++bfsRemoved; }
-            }
-        }
-        lap("BFS");
-        // BFS까지 끝나면 원본 장노출(high)은 더 안 쓴다 — highClean이 그 정제본을 들고 있음.
-        // (미리보기 생략 모드에서 이 단계가 출력으로 안 쓰이면 즉시 반납해 피크 메모리를 줄임)
-        if (m_skipStages && si != 1) std::vector<float>().swap(high);
-
-        // ④ 저노출 대입: 저노출 유효 픽셀은 전부 저노출값 사용, 없으면 리플렉션-제거된 장노출
-        for (size_t i = 0; i < (size_t)n*w; ++i)
-            sub[i] = !std::isnan(low[i]) ? low[i] : highClean[i];
-        // low/highClean은 sub 계산에만 쓰였다 — 각자 출력 단계로 안 쓰이면 바로 반납.
-        if (m_skipStages && si != 0) std::vector<float>().swap(low);
-        if (m_skipStages && si != 2) std::vector<float>().swap(highClean);
-        // ⑤ 위 결과(sub)에 NaN 인지 SOR: 창 내 유효이웃 평균±(stdRatio×표준편차) 밖이면 무효화
-        std::vector<float> sor = sub;
-        long sorRemoved = 0;
-        if (m_enableSor && m_sorK >= 3) {
-            const int half = m_sorK/2;
-            for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-                float z = sub[(size_t)r*w+c];
-                if (std::isnan(z)) continue;
-                int r0=std::max(0,r-half),r1=std::min(n-1,r+half),c0=std::max(0,c-half),c1=std::min(w-1,c+half);
-                double s=0,s2=0; int cnt=0;
-                for (int rr=r0;rr<=r1;++rr) for (int cc=c0;cc<=c1;++cc){ float v=sub[(size_t)rr*w+cc]; if(std::isnan(v))continue; s+=v; s2+=(double)v*v; ++cnt; }
-                if (cnt<3) continue;
-                double mean=s/cnt, var=std::max(0.0,s2/cnt-mean*mean), sd=std::sqrt(var);
-                if (std::fabs(z-mean) > m_sorRatio*sd) { sor[(size_t)r*w+c]=NaN; ++sorRemoved; }
-            }
-        }
-
-        lap("SOR");
-        // sor는 sub의 사본이라 sub 자체는 이제 출력 단계로 안 쓰이면 반납 가능.
-        if (m_skipStages && si != 3) std::vector<float>().swap(sub);
 
         // 각 단계를 원본 행수(h)로 복제해 ZMap 생성 (병합행 r → 원래 두 행 2r,2r+1)
         // half(n행) → scale배 확장 (선형 보간). 다른 단계에 사용.
@@ -419,39 +317,151 @@ public:
             return z;
         };
 
-        ZMapPtr zLow, zHigh, zHighClean, zSub, zSor;
+        ZMapPtr zLow, zHigh;
         if (m_skipStages) {
-            // 결과창에 뿌릴 단계별 미리보기가 필요 없으면, 실제 출력으로 쓸
-            // 단계 하나만 업샘플링 — 나머지 4개(단계당 최대 수백MB)는 만들지 않는다.
-            switch (si) {
-                case 0: zLow       = makeZLow(low);        break;
-                case 1: zHigh      = makeZ(high);          break;
-                case 2: zHighClean = makeZ(highClean);     break;
-                case 3: zSub       = makeZ(sub);           break;
-                case 4: zSor       = makeZ(sor);           break;
-            }
+            // 미리보기가 필요 없으면 실제 출력으로 쓸 단계 하나만 업샘플링(메모리 절약).
+            if (si == 0) { zLow = makeZLow(low); }
+            else         { zHigh = makeZ(high);  }
             lap("makeZ(선택 1단계)");
         } else {
-            zLow=makeZLow(low); lap("makeZLow(8x)");
-            zHigh=makeZ(high); zHighClean=makeZ(highClean); zSub=makeZ(sub); zSor=makeZ(sor);
-            lap("makeZ×4(2x)");
+            zLow = makeZLow(low); lap("makeZLow(8x)");
+            zHigh = makeZ(high);  lap("makeZ(2x)");
         }
 
-        const ZMapPtr stageZmaps[] = { zLow, zHigh, zHighClean, zSub, zSor };
+        const ZMapPtr stageZmaps[] = { zLow, zHigh };
 
         auto data = std::make_shared<VisionData>();
         data->zmap = stageZmaps[si];
         data->sourceId = input->sourceId;
         if (!m_skipStages) {
             data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
-            data->stages->push_back({ "1. 저노출",           zLow });
-            data->stages->push_back({ "2. 장노출",           zHigh });
-            data->stages->push_back({ "3. 장노출 리플렉션 제거", zHighClean });
-            data->stages->push_back({ "4. 저노출 대입 장노출", zSub });
-            data->stages->push_back({ "5. SOR 적용",         zSor });
+            data->stages->push_back({ "1. 저노출(확장)", zLow });
+            data->stages->push_back({ "2. 장노출",       zHigh });
         }
-        VISION_LOG_INFO("ExposureMerge: {}x{} (BFS제거 {} px, SOR제거 {} px)",
-                        w, h, bfsRemoved, sorRemoved);
+        VISION_LOG_INFO("ExposureSplit: {}x{} → 저노출 {}행 / 장노출 {}행",
+                        w, h, zLow ? zLow->height : 0, zHigh ? zHigh->height : 0);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── DualExposureMerge (이중노출 머지, 재구현): 인터리브 홀짝 → 오프셋보정 →
+//    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
+//    규칙: 겹침은 저노출 우선(리플 자동배제), fill은 신뢰 씨앗에서 연결성으로 검증.
+//    [증분1] ① 연속성 주력. ② 신뢰표면편차+I/LLT 게이팅, I중앙값 홀짝판별, 자동보정은 추후.
+class DualExposureMergeTool : public IAlgorithmTool {
+    float m_matchTol;   // 겹침 일치 허용(카운트) — 씨앗/오프셋 추정용
+    float m_reflTol;    // 리플 허용(카운트) — ② 예약
+    float m_tolX, m_tolY;
+    int   m_gapK;
+    bool  m_halfRes;
+    int   m_outputStage;
+public:
+    DualExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
+                          int gapK, bool halfRes, int outputStage)
+        : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
+          m_gapK(gapK), m_halfRes(halfRes), m_outputStage(outputStage) {}
+    std::string name() const override { return "ExposureMerge2"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap())
+            return { ToolStatus::Fail, "이중노출 머지: ZMap 입력이 필요합니다" };
+        const auto& zm = *input->zmap;
+        const int w = zm.width, h = zm.height;
+        if (h < 2) return { ToolStatus::Fail, "이중노출 머지: 이미지 높이가 너무 작습니다" };
+        const int n = h / 2;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
+
+        // ① 홀짝 분리 (짝수행=저노출 가정; I 중앙값 판별은 증분2)
+        std::vector<float> low((size_t)n*w), high((size_t)n*w);
+        for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
+            size_t i = (size_t)r*w + c;
+            low[i]  = at(2*r,   c);
+            high[i] = at(2*r+1, c);
+        }
+
+        // ② 오프셋 보정: 겹침 일치 픽셀(|low-high|≤matchTol)의 (low-high) 중앙값만큼
+        //    저노출을 이동해 두 노출의 Z 프레임을 맞춘다.
+        std::vector<float> diffs;
+        for (size_t i = 0; i < (size_t)n*w; ++i)
+            if (!std::isnan(low[i]) && !std::isnan(high[i]) &&
+                std::fabs(low[i]-high[i]) <= m_matchTol)
+                diffs.push_back(low[i]-high[i]);
+        float offset = 0.f;
+        if (!diffs.empty()) {
+            size_t mid = diffs.size()/2;
+            std::nth_element(diffs.begin(), diffs.begin()+mid, diffs.end());
+            offset = diffs[mid];
+        }
+        std::vector<float> lowC = low;
+        for (auto& v : lowC) if (!std::isnan(v)) v -= offset;
+
+        // ③ 기본 머지: 저노출 유효 → 저노출(보정), 없으면 장노출.
+        std::vector<float> merged((size_t)n*w);
+        for (size_t i = 0; i < (size_t)n*w; ++i)
+            merged[i] = !std::isnan(lowC[i]) ? lowC[i]
+                       : (!std::isnan(high[i]) ? high[i] : NaN);
+
+        // ④ 연속성(영역성장) 필터: 씨앗 = 저노출 유효 && 겹침 일치(신뢰 픽셀).
+        //    이웃으로 |ΔZ|≤축별tol×step 이면 확장(gapK 갭 점프 허용). fill(장노출만) 픽셀이
+        //    씨앗에서 연결 안 되면 리플렉션 → 구멍(NaN)으로 제거. 저노출 픽셀은 신뢰해 유지.
+        std::vector<uint8_t> visited((size_t)n*w, 0);
+        std::deque<int> q;
+        for (size_t i = 0; i < (size_t)n*w; ++i)
+            if (!std::isnan(lowC[i]) && !std::isnan(high[i]) &&
+                std::fabs(lowC[i]-high[i]) <= m_matchTol) { visited[i]=1; q.push_back((int)i); }
+        auto tryRay = [&](int r, int c, float z, int dr, int dc, float tol) {
+            for (int k = 1; k <= m_gapK+1; ++k) {
+                int nr=r+dr*k, nc=c+dc*k;
+                if (nr<0||nr>=n||nc<0||nc>=w) break;
+                size_t ni=(size_t)nr*w+nc;
+                if (visited[ni]) break;
+                if (std::isnan(merged[ni])) continue;      // NaN 갭: 계속 진행
+                if (std::fabs(merged[ni]-z) <= tol*k) { visited[ni]=1; q.push_back((int)ni); }
+                break;                                      // 유효 픽셀 만나면 종료
+            }
+        };
+        while (!q.empty()) {
+            int idx=q.front(); q.pop_front();
+            int r=idx/w, c=idx%w; float z=merged[idx];
+            tryRay(r,c,z, 0,-1,m_tolX); tryRay(r,c,z, 0,1,m_tolX);
+            tryRay(r,c,z,-1, 0,m_tolY); tryRay(r,c,z, 1,0,m_tolY);
+        }
+        long removed = 0;
+        std::vector<float> filtered = merged;
+        for (size_t i = 0; i < (size_t)n*w; ++i)
+            if (std::isnan(lowC[i]) && !std::isnan(high[i]) && !visited[i]) { filtered[i]=NaN; ++removed; }
+
+        // ⑤ 출력 ZMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
+        auto makeOut = [&](const std::vector<float>& src) {
+            auto z = std::make_shared<ZMap>();
+            z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
+            if (m_halfRes) {
+                z->height=n; z->yResMm=zm.yResMm*2.f; z->data = src;
+            } else {
+                z->height=2*n; z->yResMm=zm.yResMm;
+                z->data.assign((size_t)2*n*w, NaN);
+                for (int r=0;r<n;++r) {
+                    std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r)*w]);
+                    std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r+1)*w]);
+                }
+            }
+            return z;
+        };
+        auto zLow=makeOut(lowC), zHigh=makeOut(high), zMerged=makeOut(merged), zFinal=makeOut(filtered);
+
+        const ZMapPtr stageZ[] = { zFinal, zMerged, zLow, zHigh };
+        int si = std::clamp(m_outputStage, 0, 3);
+        auto data = std::make_shared<VisionData>();
+        data->zmap = stageZ[si];
+        data->sourceId = input->sourceId;
+        data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+        data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
+        data->stages->push_back({ "2. 기본 머지",           zMerged });
+        data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
+        data->stages->push_back({ "4. 장노출",             zHigh });
+        VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, 씨앗 {} px, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
+                        offset, (long)diffs.size(), removed, m_matchTol, m_tolX, m_tolY);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -530,6 +540,74 @@ public:
     }
 };
 
+// ── ZMapToCloud: ZMap(높이맵) → PointCloud3D. 유효 픽셀마다 (x,y,z)mm 점 생성. ──
+//   x = (col-originCol)*xRes, y = (row-originRow)*yRes, z = (raw-zZero)*zRes (mm)
+//   step으로 서브샘플(대용량 클라우드 감축). NaN(무효) 픽셀은 건너뜀.
+class ZMapToCloudTool : public IAlgorithmTool {
+    int m_step;
+public:
+    explicit ZMapToCloudTool(int step) : m_step(std::max(1, step)) {}
+    std::string name() const override { return "ZMapToCloud"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap())
+            return { ToolStatus::Fail, "ZMap→Cloud: ZMap 입력이 필요합니다" };
+        const ZMap& zm = *input->zmap;
+        auto cloud = std::make_shared<PointCloud3D>();
+        cloud->frameId = input->sourceId;
+        cloud->points.reserve((size_t)(zm.width / m_step + 1) * (zm.height / m_step + 1));
+        for (int row = 0; row < zm.height; row += m_step)
+            for (int col = 0; col < zm.width; col += m_step) {
+                if (!zm.valid(col, row)) continue;   // NaN 제외
+                cloud->points.push_back({ zm.xMm(col), zm.yMm(row), zm.zMm(col, row) });
+            }
+        // 타입화 출력: 클라우드만 전달(다운스트림 저장/처리용). 결과창 이미지는 입력 zmap으로 폴백.
+        auto out = std::make_shared<VisionData>();
+        out->cloud    = cloud;
+        out->sourceId = input->sourceId;
+        VISION_LOG_INFO("ZMapToCloud: {} points (step={}, {}x{})",
+                        cloud->points.size(), m_step, zm.width, zm.height);
+        return { ToolStatus::Ok, "", out };
+    }
+};
+
+// ── CloudSaver: PointCloud3D → 파일 저장. .xyz(텍스트) / .ply(ascii, 기본). ────
+//   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
+class CloudSaverTool : public IAlgorithmTool {
+    std::string m_path;
+public:
+    explicit CloudSaverTool(std::string path) : m_path(std::move(path)) {}
+    std::string name() const override { return "CloudSaver"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (m_path.empty())            return { ToolStatus::Fail, "CloudSaver: 저장 경로가 설정되지 않았습니다" };
+        if (!input || !input->hasCloud()) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. ZMap→Cloud를 먼저 연결하세요." };
+
+        const std::string savePath = timeStampedPath(m_path);
+        std::string ext;
+        { size_t p = savePath.rfind('.'); if (p != std::string::npos) { ext = savePath.substr(p+1); for (auto& ch : ext) ch = (char)std::tolower(ch); } }
+
+        const auto& pts = input->cloud->points;
+        std::ofstream ofs(savePath, std::ios::binary);
+        if (!ofs) return { ToolStatus::Fail, "CloudSaver: 파일을 열 수 없습니다: " + savePath };
+
+        if (ext == "xyz") {                       // 단순 텍스트: "x y z" 한 줄씩
+            ofs << std::fixed << std::setprecision(4);
+            for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
+        } else {                                  // PLY ascii (기본, CloudCompare/MeshLab 호환)
+            ofs << "ply\nformat ascii 1.0\n";
+            ofs << "element vertex " << pts.size() << "\n";
+            ofs << "property float x\nproperty float y\nproperty float z\n";
+            ofs << "end_header\n";
+            ofs << std::fixed << std::setprecision(4);
+            for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
+        }
+        if (!ofs.good()) return { ToolStatus::Fail, "CloudSaver: 저장 중 오류: " + savePath };
+        VISION_LOG_INFO("CloudSaver: {} points → {}", pts.size(), savePath);
+        return { ToolStatus::Ok, "", input };     // 통과 (싱크)
+    }
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 static Rect2D roiFromJson(const nlohmann::json& j, const std::string& key) {
@@ -560,30 +638,33 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("zResMm",  0.001f));
     }
     if (type == "ExposureMerge") {
-        std::vector<ExposureMergeTool::ReflRoiPct> rois;
-        for (auto& roi : p.value("reflRois", nlohmann::json::array())) {
-            if (roi.value("shape", "rect") == "rect" && roi.contains("xPct"))
-                rois.push_back({ roi.value("xPct",0.f), roi.value("yPct",0.f),
-                                 roi.value("wPct",0.f), roi.value("hPct",0.f) });
-        }
+        // 이중노출 분리: 저노출(확장)/장노출 중 outputStage로 선택 (0/1).
+        // 기존 레시피 호환: outputStage 2~4는 clamp되어 장노출로 처리됨.
         return std::make_shared<ExposureMergeTool>(
-            p.value("enableBfs",   true),
-            p.value("enableSor",   true),
-            p.value("sorKernel",   5),
-            p.value("sorRatio",    2.0f),
-            std::move(rois),
-            p.value("seedTol",     100.0f),
+            p.value("outputStage", 0),
+            noPreview);
+    }
+    if (type == "ExposureMerge2") {
+        return std::make_shared<DualExposureMergeTool>(
+            p.value("matchTol",    20.0f),
+            p.value("reflTol",     30.0f),
             p.value("tolX",        10.0f),
             p.value("tolY",        100.0f),
             p.value("gapK",        2),
-            p.value("outputStage", 4),
-            noPreview);
+            p.value("halfRes",     true),
+            p.value("outputStage", 0));
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));
     }
     if (type == "ImageSaver") {
         return std::make_shared<ImageSaverTool>(p.value("path", ""));
+    }
+    if (type == "ZMapToCloud") {
+        return std::make_shared<ZMapToCloudTool>(p.value("step", 1));
+    }
+    if (type == "CloudSaver") {
+        return std::make_shared<CloudSaverTool>(p.value("path", ""));
     }
     if (type == "NoiseFilter") {
         NoiseFilter::Params params;

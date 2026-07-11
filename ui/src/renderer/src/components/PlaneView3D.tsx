@@ -3,15 +3,16 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 interface Props {
-  a: number
-  b: number
-  c: number
+  a?: number
+  b?: number
+  c?: number
   points: [number, number, number][]
+  showPlane?: boolean   // false면 피팅 평면 숨기고 높이(Z) 기준으로 색상 (포인트클라우드 뷰)
 }
 
 const VIEW_H = 260
 
-export default function PlaneView3D({ a, b, c, points }: Props) {
+export default function PlaneView3D({ a = 0, b = 0, c = 0, points, showPlane = true }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,8 +50,11 @@ export default function PlaneView3D({ a, b, c, points }: Props) {
     const tf = (x: number, y: number, z: number): [number, number, number] =>
       [(x - cx) * s, (z - cz) * s, (y - cy) * s]
 
-    // ── 잔차(평면 대비 편차) 색상 ──
-    const resid = points.map(([x, y, z]) => z - (a * x + b * y + c))
+    // ── 색상 기준값 ──
+    //   showPlane: 평면 대비 잔차(-아래 ~ +위). 아니면 높이 Z를 중앙 기준 편차로 정규화.
+    const resid = showPlane
+      ? points.map(([x, y, z]) => z - (a * x + b * y + c))
+      : points.map(([, , z]) => z - cz)
     let maxAbs = 1e-9
     for (const r of resid) maxAbs = Math.max(maxAbs, Math.abs(r))
 
@@ -72,26 +76,29 @@ export default function PlaneView3D({ a, b, c, points }: Props) {
     const cloud = new THREE.Points(geo, pmat)
     scene.add(cloud)
 
-    // ── 피팅 평면 (x,y bbox 네 모서리) ──
-    const corners: [number, number][] = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]]
+    // ── 피팅 평면 (x,y bbox 네 모서리) — showPlane일 때만 ──
     const pgeo = new THREE.BufferGeometry()
-    const pp = new Float32Array(4 * 3)
-    corners.forEach(([x, y], i) => {
-      const z = a * x + b * y + c
-      const [tx, ty, tz] = tf(x, y, z)
-      pp[i * 3] = tx; pp[i * 3 + 1] = ty; pp[i * 3 + 2] = tz
-    })
-    pgeo.setAttribute('position', new THREE.BufferAttribute(pp, 3))
-    pgeo.setIndex([0, 1, 2, 0, 2, 3])
-    const planeMat = new THREE.MeshBasicMaterial({
-      color: 0x26a69a, transparent: true, opacity: 0.35, side: THREE.DoubleSide
-    })
-    scene.add(new THREE.Mesh(pgeo, planeMat))
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(pgeo),
-      new THREE.LineBasicMaterial({ color: 0x26a69a })
-    )
-    scene.add(edges)
+    let planeMat: THREE.MeshBasicMaterial | null = null
+    if (showPlane) {
+      const corners: [number, number][] = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]]
+      const pp = new Float32Array(4 * 3)
+      corners.forEach(([x, y], i) => {
+        const z = a * x + b * y + c
+        const [tx, ty, tz] = tf(x, y, z)
+        pp[i * 3] = tx; pp[i * 3 + 1] = ty; pp[i * 3 + 2] = tz
+      })
+      pgeo.setAttribute('position', new THREE.BufferAttribute(pp, 3))
+      pgeo.setIndex([0, 1, 2, 0, 2, 3])
+      planeMat = new THREE.MeshBasicMaterial({
+        color: 0x26a69a, transparent: true, opacity: 0.35, side: THREE.DoubleSide
+      })
+      scene.add(new THREE.Mesh(pgeo, planeMat))
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(pgeo),
+        new THREE.LineBasicMaterial({ color: 0x26a69a })
+      )
+      scene.add(edges)
+    }
 
     // ── 축 + 그리드 + 라벨 (평면 기울기 방향 파악용) ──
     // three 좌표 매핑: x=데이터X, y(up)=높이Z, z=데이터Y
@@ -150,21 +157,21 @@ export default function PlaneView3D({ a, b, c, points }: Props) {
       cancelAnimationFrame(raf)
       ro.disconnect()
       controls.dispose()
-      geo.dispose(); pmat.dispose(); pgeo.dispose(); planeMat.dispose()
+      geo.dispose(); pmat.dispose(); pgeo.dispose(); planeMat?.dispose()
       grid.dispose()
       labelSprites.forEach(sp => { sp.material.map?.dispose(); sp.material.dispose() })
       renderer.dispose()
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement)
     }
-  }, [a, b, c, points])
+  }, [a, b, c, points, showPlane])
 
   return (
     <div className="plane-3d">
       <div ref={mountRef} className="plane-3d-canvas" />
       <div className="plane-3d-legend">
-        <span><i style={{ background: '#3b82f6' }} /> 아래</span>
-        <span><i style={{ background: '#e5e5e5' }} /> 평면</span>
-        <span><i style={{ background: '#ef4444' }} /> 위</span>
+        <span><i style={{ background: '#3b82f6' }} /> {showPlane ? '아래' : '낮음'}</span>
+        <span><i style={{ background: '#e5e5e5' }} /> {showPlane ? '평면' : '중앙'}</span>
+        <span><i style={{ background: '#ef4444' }} /> {showPlane ? '위' : '높음'}</span>
         <span className="plane-3d-hint">드래그 회전 · 휠 줌</span>
       </div>
     </div>

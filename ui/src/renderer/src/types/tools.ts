@@ -33,12 +33,15 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { path: '' },
   },
   {
-    type: 'ExposureMerge', label: '이중노출 머지', category: '필터',
+    type: 'ExposureMerge', label: '이중노출 분리', category: '필터',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: { outputStage: 0 },
+  },
+  {
+    type: 'ExposureMerge2', label: '이중노출 머지', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: {
-      enableBfs: true, reflRois: [], seedTol: 100, tolX: 10, tolY: 100, gapK: 2,
-      enableSor: true, sorKernel: 5, sorRatio: 2.0,
-      outputStage: 4,
+      matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true, outputStage: 0,
     },
   },
   {
@@ -101,6 +104,16 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'ImageSaver', label: '이미지 저장', category: '출력',
     inputs: ['Any'], outputs: [],
+    defaultParams: { path: '' },
+  },
+  {
+    type: 'ZMapToCloud', label: 'ZMap → 포인트클라우드', category: '변환',
+    inputs: ['ZMap'], outputs: ['PointCloud3D'],
+    defaultParams: { step: 1 },
+  },
+  {
+    type: 'CloudSaver', label: '포인트클라우드 저장', category: '출력',
+    inputs: ['PointCloud3D'], outputs: [],
     defaultParams: { path: '' },
   },
 ]

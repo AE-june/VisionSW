@@ -274,52 +274,56 @@ function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown
   </>
 }
 
-// ExposureMerge: 인터리브 ZMap 입력(ZMapLoader 연결) → BFS 리플렉션 제거 + 머지
+// ExposureSplit (이중노출 분리): 인터리브 홀짝 → 저노출(행확장)/장노출 분리
 function ExposureMergeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 인터리브 Z PNG를 연결하세요. I/L 파일은 같은 폴더에서 자동으로 읽습니다.</div>
-    <div className="param-section">BFS 리플렉션 필터 (장노출)</div>
-    <CheckField label="BFS 필터 사용" value={params.enableBfs as boolean ?? true} onChange={v => set('enableBfs', v)}
-      tooltip="장노출 이미지에서 BFS 플러드필로 리플렉션 영역을 제거. ROI 내에서 씨앗(저/장 일치 픽셀)에서 출발해 연결된 표면만 유지" />
-    {(params.enableBfs as boolean ?? true) && <>
-      <NumField label="씨앗 허용치" value={params.seedTol as number ?? 100} step={10} onChange={v => set('seedTol', v)}
-        tooltip="저노출·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값인 픽셀을 BFS 시작점(씨앗)으로 사용. 단위: raw count (0~65535)" />
-      <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
-        tooltip="BFS 확장 시 X방향 이웃과의 Z 허용 차이. X 피치(~6µm)가 작으므로 작게 설정. 단위: count/px" />
-      <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
-        tooltip="BFS 확장 시 Y방향 이웃과의 Z 허용 차이. Y 피치가 X의 ~15배이므로 크게 설정. 단위: count/px" />
-      <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
-        tooltip="BFS가 NaN 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
-      <div className="param-empty" style={{ fontSize: 10 }}>ROI는 결과창에서 드래그로 설정합니다.</div>
-    </>}
-    <div className="param-section">SOR 필터 (저노출 대입 후)</div>
-    <CheckField label="SOR 필터 사용" value={params.enableSor as boolean ?? true} onChange={v => set('enableSor', v)}
-      tooltip="머지 결과에서 주변 이웃 통계를 벗어난 고립된 이상값 픽셀을 제거" />
-    {(params.enableSor as boolean ?? true) && <>
-      <NumField label="SOR 커널" value={params.sorKernel as number ?? 5} step={2} onChange={v => set('sorKernel', v)}
-        tooltip="통계를 계산할 창 크기(홀수). 클수록 더 넓은 영역 참조. 0이면 비활성" />
-      <NumField label="SOR Std 비율" value={params.sorRatio as number ?? 2.0} step={0.1} onChange={v => set('sorRatio', v)}
-        tooltip="평균 ± (비율 × 표준편차) 범위 밖이면 이상값으로 제거. 작을수록 더 공격적" />
-    </>}
-    <div className="param-section">출력 단계</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 인터리브 Z PNG를 연결하세요. 홀짝 행을 저노출/장노출로 분리합니다. 저노출은 상/하부 구간을 8배 행확장, 장노출은 2배 복원합니다.</div>
+    <div className="param-section">출력</div>
     <div className="param-row">
       <label className="param-label">저장 출력</label>
       <select
         className="param-select"
-        value={params.outputStage as number ?? 4}
+        value={Math.min((params.outputStage as number ?? 0), 1)}
         onChange={e => set('outputStage', Number(e.target.value))}
       >
-        <option value={0}>1. 저노출</option>
+        <option value={0}>1. 저노출(행확장)</option>
         <option value={1}>2. 장노출</option>
-        <option value={2}>3. 장노출 리플렉션 제거</option>
-        <option value={3}>4. 저노출 대입 장노출</option>
-        <option value={4}>5. SOR 적용</option>
       </select>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
-      결과창 드롭다운에서 모든 단계를 미리볼 수 있습니다.
+      결과창 드롭다운에서 저노출/장노출을 미리볼 수 있습니다.
     </div>
+  </>
+}
+
+// ExposureMerge2 (이중노출 머지 재구현): 오프셋 보정 + 연속성 필터로 fill 리플렉션 제거
+function ExposureMerge2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 인터리브 Z PNG를 연결하세요. 겹침은 저노출 우선, fill 리플렉션은 연속성으로 제거합니다.</div>
+    <div className="param-section">머지 / 연속성 필터</div>
+    <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
+      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 '겹침 일치'로 판정. 오프셋 추정과 연속성 씨앗에 사용. 단위: raw count" />
+    <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
+      tooltip="연속성 확장 시 X방향 이웃과의 Z 허용 차이. X 피치(~6µm)가 작으므로 작게. 단위: count/px" />
+    <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
+      tooltip="연속성 확장 시 Y방향 이웃과의 Z 허용 차이. Y 피치가 X의 ~15배라 크게. 단위: count/px" />
+    <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
+      tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
+    <CheckField label="반해상도 출력 (Y×2)" value={params.halfRes as boolean ?? true} onChange={v => set('halfRes', v)}
+      tooltip="머지는 홀짝 절반 그리드라 켜면 n행·Y피치×2로 출력. 끄면 각 행을 2배 복제해 원본 높이 유지" />
+    <div className="param-section">출력 단계</div>
+    <div className="param-row">
+      <label className="param-label">저장 출력</label>
+      <select className="param-select" value={params.outputStage as number ?? 0} onChange={e => set('outputStage', Number(e.target.value))}>
+        <option value={0}>1. 머지(리플렉션 제거)</option>
+        <option value={1}>2. 기본 머지</option>
+        <option value={2}>3. 저노출(오프셋 보정)</option>
+        <option value={3}>4. 장노출</option>
+      </select>
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>결과창 드롭다운에서 모든 단계를 미리볼 수 있습니다. (② I/LLT 게이팅은 추후)</div>
   </>
 }
 
@@ -350,6 +354,41 @@ function ImageSaverParams({ params, onChange }: { params: Record<string, unknown
   </>
 }
 
+// ZMapToCloud: ZMap → PointCloud3D 변환 (서브샘플 step)
+function ZMapToCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>ZMap의 유효 픽셀을 (x,y,z)mm 3D 점으로 변환합니다. 무효(NaN) 픽셀은 제외됩니다.</div>
+    <div className="param-section">서브샘플</div>
+    <NumField label="Step (px)" value={params.step as number ?? 1} step={1} onChange={v => set('step', v)}
+      tooltip="N픽셀마다 1점 추출. 1=모든 픽셀(대용량). 대형 ZMap은 2~4로 줄여 파일 크기·속도 개선" />
+  </>
+}
+
+// CloudSaver: PointCloud3D → PLY/XYZ 파일 저장
+function CloudSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const path = params.path as string ?? ''
+  const handleSave = async () => {
+    const api = (window as Window & { electronAPI?: { saveFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
+    if (!api?.saveFile) return
+    const p = await api.saveFile([
+      { name: 'PLY (ascii)', extensions: ['ply'] },
+      { name: 'XYZ (텍스트)', extensions: ['xyz'] },
+      { name: 'All Files', extensions: ['*'] },
+    ])
+    if (p) onChange({ ...params, path: p })
+  }
+  return <>
+    <div className="param-section">저장 파일 (PointCloud)</div>
+    <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+      <span className="param-label">저장 위치</span>
+      <button className="btn-browse" onClick={handleSave}>📁 파일 선택</button>
+      {path && <div className="param-path-display" title={path}>{path}</div>}
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>.ply(기본, ascii) 또는 .xyz(텍스트). 실행할 때마다 타임스탬프를 붙여 저장됩니다.</div>
+  </>
+}
+
 export default function ParamPanel({ nodeId, toolType, label, params, onParamChange, onClose, embedded }: Props) {
   const def = TOOL_DEF_MAP[toolType]
   if (!def) return null
@@ -364,9 +403,12 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
@@ -385,9 +427,12 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>

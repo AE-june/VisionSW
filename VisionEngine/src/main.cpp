@@ -239,6 +239,17 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
                 jr["cloud"] = pts;
             }
         }
+        if (ns.type == "ZMapToCloud" && result.output && result.output->cloud) {
+            // 3D 미리보기용 서브샘플(최대 ~50k점) — 저장 파일은 전체 해상도(영향 없음)
+            const auto& cpts = result.output->cloud->points;
+            const size_t cap = 50000;
+            const size_t stride = cpts.size() > cap ? (cpts.size() + cap - 1) / cap : 1;
+            json pts = json::array();
+            for (size_t i = 0; i < cpts.size(); i += stride)
+                pts.push_back({ cpts[i].x, cpts[i].y, cpts[i].z });
+            jr["cloud"] = pts;
+            jr["cloudTotal"] = static_cast<long long>(cpts.size());
+        }
         if (ns.type == "HeightMeasure") {
             auto* m = dynamic_cast<HeightFromPlaneTool*>(tool.get());
             if (m && m->lastResult().valid) {
