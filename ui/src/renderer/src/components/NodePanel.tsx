@@ -162,7 +162,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
           <select className="param-select" value={showCloud ? 'cloud' : 'image'}
             onChange={e => setCloudView(e.target.value === 'cloud')}>
             <option value="cloud">3D 포인트클라우드</option>
-            <option value="image">2D 이미지</option>
+            <option value="image">ZMap 이미지</option>
           </select>
         </div>
       )}

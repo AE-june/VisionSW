@@ -33,19 +33,19 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { path: '' },
   },
   {
-    type: 'ExposureMerge', label: '이중노출 분리', category: '필터',
+    type: 'ExposureMerge', label: 'Exposure Split', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: { outputStage: 0 },
   },
   {
-    type: 'ExposureMerge2', label: '이중노출 머지', category: '필터',
+    type: 'ExposureMerge2', label: 'Exposure Merge', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: {
       matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true, outputStage: 0,
     },
   },
   {
-    type: 'LineCenter', label: 'Line Center', category: '정렬',
+    type: 'LineCenter', label: 'Line Finder', category: '정렬',
     inputs: ['ZMap'], outputs: ['Point'],
     defaultParams: { rois: [], threshold: 1, xRoi: 0, yRoi: 0 },
   },
@@ -53,6 +53,11 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'NoiseFilter', label: 'Noise Filter', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: { rois: [], filterType: 'median', kernelSizeX: 3, kernelSizeY: 3, stdRatio: 2.0, sigmaRangeMm: 0.02, radius: 1.0, minNeighbors: 5 },
+  },
+  {
+    type: 'GapFill', label: 'Gap Fill', category: '필터',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, outputStage: 0 },
   },
   {
     type: 'EdgeDetector', label: 'Edge Detector', category: '필터',
@@ -83,7 +88,7 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
-    type: 'ThicknessMeasure', label: 'Thickness', category: '측정',
+    type: 'ThicknessMeasure', label: 'Thickness Measure', category: '측정',
     inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
     defaultParams: {
       roi: { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
@@ -92,7 +97,7 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
-    type: 'Align', label: '좌표계 변환', category: '정렬',
+    type: 'Align', label: 'Align', category: '정렬',
     inputs: ['ZMap', 'Point'], outputs: ['ZMap'],
     defaultParams: {},
   },
@@ -102,19 +107,19 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { path: '', label: '' },
   },
   {
-    type: 'ImageSaver', label: '이미지 저장', category: '출력',
+    type: 'ImageSaver', label: 'Image Saver', category: '출력',
     inputs: ['Any'], outputs: [],
-    defaultParams: { path: '' },
+    defaultParams: { folder: '', filename: '', format: 'png' },
   },
   {
-    type: 'ZMapToCloud', label: 'ZMap → 포인트클라우드', category: '변환',
+    type: 'ZMapToCloud', label: 'ZMap to Cloud', category: '변환',
     inputs: ['ZMap'], outputs: ['PointCloud3D'],
     defaultParams: { step: 1 },
   },
   {
-    type: 'CloudSaver', label: '포인트클라우드 저장', category: '출력',
+    type: 'CloudSaver', label: 'Cloud Saver', category: '출력',
     inputs: ['PointCloud3D'], outputs: [],
-    defaultParams: { path: '' },
+    defaultParams: { folder: '', filename: '', format: 'ply' },
   },
 ]
 

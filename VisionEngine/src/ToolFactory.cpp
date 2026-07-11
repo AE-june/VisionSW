@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <unordered_set>
 #include <ctime>
+#include <chrono>
 #include <thread>
 #include <atomic>
 #include <fstream>
@@ -467,9 +468,13 @@ public:
 };
 
 // 파일명 앞에 HHMMSS_ prefix를 붙여 반환 (예: output.png → 143022_output.png)
-static std::string timeStampedPath(const std::string& path) {
-    namespace fs = std::filesystem;
-    std::time_t t = std::time(nullptr);
+// 현재 시각을 HHMMSSmmm(시분초밀리초) 문자열로. 저장 파일명 접두사로 써서
+// 폴더검사(초당 여러 장, 워커 병렬)에서도 파일명 충돌을 사실상 없앤다.
+static std::string msStamp() {
+    using namespace std::chrono;
+    const auto now = system_clock::now();
+    const long long ms = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+    std::time_t t = system_clock::to_time_t(now);
     std::tm tm{};
 #ifdef _WIN32
     localtime_s(&tm, &t);
@@ -478,25 +483,42 @@ static std::string timeStampedPath(const std::string& path) {
 #endif
     char buf[8];
     std::strftime(buf, sizeof(buf), "%H%M%S", &tm);
-    fs::path p(path);
-    return (p.parent_path() / (std::string(buf) + "_" + p.filename().string())).string();
+    std::string mm = std::to_string(ms);
+    while (mm.size() < 3) mm = "0" + mm;
+    return std::string(buf) + mm;   // HHMMSSmmm
+}
+
+// 저장 경로 생성: <folder>/HHMMSSmmm_<name>.<ext>
+//   name = filename(지정 시), 비어있으면 소스 파일명(stem), 그것도 없으면 "output".
+//   ext  = format(앞의 '.'은 무시). 밀리초 접두사로 병렬 저장에서도 겹치지 않음.
+static std::string buildSavePath(const std::string& folder, const std::string& filename,
+                                 const std::string& format, const std::string& sourceId) {
+    namespace fs = std::filesystem;
+    std::string stem = !filename.empty() ? filename
+                     : (!sourceId.empty() ? fs::path(sourceId).stem().string() : std::string("output"));
+    std::string ext = format;
+    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    if (ext.empty()) ext = "png";
+    return (fs::path(folder) / (msStamp() + "_" + stem + "." + ext)).string();
 }
 
 // ── ImageSaver: 입력(ZMap 또는 Image2D)을 파일로 저장 (OpenCV cv::imwrite) ──────
 //   ZMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화). Image2D → 그대로.
 class ImageSaverTool : public IAlgorithmTool {
-    std::string m_path;
+    std::string m_folder, m_filename, m_format;
 public:
-    explicit ImageSaverTool(std::string path) : m_path(std::move(path)) {}
+    ImageSaverTool(std::string folder, std::string filename, std::string format)
+        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)) {}
     std::string name() const override { return "ImageSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (m_path.empty()) return { ToolStatus::Fail, "ImageSaver: 저장 경로가 설정되지 않았습니다" };
-        if (!input)         return { ToolStatus::Fail, "ImageSaver: 입력이 없습니다" };
+        if (m_folder.empty()) return { ToolStatus::Fail, "ImageSaver: 저장 폴더가 설정되지 않았습니다" };
+        if (!input)           return { ToolStatus::Fail, "ImageSaver: 입력이 없습니다" };
 
-        const std::string savePath = timeStampedPath(m_path);
-        std::string ext;
-        { size_t p = savePath.rfind('.'); if (p != std::string::npos) { ext = savePath.substr(p+1); for (auto& ch : ext) ch = (char)std::tolower(ch); } }
+        const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
+        std::string ext = m_format;
+        for (auto& ch : ext) ch = (char)std::tolower(ch);
+        if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
         const bool ext16 = (ext == "png" || ext == "tif" || ext == "tiff");
 
         try {
@@ -574,18 +596,20 @@ public:
 // ── CloudSaver: PointCloud3D → 파일 저장. .xyz(텍스트) / .ply(ascii, 기본). ────
 //   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
 class CloudSaverTool : public IAlgorithmTool {
-    std::string m_path;
+    std::string m_folder, m_filename, m_format;
 public:
-    explicit CloudSaverTool(std::string path) : m_path(std::move(path)) {}
+    CloudSaverTool(std::string folder, std::string filename, std::string format)
+        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)) {}
     std::string name() const override { return "CloudSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (m_path.empty())            return { ToolStatus::Fail, "CloudSaver: 저장 경로가 설정되지 않았습니다" };
+        if (m_folder.empty())             return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
         if (!input || !input->hasCloud()) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. ZMap→Cloud를 먼저 연결하세요." };
 
-        const std::string savePath = timeStampedPath(m_path);
-        std::string ext;
-        { size_t p = savePath.rfind('.'); if (p != std::string::npos) { ext = savePath.substr(p+1); for (auto& ch : ext) ch = (char)std::tolower(ch); } }
+        const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
+        std::string ext = m_format;
+        for (auto& ch : ext) ch = (char)std::tolower(ch);
+        if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
 
         const auto& pts = input->cloud->points;
         std::ofstream ofs(savePath, std::ios::binary);
@@ -605,6 +629,188 @@ public:
         if (!ofs.good()) return { ToolStatus::Fail, "CloudSaver: 저장 중 오류: " + savePath };
         VISION_LOG_INFO("CloudSaver: {} points → {}", pts.size(), savePath);
         return { ToolStatus::Ok, "", input };     // 통과 (싱크)
+    }
+};
+
+// ── GapFill: ZMap의 결측(NaN) 픽셀을 보간해 메움. ───────────────────────────
+//   가장 가까운 유효 픽셀까지 거리 ≤ maxGap 인 결측만 채우고, 그보다 큰 구멍(중앙)은
+//   NaN으로 남긴다(검사에서 가짜 표면을 지어내지 않기 위함).
+//   method: neighbor(반복 이웃) / laplace(PDE) / nearest(최근접) / idw(역거리) / linear(행·열 선형)
+//   출력 단계: 1.메운 결과 / 2.원본 / 3.메운 영역(마스크)
+class GapFillTool : public IAlgorithmTool {
+public:
+    enum class Method { Neighbor, Laplace, Nearest, Idw, Linear };
+private:
+    Method m_method;
+    int    m_maxGap, m_minValid, m_idwRadius, m_outputStage;
+    float  m_idwPower;
+    bool   m_noPreview;
+public:
+    GapFillTool(Method m, int maxGap, int minValid, int idwRadius, float idwPower, int outputStage, bool noPreview)
+        : m_method(m), m_maxGap(std::max(1,maxGap)), m_minValid(std::max(1,minValid)),
+          m_idwRadius(std::max(1,idwRadius)), m_outputStage(outputStage), m_idwPower(idwPower), m_noPreview(noPreview) {}
+    std::string name() const override { return "GapFill"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap()) return { ToolStatus::Fail, "GapFill: ZMap 입력이 필요합니다" };
+        const ZMap& zm = *input->zmap;
+        const int w = zm.width, h = zm.height;
+        const size_t N = (size_t)w * h;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const auto& src = zm.data;
+
+        // 유효/구멍 마스크 + 각 픽셀→가장 가까운 유효까지 거리
+        cv::Mat data(h, w, CV_32F, const_cast<float*>(src.data()));
+        cv::Mat validMask = (data == data);                 // 255=유효, 0=NaN
+        cv::Mat holeMask;  cv::bitwise_not(validMask, holeMask);
+        cv::Mat dist;      cv::distanceTransform(holeMask, dist, cv::DIST_L2, 3);  // 구멍=가장 가까운 유효까지 거리
+        const float* dp = dist.ptr<float>();
+
+        // 채울 대상: NaN 이고 거리 ≤ maxGap
+        std::vector<uint8_t> fillable(N, 0);
+        long target = 0;
+        for (size_t i = 0; i < N; ++i)
+            if (std::isnan(src[i]) && dp[i] <= (float)m_maxGap) { fillable[i] = 1; ++target; }
+
+        std::vector<float> out = src;   // 유효 픽셀은 그대로 유지
+
+        auto atc = [&](int r, int c) -> float { return out[(size_t)r*w + c]; };
+
+        if (m_method == Method::Neighbor) {
+            std::vector<float> cur = out;
+            for (int it = 0; it < m_maxGap; ++it) {
+                std::vector<float> nxt = cur;
+                bool changed = false;
+                for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
+                    size_t i = (size_t)r*w + c;
+                    if (!fillable[i] || !std::isnan(cur[i])) continue;
+                    double s = 0; int cnt = 0;
+                    for (int dr = -1; dr <= 1; ++dr) for (int dc = -1; dc <= 1; ++dc) {
+                        if (!dr && !dc) continue;
+                        int nr = r+dr, nc = c+dc; if (nr<0||nr>=h||nc<0||nc>=w) continue;
+                        float v = cur[(size_t)nr*w+nc]; if (!std::isnan(v)) { s += v; ++cnt; }
+                    }
+                    if (cnt >= m_minValid) { nxt[i] = (float)(s/cnt); changed = true; }
+                }
+                cur.swap(nxt);
+                if (!changed) break;
+            }
+            out.swap(cur);
+        }
+        else if (m_method == Method::Nearest) {
+            std::vector<uint8_t> done(N, 0);
+            std::deque<int> q;
+            for (size_t i = 0; i < N; ++i) if (!std::isnan(src[i])) { done[i]=1; q.push_back((int)i); }
+            const int d4r[4]={-1,1,0,0}, d4c[4]={0,0,-1,1};
+            while (!q.empty()) {
+                int i = q.front(); q.pop_front(); int r=i/w, c=i%w;
+                for (int k=0;k<4;++k) {
+                    int nr=r+d4r[k], nc=c+d4c[k]; if(nr<0||nr>=h||nc<0||nc>=w) continue;
+                    size_t j=(size_t)nr*w+nc;
+                    if (!done[j] && fillable[j]) { out[j]=out[i]; done[j]=1; q.push_back((int)j); }
+                }
+            }
+        }
+        else if (m_method == Method::Idw) {
+            const int R = m_idwRadius;
+            for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
+                size_t i = (size_t)r*w + c; if (!fillable[i]) continue;
+                double s = 0, ws = 0;
+                for (int dr=-R; dr<=R; ++dr) for (int dc=-R; dc<=R; ++dc) {
+                    int nr=r+dr, nc=c+dc; if(nr<0||nr>=h||nc<0||nc>=w) continue;
+                    float v = src[(size_t)nr*w+nc]; if (std::isnan(v)) continue;
+                    double d = std::sqrt((double)dr*dr + (double)dc*dc);
+                    if (d < 1e-6 || d > R) continue;
+                    double wt = 1.0 / std::pow(d, (double)m_idwPower);
+                    s += wt*v; ws += wt;
+                }
+                if (ws > 0) out[i] = (float)(s/ws);
+            }
+        }
+        else if (m_method == Method::Linear) {
+            std::vector<float> rowF(N, NaN), colF(N, NaN);
+            // 행 방향: 유효로 둘러싸인 NaN 구간을 양끝 값으로 선형보간
+            for (int r = 0; r < h; ++r) {
+                int c = 0;
+                while (c < w) {
+                    if (!std::isnan(src[(size_t)r*w+c])) { ++c; continue; }
+                    int s0 = c; while (c < w && std::isnan(src[(size_t)r*w+c])) ++c;
+                    int left = s0-1, right = c;
+                    if (left >= 0 && right < w) {
+                        float vl = src[(size_t)r*w+left], vr = src[(size_t)r*w+right];
+                        for (int k=s0;k<right;++k){ float t=(float)(k-left)/(right-left); rowF[(size_t)r*w+k]=vl*(1-t)+vr*t; }
+                    }
+                }
+            }
+            // 열 방향
+            for (int c = 0; c < w; ++c) {
+                int r = 0;
+                while (r < h) {
+                    if (!std::isnan(src[(size_t)r*w+c])) { ++r; continue; }
+                    int s0 = r; while (r < h && std::isnan(src[(size_t)r*w+c])) ++r;
+                    int top = s0-1, bot = r;
+                    if (top >= 0 && bot < h) {
+                        float vt = src[(size_t)top*w+c], vb = src[(size_t)bot*w+c];
+                        for (int k=s0;k<bot;++k){ float t=(float)(k-top)/(bot-top); colF[(size_t)k*w+c]=vt*(1-t)+vb*t; }
+                    }
+                }
+            }
+            for (size_t i=0;i<N;++i) {
+                if (!fillable[i]) continue;
+                bool hr=!std::isnan(rowF[i]), hc=!std::isnan(colF[i]);
+                if (hr && hc) out[i]=(rowF[i]+colF[i])*0.5f;
+                else if (hr)  out[i]=rowF[i];
+                else if (hc)  out[i]=colF[i];
+            }
+        }
+        else {  // Laplace (Gauss-Seidel 반복)
+            double meanV = 0; long vc = 0;
+            for (size_t i=0;i<N;++i) if(!std::isnan(src[i])){ meanV+=src[i]; ++vc; }
+            float init = vc ? (float)(meanV/vc) : 0.f;
+            for (size_t i=0;i<N;++i) if (fillable[i]) out[i]=init;
+            const int maxIter = std::min(3000, m_maxGap*m_maxGap*6 + 100);
+            for (int it=0; it<maxIter; ++it) {
+                double maxDelta = 0;
+                for (int r=0;r<h;++r) for (int c=0;c<w;++c) {
+                    size_t i=(size_t)r*w+c; if(!fillable[i]) continue;
+                    double s=0; int cnt=0;
+                    if (r>0)   { float v=atc(r-1,c); if(!std::isnan(v)){s+=v;++cnt;} }
+                    if (r<h-1) { float v=atc(r+1,c); if(!std::isnan(v)){s+=v;++cnt;} }
+                    if (c>0)   { float v=atc(r,c-1); if(!std::isnan(v)){s+=v;++cnt;} }
+                    if (c<w-1) { float v=atc(r,c+1); if(!std::isnan(v)){s+=v;++cnt;} }
+                    if (cnt>0) { float nv=(float)(s/cnt); maxDelta=std::max(maxDelta,(double)std::fabs(nv-out[i])); out[i]=nv; }
+                }
+                if (maxDelta < 1e-3) break;
+            }
+        }
+
+        long filled = 0;
+        for (size_t i=0;i<N;++i) if (fillable[i] && !std::isnan(out[i])) ++filled;
+
+        // 출력 ZMap (메타 유지). 미리보기 생략 모드면 실제 출력 단계 하나만 만든다.
+        const int si = std::clamp(m_outputStage, 0, 2);
+        auto mk = [&](const std::vector<float>& d){ auto z=std::make_shared<ZMap>(zm); z->data=d; return z; };
+        std::vector<float> maskData;
+        if (si == 2 || !m_noPreview) {
+            maskData.assign(N, NaN);
+            for (size_t i=0;i<N;++i) maskData[i] = (fillable[i] && !std::isnan(out[i])) ? 1.f
+                                               : (std::isnan(src[i]) ? NaN : 0.f);
+        }
+        ZMapPtr zFilled = (si==0 || !m_noPreview) ? mk(out) : nullptr;
+        ZMapPtr zOrig   = (si==1 || !m_noPreview) ? mk(src) : nullptr;
+        ZMapPtr zMask   = (si==2 || !m_noPreview) ? mk(maskData) : nullptr;
+
+        auto vd = std::make_shared<VisionData>();
+        vd->zmap = (si==0) ? zFilled : (si==1) ? zOrig : zMask;
+        vd->sourceId = input->sourceId;
+        if (!m_noPreview) {
+            vd->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            vd->stages->push_back({ "1. 메운 결과", zFilled });
+            vd->stages->push_back({ "2. 원본",      zOrig });
+            vd->stages->push_back({ "3. 메운 영역", zMask });
+        }
+        VISION_LOG_INFO("GapFill: 채움 {} / 대상 {} px (maxGap={})", filled, target, m_maxGap);
+        return { ToolStatus::Ok, "", vd };
     }
 };
 
@@ -658,13 +864,49 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));
     }
     if (type == "ImageSaver") {
-        return std::make_shared<ImageSaverTool>(p.value("path", ""));
+        // folder(필수)+filename(선택)+format. 구버전 호환: path만 있으면 분해.
+        std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "png");
+        if (folder.empty()) {
+            std::string path = p.value("path", "");
+            if (!path.empty()) {
+                std::filesystem::path pp(path);
+                folder = pp.parent_path().string(); filename = pp.stem().string();
+                std::string e = pp.extension().string(); if (!e.empty() && e[0]=='.') e = e.substr(1);
+                if (!e.empty()) format = e;
+            }
+        }
+        return std::make_shared<ImageSaverTool>(folder, filename, format);
     }
     if (type == "ZMapToCloud") {
         return std::make_shared<ZMapToCloudTool>(p.value("step", 1));
     }
+    if (type == "GapFill") {
+        std::string ms = p.value("method", "neighbor");
+        GapFillTool::Method m = GapFillTool::Method::Neighbor;
+        if      (ms == "laplace") m = GapFillTool::Method::Laplace;
+        else if (ms == "nearest") m = GapFillTool::Method::Nearest;
+        else if (ms == "idw")     m = GapFillTool::Method::Idw;
+        else if (ms == "linear")  m = GapFillTool::Method::Linear;
+        return std::make_shared<GapFillTool>(m,
+            p.value("maxGap", 5),
+            p.value("minValidNeighbors", 3),
+            p.value("idwRadius", 8),
+            p.value("idwPower", 2.0f),
+            p.value("outputStage", 0),
+            noPreview);
+    }
     if (type == "CloudSaver") {
-        return std::make_shared<CloudSaverTool>(p.value("path", ""));
+        std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "ply");
+        if (folder.empty()) {
+            std::string path = p.value("path", "");
+            if (!path.empty()) {
+                std::filesystem::path pp(path);
+                folder = pp.parent_path().string(); filename = pp.stem().string();
+                std::string e = pp.extension().string(); if (!e.empty() && e[0]=='.') e = e.substr(1);
+                if (!e.empty()) format = e;
+            }
+        }
+        return std::make_shared<CloudSaverTool>(folder, filename, format);
     }
     if (type == "NoiseFilter") {
         NoiseFilter::Params params;

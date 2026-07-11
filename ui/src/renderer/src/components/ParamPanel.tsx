@@ -297,6 +297,40 @@ function ExposureMergeParams({ params, onChange }: { params: Record<string, unkn
   </>
 }
 
+// GapFill: 결측(NaN) 픽셀 보간. maxGap 이하만 채움. method별 파라미터 노출.
+function GapFillParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const method = (params.method as string) ?? 'neighbor'
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>결측(NaN) 픽셀을 보간해 메웁니다. maxGap 이하 구멍만 채우고 큰 구멍은 남깁니다(가짜 표면 방지).</div>
+    <div className="param-section">보간</div>
+    <SelectField label="방법" value={method} options={['neighbor', 'laplace', 'nearest', 'idw', 'linear']} onChange={v => set('method', v)}
+      tooltip="neighbor=반복 이웃(작은 구멍) · laplace=PDE(큰 구멍 매끈) · nearest=최근접 · idw=역거리 가중 · linear=행/열 선형" />
+    <NumField label="최대 구멍 (px)" value={params.maxGap as number ?? 5} step={1} onChange={v => set('maxGap', v)}
+      tooltip="가장 가까운 유효 픽셀까지 거리가 이 값 이하인 결측만 채움. 큰 구멍 중앙은 NaN으로 남김" />
+    {method === 'neighbor' && (
+      <NumField label="최소 유효이웃" value={params.minValidNeighbors as number ?? 3} step={1} onChange={v => set('minValidNeighbors', v)}
+        tooltip="8-이웃 중 유효 픽셀이 이 개수 이상일 때만 채움 (튄 값으로 채우는 것 방지)" />
+    )}
+    {method === 'idw' && <>
+      <NumField label="IDW 반경 (px)" value={params.idwRadius as number ?? 8} step={1} onChange={v => set('idwRadius', v)}
+        tooltip="가중평균에 참고할 반경(px). 클수록 멀리까지 참고" />
+      <NumField label="IDW 거듭제곱" value={params.idwPower as number ?? 2} step={0.5} onChange={v => set('idwPower', v)}
+        tooltip="거리 가중 지수. 클수록 가까운 값이 우세" />
+    </>}
+    <div className="param-section">출력 단계</div>
+    <div className="param-row">
+      <label className="param-label">저장 출력</label>
+      <select className="param-select" value={params.outputStage as number ?? 0} onChange={e => set('outputStage', Number(e.target.value))}>
+        <option value={0}>1. 메운 결과</option>
+        <option value={1}>2. 원본</option>
+        <option value={2}>3. 메운 영역</option>
+      </select>
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>결과창 드롭다운에서 "메운 영역"으로 어디를 채웠는지 확인하세요.</div>
+  </>
+}
+
 // ExposureMerge2 (이중노출 머지 재구현): 오프셋 보정 + 연속성 필터로 fill 리플렉션 제거
 function ExposureMerge2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -327,29 +361,32 @@ function ExposureMerge2Params({ params, onChange }: { params: Record<string, unk
   </>
 }
 
-// ImageSaver: 입력(ZMap/이미지)을 파일로 저장
+// ImageSaver: 입력(ZMap/이미지)을 저장. 폴더(필수)+파일명(선택,비우면 소스명)+포맷.
 function ImageSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
-  const path = params.path as string ?? ''
-  const handleSave = async () => {
-    const api = (window as Window & { electronAPI?: { saveFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
-    if (!api?.saveFile) return
-    const p = await api.saveFile([
-      { name: 'PNG (16bit)', extensions: ['png'] },
-      { name: 'TIFF (16bit)', extensions: ['tif', 'tiff'] },
-      { name: 'Image (8bit)', extensions: ['jpg', 'jpeg', 'bmp'] },
-      { name: 'All Files', extensions: ['*'] },
-    ])
-    if (p) onChange({ ...params, path: p })
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const folder = params.folder as string ?? ''
+  const filename = params.filename as string ?? ''
+  const format = params.format as string ?? 'png'
+  const pickFolder = async () => {
+    const dir = await window.electronAPI?.openFolder?.()
+    if (dir) set('folder', dir)
   }
   return <>
-    <div className="param-section">저장 파일</div>
+    <div className="param-section">저장 위치</div>
     <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-      <span className="param-label">저장 위치</span>
-      <button className="btn-browse" onClick={handleSave}>📁 파일 선택</button>
-      {path && <div className="param-path-display" title={path}>{path}</div>}
+      <span className="param-label">폴더 (필수)</span>
+      <button className="btn-browse" onClick={pickFolder}>📁 폴더 선택</button>
+      {folder && <div className="param-path-display" title={folder}>{folder}</div>}
     </div>
+    <div className="param-row">
+      <span className="param-label">파일명 (선택)</span>
+      <input className="param-input" type="text" value={filename} placeholder="비우면 소스 파일명"
+        onChange={e => set('filename', e.target.value)} />
+    </div>
+    <SelectField label="포맷" value={format} options={['png', 'tif', 'jpg', 'bmp']} onChange={v => set('format', v)}
+      tooltip="png/tif=16bit(원본 raw 값 보존), jpg/bmp=8bit(min-max 정규화)" />
     <div className="param-empty" style={{ fontSize: 10 }}>
-      ZMap→ PNG/TIFF는 16비트, 그 외 포맷은 8비트(정규화)로 저장. 실행할 때마다 저장됩니다.
+      저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷 — 밀리초 접두사로 폴더검사 병렬 저장에도 안 겹칩니다.
     </div>
   </>
 }
@@ -367,25 +404,31 @@ function ZMapToCloudParams({ params, onChange }: { params: Record<string, unknow
 
 // CloudSaver: PointCloud3D → PLY/XYZ 파일 저장
 function CloudSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
-  const path = params.path as string ?? ''
-  const handleSave = async () => {
-    const api = (window as Window & { electronAPI?: { saveFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
-    if (!api?.saveFile) return
-    const p = await api.saveFile([
-      { name: 'PLY (ascii)', extensions: ['ply'] },
-      { name: 'XYZ (텍스트)', extensions: ['xyz'] },
-      { name: 'All Files', extensions: ['*'] },
-    ])
-    if (p) onChange({ ...params, path: p })
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const folder = params.folder as string ?? ''
+  const filename = params.filename as string ?? ''
+  const format = params.format as string ?? 'ply'
+  const pickFolder = async () => {
+    const dir = await window.electronAPI?.openFolder?.()
+    if (dir) set('folder', dir)
   }
   return <>
-    <div className="param-section">저장 파일 (PointCloud)</div>
+    <div className="param-section">저장 위치 (PointCloud)</div>
     <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-      <span className="param-label">저장 위치</span>
-      <button className="btn-browse" onClick={handleSave}>📁 파일 선택</button>
-      {path && <div className="param-path-display" title={path}>{path}</div>}
+      <span className="param-label">폴더 (필수)</span>
+      <button className="btn-browse" onClick={pickFolder}>📁 폴더 선택</button>
+      {folder && <div className="param-path-display" title={folder}>{folder}</div>}
     </div>
-    <div className="param-empty" style={{ fontSize: 10 }}>.ply(기본, ascii) 또는 .xyz(텍스트). 실행할 때마다 타임스탬프를 붙여 저장됩니다.</div>
+    <div className="param-row">
+      <span className="param-label">파일명 (선택)</span>
+      <input className="param-input" type="text" value={filename} placeholder="비우면 소스 파일명"
+        onChange={e => set('filename', e.target.value)} />
+    </div>
+    <SelectField label="포맷" value={format} options={['ply', 'xyz']} onChange={v => set('format', v)}
+      tooltip="ply=ascii(CloudCompare/MeshLab 호환), xyz=텍스트(x y z 한 줄씩)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷
+    </div>
   </>
 }
 
@@ -404,6 +447,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
@@ -428,6 +472,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
