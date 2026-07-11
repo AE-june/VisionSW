@@ -124,13 +124,13 @@ class ZMapLoaderTool : public IAlgorithmTool {
     std::string m_folder;
     float m_xResMm, m_yResMm, m_zResMm;
 public:
+    // 폴더 전체 프리로드는 여기서 하지 않음 — 인터랙티브 편집은 ParamPanel이 폴더 선택 시
+    // 명시적으로 "preload" 커맨드를 보내고, 폴더검사(배치)는 워커별로 필요한 파일만
+    // "prefetch" 커맨드로 미리 당겨오므로 생성자에서 폴더 전체를 긁으면 워커마다 중복 로드됨.
     ZMapLoaderTool(std::string path, std::string folder, float xRes, float yRes, float zRes)
         : m_path(std::move(path)), m_folder(std::move(folder)),
           m_xResMm(xRes), m_yResMm(yRes), m_zResMm(zRes)
-    {
-        if (!m_folder.empty())
-            preloadFolder(m_folder, xRes, yRes, zRes);
-    }
+    {}
     std::string name() const override { return "ZMapLoader"; }
 
     ToolResult execute(VisionDataPtr) override {
@@ -209,14 +209,19 @@ private:
     std::vector<ReflRoiPct> m_reflRois;
     float m_seedTol, m_tolX, m_tolY;
     int   m_gapK;
+    // true면 결과창에 쓸 단계별 미리보기가 필요 없다는 뜻 — 실제 출력에 쓰는
+    // 단계 하나만 업샘플링해서 만들고 나머지 4개(각 수십~수백MB)는 만들지 않는다.
+    // (폴더검사에서 이미지 한 장당 이 노드가 최대 5개의 원본 해상도 ZMap 사본을
+    //  만들어내는 게 워커 여러 개 동시 실행 시 OOM의 주된 원인이었음)
+    bool  m_skipStages;
 public:
     ExposureMergeTool(bool enableBfs, bool enableSor, int sorK, float sorRatio,
                       std::vector<ReflRoiPct> reflRois, float seedTol, float tolX, float tolY, int gapK,
-                      int outputStage)
+                      int outputStage, bool skipStages)
         : m_enableBfs(enableBfs), m_enableSor(enableSor),
           m_sorK(sorK), m_sorRatio(sorRatio),
           m_reflRois(std::move(reflRois)), m_seedTol(seedTol), m_tolX(tolX), m_tolY(tolY), m_gapK(gapK),
-          m_outputStage(outputStage) {}
+          m_outputStage(outputStage), m_skipStages(skipStages) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -237,6 +242,7 @@ public:
 
 
         const int n = h / 2;                 // 홀짝 쌍 개수 = 출력 행 수
+        const int si = std::clamp(m_outputStage, 0, 4);   // 실제 출력으로 쓸 단계 인덱스
         const float NaN = std::numeric_limits<float>::quiet_NaN();
         // 입력 ZMap 데이터(raw count float, 무효=NaN)를 그대로 사용
         auto zAt = [&](int row, int c) -> float { return zm.data[(size_t)row * w + c]; };
@@ -311,10 +317,16 @@ public:
             }
         }
         lap("BFS");
+        // BFS까지 끝나면 원본 장노출(high)은 더 안 쓴다 — highClean이 그 정제본을 들고 있음.
+        // (미리보기 생략 모드에서 이 단계가 출력으로 안 쓰이면 즉시 반납해 피크 메모리를 줄임)
+        if (m_skipStages && si != 1) std::vector<float>().swap(high);
 
         // ④ 저노출 대입: 저노출 유효 픽셀은 전부 저노출값 사용, 없으면 리플렉션-제거된 장노출
         for (size_t i = 0; i < (size_t)n*w; ++i)
             sub[i] = !std::isnan(low[i]) ? low[i] : highClean[i];
+        // low/highClean은 sub 계산에만 쓰였다 — 각자 출력 단계로 안 쓰이면 바로 반납.
+        if (m_skipStages && si != 0) std::vector<float>().swap(low);
+        if (m_skipStages && si != 2) std::vector<float>().swap(highClean);
         // ⑤ 위 결과(sub)에 NaN 인지 SOR: 창 내 유효이웃 평균±(stdRatio×표준편차) 밖이면 무효화
         std::vector<float> sor = sub;
         long sorRemoved = 0;
@@ -333,6 +345,8 @@ public:
         }
 
         lap("SOR");
+        // sor는 sub의 사본이라 sub 자체는 이제 출력 단계로 안 쓰이면 반납 가능.
+        if (m_skipStages && si != 3) std::vector<float>().swap(sub);
 
         // 각 단계를 원본 행수(h)로 복제해 ZMap 생성 (병합행 r → 원래 두 행 2r,2r+1)
         // half(n행) → scale배 확장 (선형 보간). 다른 단계에 사용.
@@ -405,22 +419,37 @@ public:
             return z;
         };
 
-        auto zLow=makeZLow(low); lap("makeZLow(8x)");
-        auto zHigh=makeZ(high), zHighClean=makeZ(highClean), zSub=makeZ(sub), zSor=makeZ(sor);
-        lap("makeZ×4(2x)");
+        ZMapPtr zLow, zHigh, zHighClean, zSub, zSor;
+        if (m_skipStages) {
+            // 결과창에 뿌릴 단계별 미리보기가 필요 없으면, 실제 출력으로 쓸
+            // 단계 하나만 업샘플링 — 나머지 4개(단계당 최대 수백MB)는 만들지 않는다.
+            switch (si) {
+                case 0: zLow       = makeZLow(low);        break;
+                case 1: zHigh      = makeZ(high);          break;
+                case 2: zHighClean = makeZ(highClean);     break;
+                case 3: zSub       = makeZ(sub);           break;
+                case 4: zSor       = makeZ(sor);           break;
+            }
+            lap("makeZ(선택 1단계)");
+        } else {
+            zLow=makeZLow(low); lap("makeZLow(8x)");
+            zHigh=makeZ(high); zHighClean=makeZ(highClean); zSub=makeZ(sub); zSor=makeZ(sor);
+            lap("makeZ×4(2x)");
+        }
 
         const ZMapPtr stageZmaps[] = { zLow, zHigh, zHighClean, zSub, zSor };
-        int si = std::clamp(m_outputStage, 0, 4);
 
         auto data = std::make_shared<VisionData>();
         data->zmap = stageZmaps[si];
         data->sourceId = input->sourceId;
-        data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
-        data->stages->push_back({ "1. 저노출",           zLow });
-        data->stages->push_back({ "2. 장노출",           zHigh });
-        data->stages->push_back({ "3. 장노출 리플렉션 제거", zHighClean });
-        data->stages->push_back({ "4. 저노출 대입 장노출", zSub });
-        data->stages->push_back({ "5. SOR 적용",         zSor });
+        if (!m_skipStages) {
+            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            data->stages->push_back({ "1. 저노출",           zLow });
+            data->stages->push_back({ "2. 장노출",           zHigh });
+            data->stages->push_back({ "3. 장노출 리플렉션 제거", zHighClean });
+            data->stages->push_back({ "4. 저노출 대입 장노출", zSub });
+            data->stages->push_back({ "5. SOR 적용",         zSor });
+        }
         VISION_LOG_INFO("ExposureMerge: {}x{} (BFS제거 {} px, SOR제거 {} px)",
                         w, h, bfsRemoved, sorRemoved);
         return { ToolStatus::Ok, "", data };
@@ -519,7 +548,8 @@ static Rect2D roiFromJson(const nlohmann::json& j, const std::string& key) {
 
 std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     const std::string& type,
-    const nlohmann::json& p)
+    const nlohmann::json& p,
+    bool noPreview)
 {
     if (type == "ZMapLoader") {
         return std::make_shared<ZMapLoaderTool>(
@@ -546,7 +576,8 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("tolX",        10.0f),
             p.value("tolY",        100.0f),
             p.value("gapK",        2),
-            p.value("outputStage", 4));
+            p.value("outputStage", 4),
+            noPreview);
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));

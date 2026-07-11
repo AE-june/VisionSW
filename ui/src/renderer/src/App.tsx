@@ -26,6 +26,15 @@ declare global {
       onEngineEvent: (cb: (data: unknown) => void) => () => void
       openFolder: () => Promise<string | null>
       listFolderImages: (dir: string) => Promise<{ name: string; path: string; mtimeMs: number }[]>
+      // 폴더검사(배치) 전용 워커풀
+      batchStart: (count?: number) => Promise<{ ok?: boolean; workerIds?: number[]; error?: string }>
+      batchStop: () => Promise<{ ok?: boolean }>
+      batchRun: (workerId: number, recipe: unknown) => Promise<{ ok?: boolean; error?: string }>
+      batchPrefetch: (
+        workerId: number, path: string, xResMm: number, yResMm: number, zResMm: number
+      ) => Promise<{ ok?: boolean; error?: string }>
+      batchRespawn: (workerId: number) => Promise<{ ok?: boolean; error?: string }>
+      onBatchEvent: (cb: (data: unknown) => void) => () => void
     }
   }
 }
@@ -411,58 +420,208 @@ export default function App() {
     const csv = allNodes.find(n => (n.data as { toolType: string }).toolType === 'CsvWriter')
     const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target }))
 
+    const buildRecipe = (i: number) => {
+      const paths = pathById(i)
+      // CSV 행 라벨 = 첫 로더의 i번째 파일명
+      const setLabel = listed[0].files[i].name
+      const recipe = {
+        nodes: allNodes.map(n => {
+          const params = { ...((n.data as { params?: Record<string, unknown> }).params ?? {}) }
+          if (paths.has(n.id)) params.path = paths.get(n.id)   // folder 로더는 i번째 파일로
+          if (csv && n.id === csv.id) params.label = setLabel
+          return { id: n.id, type: (n.data as { toolType: string }).toolType, params }
+        }),
+        edges: baseEdges,
+        // 디스플레이 갱신 OFF면 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
+        noPreview: !batchPreview,
+      }
+      return { recipe, setLabel }
+    }
+
     batchStopRef.current = false
     setBatchRunning(true)
     setRunning(true)
     setBatchResults([])
     setLogs(l => [...l, { level: 'info', msg: `폴더검사 시작 — 로더 ${loaderNodes.length}개 · 세트 ${setCount}개${batchRepeat ? ' (무한반복)' : ''}` }])
 
-    const runOnce = (recipe: unknown) =>
-      new Promise<{ pass: boolean; totalMs: number; error?: boolean }>((resolve) => {
-        pendingDoneRef.current = resolve
-        api.engineRun(recipe).then(res => {
-          if (res.error && pendingDoneRef.current === resolve) {
-            pendingDoneRef.current = null
+    // 무한반복 모드는 기존 단일 엔진(인터랙티브용) 순차 방식 그대로 사용
+    if (batchRepeat) {
+      const runOnce = (recipe: unknown) =>
+        new Promise<{ pass: boolean; totalMs: number; error?: boolean }>((resolve) => {
+          pendingDoneRef.current = resolve
+          api.engineRun(recipe).then(res => {
+            if (res.error && pendingDoneRef.current === resolve) {
+              pendingDoneRef.current = null
+              setLogs(l => [...l, { level: 'error', msg: res.error! }])
+              resolve({ pass: false, totalMs: 0, error: true })
+            }
+          })
+        })
+
+      let cycle = 0
+      do {
+        cycle++
+        setBatchCycle(cycle)
+        for (let i = 0; i < setCount; i++) {
+          if (batchStopRef.current) break
+          setBatchIndex(i)
+          const { recipe, setLabel } = buildRecipe(i)
+          const r = await runOnce(recipe)
+          setBatchResults(prev => [...prev, {
+            file: setLabel, pass: r.error ? null : r.pass, totalMs: r.totalMs, error: r.error,
+          }])
+        }
+      } while (batchRepeat && !batchStopRef.current)
+
+      if (!batchStopRef.current) setBatchIndex(setCount)
+      setBatchRunning(false)
+      setRunning(false)
+      setLogs(l => [...l, { level: 'info', msg: '폴더검사 완료' }])
+      return
+    }
+
+    // ── 병렬 워커풀 경로 (무한반복 아닐 때) ──────────────────────────────
+    const startRes = await api.batchStart()
+    if (startRes.error || !startRes.workerIds?.length) {
+      setLogs(l => [...l, { level: 'error', msg: `워커풀 시작 실패: ${startRes.error ?? '알 수 없는 오류'}` }])
+      setBatchRunning(false)
+      setRunning(false)
+      return
+    }
+    const workerIds = startRes.workerIds
+    const N = workerIds.length
+    setLogs(l => [...l, { level: 'info', msg: `워커 ${N}개 기동 완료 — 병렬 검사 시작` }])
+
+    const resById = new Map(listed.map(l => {
+      const nd = allNodes.find(n => n.id === l.id)
+      const p = (nd?.data as { params?: Record<string, unknown> })?.params ?? {}
+      return [l.id, {
+        xResMm: (p.xResMm as number) ?? 1.0,
+        yResMm: (p.yResMm as number) ?? 1.0,
+        zResMm: (p.zResMm as number) ?? 0.001,
+      }]
+    }))
+
+    const pendingByWorker = new Map<number, (r: { pass: boolean; totalMs: number; error?: boolean; died?: boolean }) => void>()
+    // 배치 도중 완전히 포기한 워커 슬롯(재기동 한도 초과) — 남은 워커만으로 계속 진행하기 위한 집합
+    const aliveWorkers = new Set(workerIds)
+    // 죽은 워커가 못다한 몫을 살아있는 다른 워커가 대신 처리하도록 넘겨받는 큐
+    const strandedQueue: number[] = []
+
+    const unsub = api.onBatchEvent((raw) => {
+      const data = raw as Record<string, unknown>
+      const workerId = data.workerId as number
+      const event = data.event as string
+      if (event === 'log') {
+        setLogs(l => [...l, { level: (data.level as LogEntry['level']) ?? 'info', msg: `[w${workerId}] ${data.msg}` }])
+        return
+      }
+      if (event === 'result' && data.ok === false) {
+        setLogs(l => [...l, { level: 'error', msg: `[w${workerId}] ${data.tool}[${data.id}] 실패: ${data.msg}` }])
+        return
+      }
+      if (event === 'workerExit') {
+        setLogs(l => [...l, { level: 'error', msg: `워커 ${workerId} 비정상 종료 — 재기동 시도` }])
+        const resolve = pendingByWorker.get(workerId)
+        if (resolve) { pendingByWorker.delete(workerId); resolve({ pass: false, totalMs: 0, error: true, died: true }) }
+        return
+      }
+      if (event === 'done' || event === 'error') {
+        const resolve = pendingByWorker.get(workerId)
+        if (!resolve) return
+        pendingByWorker.delete(workerId)
+        if (event === 'error') {
+          setLogs(l => [...l, { level: 'error', msg: `[w${workerId}] ${data.msg}` }])
+          resolve({ pass: false, totalMs: 0, error: true })
+        } else {
+          resolve({ pass: data.pass as boolean, totalMs: (data.totalMs as number) ?? 0 })
+        }
+      }
+    })
+
+    let completed = 0
+
+    // 워커 workerId에게 i번째 이미지를 지금부터 백그라운드로 미리 로드해두게 함
+    const prefetchFor = (workerId: number, i: number) => {
+      if (i >= setCount) return
+      const paths = pathById(i)
+      for (const l of listed) {
+        const p = paths.get(l.id)
+        if (!p) continue
+        const res = resById.get(l.id)!
+        api.batchPrefetch(workerId, p, res.xResMm, res.yResMm, res.zResMm)
+      }
+    }
+
+    const runOnWorker = (workerId: number, i: number, nextForThisWorker: number, recipe: unknown) =>
+      new Promise<{ pass: boolean; totalMs: number; error?: boolean; died?: boolean }>((resolve) => {
+        pendingByWorker.set(workerId, resolve)
+        // 이 워커가 이어서 처리할 걸로 예정된 이미지를 지금부터 미리 로드 — 워커별 고정 배정
+        // 덕분에 "다음에 내가 뭘 처리할지"가 정확해서 프리페치가 항상 적중한다(work-stealing 방식은
+        // 다음 인덱스를 다른 워커가 가져가버려 프리페치가 엉뚱한 프로세스 캐시만 데우는 문제가 있었음).
+        prefetchFor(workerId, nextForThisWorker)
+        api.batchRun(workerId, recipe).then(res => {
+          if (res.error && pendingByWorker.get(workerId) === resolve) {
+            pendingByWorker.delete(workerId)
             setLogs(l => [...l, { level: 'error', msg: res.error! }])
             resolve({ pass: false, totalMs: 0, error: true })
           }
         })
       })
 
-    let cycle = 0
-    do {
-      cycle++
-      setBatchCycle(cycle)
-      for (let i = 0; i < setCount; i++) {
-        if (batchStopRef.current) break
-        setBatchIndex(i)
-        const paths = pathById(i)
-        // CSV 행 라벨 = 첫 로더의 i번째 파일명
-        const setLabel = listed[0].files[i].name
-        const recipe = {
-          nodes: allNodes.map(n => {
-            const params = { ...((n.data as { params?: Record<string, unknown> }).params ?? {}) }
-            if (paths.has(n.id)) params.path = paths.get(n.id)   // folder 로더는 i번째 파일로
-            if (csv && n.id === csv.id) params.label = setLabel
-            return { id: n.id, type: (n.data as { toolType: string }).toolType, params }
-          }),
-          edges: baseEdges,
-          // 디스플레이 갱신 OFF면 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
-          noPreview: !batchPreview,
+    // 워커 k는 인덱스 k, k+N, k+2N, ...을 고정으로 담당(라운드로빈 배정이 아니라 고정 배정).
+    // 자기 몫을 다 마쳤거나 다른 워커가 못다한 몫(strandedQueue)이 있으면 그걸 이어받는다.
+    const workerLoop = async (workerId: number, startSlot: number) => {
+      // 모든 워커가 정확히 동시에 첫 이미지를 콜드 로드하며 부딪히는 "파도" 현상을 피하려고
+      // 시작 시점을 살짝 어긋나게 둔다 — 이후로는 처리시간차 덕분에 자연스럽게 계속 어긋난 채로 흐른다.
+      await new Promise(r => setTimeout(r, startSlot * 250))
+      let i = startSlot
+      while (!batchStopRef.current) {
+        if (i >= setCount) {
+          if (strandedQueue.length === 0) break
+          i = strandedQueue.shift()!
         }
-        const r = await runOnce(recipe)
+        const { recipe, setLabel } = buildRecipe(i)
+        const nextForThisWorker = strandedQueue.length > 0 ? strandedQueue[0] : i + N
+        const r = await runOnWorker(workerId, i, nextForThisWorker, recipe)
+
+        if (r.died) {
+          if (!aliveWorkers.has(workerId)) break
+          const resp = await api.batchRespawn(workerId)
+          if (resp.error) {
+            aliveWorkers.delete(workerId)
+            setLogs(l => [...l, {
+              level: 'error',
+              msg: `워커 ${workerId} 재기동 불가 — 이 슬롯은 제외하고 남은 워커 ${aliveWorkers.size}개로 계속 진행`
+            }])
+            setBatchResults(prev => [...prev, { file: setLabel, pass: null, totalMs: 0, error: true }])
+            completed++
+            setBatchIndex(completed)
+            // 이 워커가 앞으로 맡았을 나머지 몫은 살아있는 워커들이 대신 처리하도록 큐에 넘김
+            for (let j = i + N; j < setCount; j += N) strandedQueue.push(j)
+            break
+          }
+          continue   // 재기동 성공 — 같은 이미지를 재시도 (아직 completed 처리 안 함)
+        }
+
+        completed++
+        setBatchIndex(completed)
         setBatchResults(prev => [...prev, {
           file: setLabel, pass: r.error ? null : r.pass, totalMs: r.totalMs, error: r.error,
         }])
+        i = strandedQueue.length > 0 ? strandedQueue.shift()! : i + N
       }
-    } while (batchRepeat && !batchStopRef.current)
+    }
 
-    // 정상 완료 시 진행률을 100%(setCount/setCount)로 고정 — 실행 중 표시하던 (index+1)이
-    // running=false로 바뀌며 하나 줄어드는 현상 방지. 중지된 경우는 멈춘 위치 그대로 둠.
+    await Promise.all(workerIds.map((id, slot) => workerLoop(id, slot)))
+    unsub()
+    await api.batchStop()
+
     if (!batchStopRef.current) setBatchIndex(setCount)
     setBatchRunning(false)
     setRunning(false)
-    setLogs(l => [...l, { level: 'info', msg: '폴더검사 완료' }])
+    const allDead = aliveWorkers.size === 0
+    setLogs(l => [...l, { level: 'info', msg: allDead ? '폴더검사 중단됨 (모든 워커 종료)' : '폴더검사 완료' }])
   }, [folderLoaderNodes, listSorted, batchSortKey, batchRepeat, batchPreview])
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)

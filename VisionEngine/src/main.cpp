@@ -22,6 +22,7 @@
 #include <memory>
 #include <iostream>
 #include <chrono>
+#include <thread>
 
 using json = nlohmann::json;
 using namespace vision;
@@ -72,6 +73,9 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     const bool noPreview = msg.value("noPreview", false);
     // 개별 노드 실행 시 이 노드는 캐시 무시하고 항상 재실행 (상류만 캐시 재사용)
     const std::string forceNode = msg.value("forceNode", std::string());
+    // 배치(폴더검사) 모드 — 이번 실행에 쓴 ZMapLoader 원본 파일을 끝나고 캐시에서 즉시 비움
+    // (여러 이미지를 순회하는 워커 프로세스가 g_zmapFileCache를 무한정 쌓아두지 않도록)
+    const bool batchMode = msg.value("batch", false);
     std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
     // Parse nodes
     struct NodeSpec {
@@ -80,12 +84,17 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     };
     std::vector<NodeSpec> nodeSpecs;
     std::unordered_map<std::string, int> nodeIdx;
+    std::vector<std::string> zmapPathsUsed;
 
     for (const auto& n : msg.at("nodes")) {
         NodeSpec ns;
         ns.id     = n.at("id").get<std::string>();
         ns.type   = n.at("type").get<std::string>();
         ns.params = n.value("params", json::object());
+        if (ns.type == "ZMapLoader") {
+            auto p = ns.params.value("path", std::string());
+            if (!p.empty()) zmapPathsUsed.push_back(p);
+        }
         nodeIdx[ns.id] = static_cast<int>(nodeSpecs.size());
         nodeSpecs.push_back(std::move(ns));
     }
@@ -149,7 +158,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
             {"msg", "Running " + ns.type + " [" + ns.id + "]"}
         }.dump());
 
-        auto tool = ToolFactory::create(ns.type, ns.params);
+        auto tool = ToolFactory::create(ns.type, ns.params, noPreview);
         if (!tool) {
             conn.send_text(json{
                 {"event","log"},{"level","error"},
@@ -331,6 +340,11 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         conn.send_text(jr.dump());
     }
 
+    if (batchMode && !zmapPathsUsed.empty()) {
+        std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
+        for (const auto& p : zmapPathsUsed) g_zmapFileCache.erase(p);
+    }
+
     const double totalMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipeStart).count();
     conn.send_text(json{
@@ -348,9 +362,17 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
-int main() {
-    vision::LoggerInit("vision_diag.log");
-    std::cout << "[VisionEngine] Starting on ws://localhost:9000\n";
+int main(int argc, char** argv) {
+    vision::LoggerInit();
+
+    int port = 9000;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--port" && i + 1 < argc) {
+            port = std::atoi(argv[++i]);
+        }
+    }
+    std::cout << "[VisionEngine] Starting on ws://localhost:" << port << "\n";
 
     crow::SimpleApp app;
     std::mutex connMtx;
@@ -384,6 +406,28 @@ int main() {
                     conn.send_text(done.dump());
                     return;
                 }
+                if (cmd == "prefetch") {
+                    // 폴더검사 워커풀용 — 지정한 파일 1장을 백그라운드 스레드에서 미리 로드해
+                    // g_zmapFileCache에 채워둠. 현재 run 처리 중에도 non-blocking으로 동작하도록
+                    // 커넥션 핸들러를 바로 리턴하고 detach된 스레드가 실제 로딩을 담당.
+                    std::string path = msg.value("path", "");
+                    if (!path.empty()) {
+                        float xRes = msg.value("xResMm", 1.0f);
+                        float yRes = msg.value("yResMm", 1.0f);
+                        float zRes = msg.value("zResMm", 0.001f);
+                        std::thread([path, xRes, yRes, zRes]() {
+                            {
+                                std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
+                                if (g_zmapFileCache.count(path)) return;   // 이미 있음
+                            }
+                            auto zmap = vision::loadZMapFromFile(path, xRes, yRes, zRes);
+                            if (!zmap) return;
+                            std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
+                            g_zmapFileCache[path] = zmap;
+                        }).detach();
+                    }
+                    return;
+                }
                 if (cmd == "preload") {
                     std::string folder = msg.value("folder", "");
                     if (!folder.empty()) {
@@ -402,6 +446,6 @@ int main() {
             }
         });
 
-    app.port(9000).multithreaded().run();
+    app.port(port).multithreaded().run();
     return 0;
 }

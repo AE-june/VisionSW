@@ -44,4 +44,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('engine:event', handler)
     return () => ipcRenderer.removeListener('engine:event', handler)
   },
+
+  // 폴더검사(배치) 전용 워커풀 — 인터랙티브 엔진(engine:*)과 별개 프로세스들
+  batchStart: (count?: number) => ipcRenderer.invoke('batch:start', count),
+  batchStop: () => ipcRenderer.invoke('batch:stop'),
+  batchRun: (workerId: number, recipe: unknown) => ipcRenderer.invoke('batch:run', workerId, recipe),
+  batchPrefetch: (workerId: number, path: string, xResMm: number, yResMm: number, zResMm: number) =>
+    ipcRenderer.invoke('batch:prefetch', workerId, path, xResMm, yResMm, zResMm),
+  // 워커가 죽었을 때 같은 슬롯을 재기동 (전체 중단 대신 배치 지속)
+  batchRespawn: (workerId: number) => ipcRenderer.invoke('batch:respawn', workerId),
+  onBatchEvent: (cb: (data: unknown) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)
+    ipcRenderer.on('batch:event', handler)
+    return () => ipcRenderer.removeListener('batch:event', handler)
+  },
 })

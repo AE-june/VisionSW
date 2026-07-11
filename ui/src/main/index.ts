@@ -3,6 +3,7 @@ import { join, basename } from 'path'
 import { writeFile, readFile, readdir, stat } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { startEngine, stopEngine, registerEngineIpc, engineEvents, isEngineReady } from './engine'
+import { registerBatchIpc, setBatchWindow, stopBatchPool } from './batchPool'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -111,6 +112,8 @@ app.whenReady().then(() => {
   setupEngineForwarding()
   registerEngineIpc()
   startEngine()
+  if (mainWindow) setBatchWindow(mainWindow)
+  registerBatchIpc()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -119,6 +122,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopEngine()
+  stopBatchPool()
   if (process.platform !== 'darwin') {
     app.quit()
   }
