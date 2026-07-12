@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadRecipe: (path: string) =>
     ipcRenderer.invoke('recipe:load', path),
 
+  // 네이티브 메뉴(File) 클릭 액션 구독 — 'openRecipe' | 'saveRecipe' | 'saveRecipeAs'
+  onMenuAction: (cb: (action: string) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, action: string) => cb(action)
+    ipcRenderer.on('menu:action', handler)
+    return () => ipcRenderer.removeListener('menu:action', handler)
+  },
+
   // 폴더검사: 폴더 선택 + 이미지 목록
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
   listFolderImages: (dir: string) =>

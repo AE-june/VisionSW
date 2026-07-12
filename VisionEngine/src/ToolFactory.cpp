@@ -355,12 +355,17 @@ class DualExposureMergeTool : public IAlgorithmTool {
     float m_tolX, m_tolY;
     int   m_gapK;
     bool  m_halfRes;
-    int   m_outputStage;
+    bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
+    bool  m_chunkMode;   // true면 입력을 청크(겹침 포함)로 나눠 처리 — 실시간 스트리밍 대응
+    int   m_chunkRows;   // 청크당 입력 프로파일(행) 수
+    int   m_overlapRows; // 청크 위·아래 겹침 행 수 (BFS 연결성 컨텍스트용)
 public:
     DualExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
-                          int gapK, bool halfRes, int outputStage)
+                          int gapK, bool halfRes, bool noPreview,
+                          bool chunkMode, int chunkRows, int overlapRows)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
-          m_gapK(gapK), m_halfRes(halfRes), m_outputStage(outputStage) {}
+          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview),
+          m_chunkMode(chunkMode), m_chunkRows(std::max(2,chunkRows)), m_overlapRows(std::max(0,overlapRows)) {}
     std::string name() const override { return "ExposureMerge2"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -369,100 +374,154 @@ public:
         const auto& zm = *input->zmap;
         const int w = zm.width, h = zm.height;
         if (h < 2) return { ToolStatus::Fail, "이중노출 머지: 이미지 높이가 너무 작습니다" };
-        const int n = h / 2;
+        const int n = h / 2;                        // 전체 pair(출력행) 수
         const float NaN = std::numeric_limits<float>::quiet_NaN();
         auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
 
-        // ① 홀짝 분리 (짝수행=저노출 가정; I 중앙값 판별은 증분2)
-        std::vector<float> low((size_t)n*w), high((size_t)n*w);
-        for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-            size_t i = (size_t)r*w + c;
-            low[i]  = at(2*r,   c);
-            high[i] = at(2*r+1, c);
-        }
-
-        // ② 오프셋 보정: 겹침 일치 픽셀(|low-high|≤matchTol)의 (low-high) 중앙값만큼
-        //    저노출을 이동해 두 노출의 Z 프레임을 맞춘다.
-        std::vector<float> diffs;
-        for (size_t i = 0; i < (size_t)n*w; ++i)
-            if (!std::isnan(low[i]) && !std::isnan(high[i]) &&
-                std::fabs(low[i]-high[i]) <= m_matchTol)
-                diffs.push_back(low[i]-high[i]);
-        float offset = 0.f;
-        if (!diffs.empty()) {
-            size_t mid = diffs.size()/2;
-            std::nth_element(diffs.begin(), diffs.begin()+mid, diffs.end());
-            offset = diffs[mid];
-        }
-        std::vector<float> lowC = low;
-        for (auto& v : lowC) if (!std::isnan(v)) v -= offset;
-
-        // ③ 기본 머지: 저노출 유효 → 저노출(보정), 없으면 장노출.
-        std::vector<float> merged((size_t)n*w);
-        for (size_t i = 0; i < (size_t)n*w; ++i)
-            merged[i] = !std::isnan(lowC[i]) ? lowC[i]
-                       : (!std::isnan(high[i]) ? high[i] : NaN);
-
-        // ④ 연속성(영역성장) 필터: 씨앗 = 저노출 유효 && 겹침 일치(신뢰 픽셀).
-        //    이웃으로 |ΔZ|≤축별tol×step 이면 확장(gapK 갭 점프 허용). fill(장노출만) 픽셀이
-        //    씨앗에서 연결 안 되면 리플렉션 → 구멍(NaN)으로 제거. 저노출 픽셀은 신뢰해 유지.
-        std::vector<uint8_t> visited((size_t)n*w, 0);
-        std::deque<int> q;
-        for (size_t i = 0; i < (size_t)n*w; ++i)
-            if (!std::isnan(lowC[i]) && !std::isnan(high[i]) &&
-                std::fabs(lowC[i]-high[i]) <= m_matchTol) { visited[i]=1; q.push_back((int)i); }
-        auto tryRay = [&](int r, int c, float z, int dr, int dc, float tol) {
-            for (int k = 1; k <= m_gapK+1; ++k) {
-                int nr=r+dr*k, nc=c+dc*k;
-                if (nr<0||nr>=n||nc<0||nc>=w) break;
-                size_t ni=(size_t)nr*w+nc;
-                if (visited[ni]) break;
-                if (std::isnan(merged[ni])) continue;      // NaN 갭: 계속 진행
-                if (std::fabs(merged[ni]-z) <= tol*k) { visited[ni]=1; q.push_back((int)ni); }
-                break;                                      // 유효 픽셀 만나면 종료
+        // ── 코어 머지: pair 범위 [pr0,pr1)를 처리해 filtered(bn×w) 반환 ──────────────
+        //   ①홀짝분리 ②오프셋보정 ③저노출우선머지 ④연속성필터. 인덱스는 블록 로컬(0..bn),
+        //   입력은 전역 행 at(2*(pr0+r))에서 읽는다. 청크 모드는 이 함수를 겹침 포함 블록마다 호출.
+        //   outLowC/outHigh/outMerged 포인터를 주면 디스플레이용 중간단계도 반환(전체모드 전용).
+        auto computeFiltered = [&](int pr0, int pr1, long& removedOut, float& offsetOut,
+                                   std::vector<float>* outLowC, std::vector<float>* outHigh,
+                                   std::vector<float>* outMerged) -> std::vector<float> {
+            const int bn = pr1 - pr0;
+            const size_t BN = (size_t)bn * w;
+            // ① 홀짝 분리 (짝수행=저노출 가정) — 행 단위 병렬
+            std::vector<float> low(BN), high(BN);
+            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r) { const int gr = pr0 + r;
+                    for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*gr,c); high[i]=at(2*gr+1,c); } }
+            });
+            // ② 오프셋 보정: 겹침 일치 픽셀 (low-high) 중앙값(stride-4 서브샘플)만큼 저노출 이동
+            std::vector<float> diffs; diffs.reserve(BN/4 + 1);
+            for (size_t i = 0; i < BN; i += 4)
+                if (!std::isnan(low[i]) && !std::isnan(high[i]) && std::fabs(low[i]-high[i]) <= m_matchTol)
+                    diffs.push_back(low[i]-high[i]);
+            float offset = 0.f;
+            if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
+            offsetOut = offset;
+            std::vector<float> lowC = std::move(low);
+            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
+                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) if (!std::isnan(lowC[i])) lowC[i] -= offset;
+            });
+            // ③ 기본 머지: 저노출 유효 → 저노출(보정), 없으면 장노출.
+            std::vector<float> merged(BN);
+            std::vector<uint8_t> mvalid(BN);
+            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
+                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) {
+                    float m = !std::isnan(lowC[i]) ? lowC[i] : (!std::isnan(high[i]) ? high[i] : NaN);
+                    merged[i] = m; mvalid[i] = std::isnan(m) ? 0 : 1;
+                }
+            });
+            // ④ 연속성(영역성장) 필터: 씨앗 = 저노출 유효 && 겹침 일치(신뢰 픽셀).
+            std::vector<uint8_t> visited(BN, 0);
+            for (size_t i = 0; i < BN; ++i)
+                if (!std::isnan(lowC[i]) && !std::isnan(high[i]) && std::fabs(lowC[i]-high[i]) <= m_matchTol) visited[i]=1;
+            // 경계 씨앗만 큐에 (내부 씨앗은 뻗을 데 없음 → 결과 동일, 헛 pop 제거)
+            std::vector<int> q; q.reserve(BN/2 + 1);
+            for (int r = 0; r < bn; ++r) for (int c = 0; c < w; ++c) {
+                size_t i=(size_t)r*w+c;
+                if (!visited[i]) continue;
+                if ((c>0 && !visited[i-1]) || (c<w-1 && !visited[i+1]) ||
+                    (r>0 && !visited[i-w]) || (r<bn-1 && !visited[i+w])) q.push_back((int)i);
             }
+            auto tryRay = [&](int r, int c, float z, int dr, int dc, float tol) {
+                for (int k = 1; k <= m_gapK+1; ++k) {
+                    int nr=r+dr*k, nc=c+dc*k;
+                    if (nr<0||nr>=bn||nc<0||nc>=w) break;
+                    size_t ni=(size_t)nr*w+nc;
+                    if (visited[ni]) break;
+                    if (!mvalid[ni]) continue;                  // NaN 갭: 계속 진행
+                    if (std::fabs(merged[ni]-z) <= tol*k) { visited[ni]=1; q.push_back((int)ni); }
+                    break;                                      // 유효 픽셀 만나면 종료
+                }
+            };
+            while (!q.empty()) {
+                int idx=q.back(); q.pop_back();
+                int r=idx/w, c=idx%w; float z=merged[idx];
+                tryRay(r,c,z, 0,-1,m_tolX); tryRay(r,c,z, 0,1,m_tolX);
+                tryRay(r,c,z,-1, 0,m_tolY); tryRay(r,c,z, 1,0,m_tolY);
+            }
+            std::vector<float> filtered = merged;               // merged는 아래서 outMerged로 넘길 수 있어 복사 유지
+            std::atomic<long> removedA{0};
+            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
+                long loc = 0;
+                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i)
+                    if (std::isnan(lowC[i]) && !std::isnan(high[i]) && !visited[i]) { filtered[i]=NaN; ++loc; }
+                removedA += loc;
+            });
+            removedOut += removedA.load();
+            if (outMerged) *outMerged = std::move(merged);
+            if (outLowC)   *outLowC   = std::move(lowC);
+            if (outHigh)   *outHigh   = std::move(high);
+            return filtered;
         };
-        while (!q.empty()) {
-            int idx=q.front(); q.pop_front();
-            int r=idx/w, c=idx%w; float z=merged[idx];
-            tryRay(r,c,z, 0,-1,m_tolX); tryRay(r,c,z, 0,1,m_tolX);
-            tryRay(r,c,z,-1, 0,m_tolY); tryRay(r,c,z, 1,0,m_tolY);
+
+        // ── 전체 이미지 vs 청크 실행 ─────────────────────────────────────────────
+        long removed = 0; float offset = 0.f;
+        std::vector<float> lowCFull, highFull, mergedFull;   // 디스플레이 단계용(전체모드 + !noPreview)
+        std::vector<float> filtered;
+        if (!m_chunkMode) {
+            // 청크 미사용: 기존처럼 전체 이미지에 대해 한 번에 연산.
+            const bool wantStages = !m_noPreview;
+            filtered = computeFiltered(0, n, removed, offset,
+                wantStages ? &lowCFull : nullptr, wantStages ? &highFull : nullptr, wantStages ? &mergedFull : nullptr);
+        } else {
+            // 청크 모드: 코어 청크를 위·아래 겹침만큼 확장해 처리하고, 코어 행만 출력에 기록.
+            //   겹침은 BFS 연속성 컨텍스트를 청크 경계 너머까지 확보해 이음매 결함을 방지.
+            filtered.assign((size_t)n*w, NaN);
+            const int chunkPairs = std::max(1, m_chunkRows/2);   // 입력행/2 = pair(출력행)
+            const int ov         = std::max(0, m_overlapRows/2); // 겹침도 pair 단위
+            int nChunks = 0;
+            for (int p0 = 0; p0 < n; p0 += chunkPairs) {
+                const int p1 = std::min(n, p0 + chunkPairs);       // 코어 [p0,p1)
+                const int e0 = std::max(0, p0 - ov), e1 = std::min(n, p1 + ov);   // 확장 [e0,e1)
+                float ofs = 0.f;
+                auto blk = computeFiltered(e0, e1, removed, ofs, nullptr, nullptr, nullptr);
+                for (int r = p0; r < p1; ++r)                      // 코어 행만 기록(겹침 여백은 버림)
+                    std::copy(&blk[(size_t)(r-e0)*w], &blk[(size_t)(r-e0)*w+w], &filtered[(size_t)r*w]);
+                offset = ofs; ++nChunks;
+            }
+            VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, m_chunkRows, m_overlapRows, removed);
         }
-        long removed = 0;
-        std::vector<float> filtered = merged;
-        for (size_t i = 0; i < (size_t)n*w; ++i)
-            if (std::isnan(lowC[i]) && !std::isnan(high[i]) && !visited[i]) { filtered[i]=NaN; ++removed; }
 
         // ⑤ 출력 ZMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
-        auto makeOut = [&](const std::vector<float>& src) {
+        auto makeOut = [&](std::vector<float> src) {   // by-value: 호출측에서 move로 넘겨 복사/할당 제거
             auto z = std::make_shared<ZMap>();
             z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
             if (m_halfRes) {
-                z->height=n; z->yResMm=zm.yResMm*2.f; z->data = src;
+                z->height=n; z->yResMm=zm.yResMm*2.f; z->data = std::move(src);
             } else {
                 z->height=2*n; z->yResMm=zm.yResMm;
-                z->data.assign((size_t)2*n*w, NaN);
-                for (int r=0;r<n;++r) {
-                    std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r)*w]);
-                    std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r+1)*w]);
-                }
+                z->data.resize((size_t)2*n*w);   // 모든 행을 아래 복사가 덮으므로 NaN 초기화 불필요
+                cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                    for (int r=rg.start;r<rg.end;++r) {
+                        std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r)*w]);
+                        std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r+1)*w]);
+                    }
+                });
             }
             return z;
         };
-        auto zLow=makeOut(lowC), zHigh=makeOut(high), zMerged=makeOut(merged), zFinal=makeOut(filtered);
+        // 실제 출력 = 최종 머지(리플렉션 제거). 항상 이것만 다운스트림으로 넘긴다.
+        auto zFinal = makeOut(std::move(filtered));
 
-        const ZMapPtr stageZ[] = { zFinal, zMerged, zLow, zHigh };
-        int si = std::clamp(m_outputStage, 0, 3);
         auto data = std::make_shared<VisionData>();
-        data->zmap = stageZ[si];
+        data->zmap = zFinal;
         data->sourceId = input->sourceId;
-        data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
-        data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
-        data->stages->push_back({ "2. 기본 머지",           zMerged });
-        data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
-        data->stages->push_back({ "4. 장노출",             zHigh });
-        VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, 씨앗 {} px, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
-                        offset, (long)diffs.size(), removed, m_matchTol, m_tolX, m_tolY);
+        // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — 전체모드 && !noPreview 일 때만(청크 모드는 최종만).
+        if (!m_chunkMode && !m_noPreview && !mergedFull.empty()) {
+            auto zMerged=makeOut(std::move(mergedFull)), zLow=makeOut(std::move(lowCFull)), zHigh=makeOut(std::move(highFull));
+            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
+            data->stages->push_back({ "2. 기본 머지",           zMerged });
+            data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
+            data->stages->push_back({ "4. 장노출",             zHigh });
+        }
+        if (!m_chunkMode)
+            VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
+                            offset, removed, m_matchTol, m_tolX, m_tolY);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -639,16 +698,17 @@ public:
 //   출력 단계: 1.메운 결과 / 2.원본 / 3.메운 영역(마스크)
 class GapFillTool : public IAlgorithmTool {
 public:
-    enum class Method { Neighbor, Laplace, Nearest, Idw, Linear };
+    enum class Method { Neighbor, Median, Laplace, Nearest, Idw, Linear, Anisotropic };
 private:
     Method m_method;
     int    m_maxGap, m_minValid, m_idwRadius, m_outputStage;
-    float  m_idwPower;
+    float  m_idwPower, m_edgeSigma;
     bool   m_noPreview;
 public:
-    GapFillTool(Method m, int maxGap, int minValid, int idwRadius, float idwPower, int outputStage, bool noPreview)
+    GapFillTool(Method m, int maxGap, int minValid, int idwRadius, float idwPower, float edgeSigma, int outputStage, bool noPreview)
         : m_method(m), m_maxGap(std::max(1,maxGap)), m_minValid(std::max(1,minValid)),
-          m_idwRadius(std::max(1,idwRadius)), m_outputStage(outputStage), m_idwPower(idwPower), m_noPreview(noPreview) {}
+          m_idwRadius(std::max(1,idwRadius)), m_outputStage(outputStage), m_idwPower(idwPower),
+          m_edgeSigma(edgeSigma), m_noPreview(noPreview) {}
     std::string name() const override { return "GapFill"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -691,6 +751,31 @@ public:
                         float v = cur[(size_t)nr*w+nc]; if (!std::isnan(v)) { s += v; ++cnt; }
                     }
                     if (cnt >= m_minValid) { nxt[i] = (float)(s/cnt); changed = true; }
+                }
+                cur.swap(nxt);
+                if (!changed) break;
+            }
+            out.swap(cur);
+        }
+        else if (m_method == Method::Median) {
+            // 반복 이웃 '중앙값' — 평균과 달리 한쪽 값을 택해 단차(엣지)를 보존
+            std::vector<float> cur = out;
+            for (int it = 0; it < m_maxGap; ++it) {
+                std::vector<float> nxt = cur;
+                bool changed = false;
+                for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
+                    size_t i = (size_t)r*w + c;
+                    if (!fillable[i] || !std::isnan(cur[i])) continue;
+                    float vals[8]; int cnt = 0;
+                    for (int dr=-1;dr<=1;++dr) for (int dc=-1;dc<=1;++dc) {
+                        if (!dr && !dc) continue;
+                        int nr=r+dr, nc=c+dc; if(nr<0||nr>=h||nc<0||nc>=w) continue;
+                        float v = cur[(size_t)nr*w+nc]; if(!std::isnan(v)) vals[cnt++]=v;
+                    }
+                    if (cnt >= m_minValid) {
+                        std::nth_element(vals, vals+cnt/2, vals+cnt);
+                        nxt[i] = vals[cnt/2]; changed = true;
+                    }
                 }
                 cur.swap(nxt);
                 if (!changed) break;
@@ -761,6 +846,34 @@ public:
                 if (hr && hc) out[i]=(rowF[i]+colF[i])*0.5f;
                 else if (hr)  out[i]=rowF[i];
                 else if (hc)  out[i]=colF[i];
+            }
+        }
+        else if (m_method == Method::Anisotropic) {
+            // 엣지 보존 확산: nearest로 초기화(엣지 대략 배치) 후, 값 차이가 크면(엣지)
+            // 그 방향으로는 섞지 않는 가중 확산으로 면 안쪽만 매끈하게. 단차 보존.
+            std::vector<uint8_t> done(N, 0);
+            std::deque<int> q;
+            for (size_t i=0;i<N;++i) if(!std::isnan(src[i])){ done[i]=1; q.push_back((int)i); }
+            const int a4r[4]={-1,1,0,0}, a4c[4]={0,0,-1,1};
+            while(!q.empty()){
+                int i=q.front(); q.pop_front(); int r=i/w,c=i%w;
+                for(int k=0;k<4;++k){ int nr=r+a4r[k],nc=c+a4c[k]; if(nr<0||nr>=h||nc<0||nc>=w)continue;
+                    size_t j=(size_t)nr*w+nc; if(!done[j]&&fillable[j]){ out[j]=out[i]; done[j]=1; q.push_back((int)j);} }
+            }
+            const float sig = std::max(1.f, m_edgeSigma);
+            const float inv2s2 = 1.f / (2.f*sig*sig);
+            const int maxIter = std::min(500, m_maxGap*6 + 30);
+            for (int it=0; it<maxIter; ++it) {
+                double maxDelta = 0;
+                for (int r=0;r<h;++r) for(int c=0;c<w;++c){
+                    size_t i=(size_t)r*w+c; if(!fillable[i]) continue;
+                    float ci=out[i]; double s=0, ws=0;
+                    auto acc=[&](int nr,int nc){ if(nr<0||nr>=h||nc<0||nc>=w)return; float v=out[(size_t)nr*w+nc];
+                        if(std::isnan(v))return; float d=v-ci; float wt=std::exp(-d*d*inv2s2); s+=wt*v; ws+=wt; };
+                    acc(r-1,c); acc(r+1,c); acc(r,c-1); acc(r,c+1);
+                    if(ws>0){ float nv=(float)(s/ws); maxDelta=std::max(maxDelta,(double)std::fabs(nv-ci)); out[i]=nv; }
+                }
+                if (maxDelta < 1e-3) break;
             }
         }
         else {  // Laplace (Gauss-Seidel 반복)
@@ -858,7 +971,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("tolY",        100.0f),
             p.value("gapK",        2),
             p.value("halfRes",     true),
-            p.value("outputStage", 0));
+            noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
+            p.value("chunkMode",   false),   // 청크 모드 off → 전체 이미지 연산(기존 동작)
+            p.value("chunkRows",   100),     // 청크당 입력 프로파일(행) 수
+            p.value("overlapRows", 40));     // 청크 겹침 행 수
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));
@@ -883,15 +999,18 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     if (type == "GapFill") {
         std::string ms = p.value("method", "neighbor");
         GapFillTool::Method m = GapFillTool::Method::Neighbor;
-        if      (ms == "laplace") m = GapFillTool::Method::Laplace;
-        else if (ms == "nearest") m = GapFillTool::Method::Nearest;
-        else if (ms == "idw")     m = GapFillTool::Method::Idw;
-        else if (ms == "linear")  m = GapFillTool::Method::Linear;
+        if      (ms == "median")      m = GapFillTool::Method::Median;
+        else if (ms == "laplace")     m = GapFillTool::Method::Laplace;
+        else if (ms == "nearest")     m = GapFillTool::Method::Nearest;
+        else if (ms == "idw")         m = GapFillTool::Method::Idw;
+        else if (ms == "linear")      m = GapFillTool::Method::Linear;
+        else if (ms == "anisotropic") m = GapFillTool::Method::Anisotropic;
         return std::make_shared<GapFillTool>(m,
             p.value("maxGap", 5),
             p.value("minValidNeighbors", 3),
             p.value("idwRadius", 8),
             p.value("idwPower", 2.0f),
+            p.value("edgeSigma", 30.0f),
             p.value("outputStage", 0),
             noPreview);
     }

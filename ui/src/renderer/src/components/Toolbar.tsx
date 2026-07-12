@@ -52,10 +52,10 @@ export default function Toolbar({ running, engineConnected, onRun, onStop, onTog
         <button className={`btn-icon${menuOpen ? ' active' : ''}`} onClick={() => setMenuOpen(o => !o)}>파일 ▾</button>
         {menuOpen && (
           <div className="tb-menu-list">
-            {item('레시피 열기', '', onLoadRecipe)}
+            {item('레시피 열기', 'Ctrl+O', onLoadRecipe)}
             <div className="tb-menu-sep" />
-            {item('저장', 'Ctrl+S', onSaveRecipe)}
-            {item('다른 이름으로 저장', 'Ctrl+Shift+S', onSaveRecipeAs)}
+            {item('레시피 저장', 'Ctrl+S', onSaveRecipe)}
+            {item('레시피 다른 이름으로 저장', 'Ctrl+Shift+S', onSaveRecipeAs)}
           </div>
         )}
       </div>

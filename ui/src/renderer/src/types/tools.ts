@@ -41,7 +41,8 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'ExposureMerge2', label: 'Exposure Merge', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: {
-      matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true, outputStage: 0,
+      matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
+      chunkMode: false, chunkRows: 100, overlapRows: 40,
     },
   },
   {
@@ -57,7 +58,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'GapFill', label: 'Gap Fill', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
-    defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, outputStage: 0 },
+    defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, edgeSigma: 30, outputStage: 0 },
   },
   {
     type: 'EdgeDetector', label: 'Edge Detector', category: '필터',

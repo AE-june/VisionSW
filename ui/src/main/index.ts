@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { join, basename } from 'path'
 import { writeFile, readFile, readdir, stat } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -6,6 +6,30 @@ import { startEngine, stopEngine, registerEngineIpc, engineEvents, isEngineReady
 import { registerBatchIpc, setBatchWindow, stopBatchPool } from './batchPool'
 
 let mainWindow: BrowserWindow | null = null
+
+// 네이티브 메뉴바 — File에 레시피 조작(열기/저장/다른 이름으로 저장)을 넣고,
+// 클릭 시 렌더러로 IPC를 보내 실제 동작(다이얼로그+상태)은 렌더러가 처리한다.
+function buildApplicationMenu(win: BrowserWindow): void {
+  const send = (action: string) => win.webContents.send('menu:action', action)
+  const isMac = process.platform === 'darwin'
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        { label: '레시피 열기', accelerator: 'CmdOrCtrl+O', click: () => send('openRecipe') },
+        { type: 'separator' },
+        { label: '레시피 저장', accelerator: 'CmdOrCtrl+S', click: () => send('saveRecipe') },
+        { label: '레시피 다른 이름으로 저장', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('saveRecipeAs') },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit', label: '종료' },
+      ],
+    },
+    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { role: 'windowMenu' },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -21,6 +45,8 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  buildApplicationMenu(mainWindow)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow!.show()

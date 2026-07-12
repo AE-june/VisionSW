@@ -304,13 +304,17 @@ function GapFillParams({ params, onChange }: { params: Record<string, unknown>; 
   return <>
     <div className="param-empty" style={{ fontSize: 10 }}>결측(NaN) 픽셀을 보간해 메웁니다. maxGap 이하 구멍만 채우고 큰 구멍은 남깁니다(가짜 표면 방지).</div>
     <div className="param-section">보간</div>
-    <SelectField label="방법" value={method} options={['neighbor', 'laplace', 'nearest', 'idw', 'linear']} onChange={v => set('method', v)}
-      tooltip="neighbor=반복 이웃(작은 구멍) · laplace=PDE(큰 구멍 매끈) · nearest=최근접 · idw=역거리 가중 · linear=행/열 선형" />
+    <SelectField label="방법" value={method} options={['neighbor', 'median', 'laplace', 'nearest', 'idw', 'linear', 'anisotropic']} onChange={v => set('method', v)}
+      tooltip="neighbor=반복 이웃평균(매끈) · median=이웃 중앙값(엣지 보존) · laplace=PDE(큰 구멍 매끈) · nearest=최근접(단차 유지) · idw=역거리 가중 · linear=행/열 선형 · anisotropic=엣지 인지 확산(엣지 보존+면 매끈)" />
     <NumField label="최대 구멍 (px)" value={params.maxGap as number ?? 5} step={1} onChange={v => set('maxGap', v)}
       tooltip="가장 가까운 유효 픽셀까지 거리가 이 값 이하인 결측만 채움. 큰 구멍 중앙은 NaN으로 남김" />
-    {method === 'neighbor' && (
+    {(method === 'neighbor' || method === 'median') && (
       <NumField label="최소 유효이웃" value={params.minValidNeighbors as number ?? 3} step={1} onChange={v => set('minValidNeighbors', v)}
         tooltip="8-이웃 중 유효 픽셀이 이 개수 이상일 때만 채움 (튄 값으로 채우는 것 방지)" />
+    )}
+    {method === 'anisotropic' && (
+      <NumField label="엣지 민감도 σ (cnt)" value={params.edgeSigma as number ?? 30} step={5} onChange={v => set('edgeSigma', v)}
+        tooltip="이웃과 Z 차이가 이 값(raw count)보다 크면 엣지로 보고 안 섞음. 작을수록 엣지 더 예민하게 보존. 실제 단차보다 작게 설정" />
     )}
     {method === 'idw' && <>
       <NumField label="IDW 반경 (px)" value={params.idwRadius as number ?? 8} step={1} onChange={v => set('idwRadius', v)}
@@ -347,17 +351,16 @@ function ExposureMerge2Params({ params, onChange }: { params: Record<string, unk
       tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
     <CheckField label="반해상도 출력 (Y×2)" value={params.halfRes as boolean ?? true} onChange={v => set('halfRes', v)}
       tooltip="머지는 홀짝 절반 그리드라 켜면 n행·Y피치×2로 출력. 끄면 각 행을 2배 복제해 원본 높이 유지" />
-    <div className="param-section">출력 단계</div>
-    <div className="param-row">
-      <label className="param-label">저장 출력</label>
-      <select className="param-select" value={params.outputStage as number ?? 0} onChange={e => set('outputStage', Number(e.target.value))}>
-        <option value={0}>1. 머지(리플렉션 제거)</option>
-        <option value={1}>2. 기본 머지</option>
-        <option value={2}>3. 저노출(오프셋 보정)</option>
-        <option value={3}>4. 장노출</option>
-      </select>
-    </div>
-    <div className="param-empty" style={{ fontSize: 10 }}>결과창 드롭다운에서 모든 단계를 미리볼 수 있습니다. (② I/LLT 게이팅은 추후)</div>
+    <div className="param-section">청크 연산 (실시간 스트리밍)</div>
+    <CheckField label="청크 단위 연산" value={params.chunkMode as boolean ?? false} onChange={v => set('chunkMode', v)}
+      tooltip="끄면 전체 이미지를 한 번에 연산(기본). 켜면 입력을 청크로 나눠 겹침 포함 처리 — 프로파일이 스트리밍으로 들어오는 실시간 검사용" />
+    {(params.chunkMode as boolean) && <>
+      <NumField label="청크 행 수" value={params.chunkRows as number ?? 100} step={10} onChange={v => set('chunkRows', v)}
+        tooltip="청크 하나에 담을 입력 프로파일(행) 수. 콜백당 받는 프로파일 수에 맞추면 됨" />
+      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 40} step={10} onChange={v => set('overlapRows', v)}
+        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 클수록 이음매 결함↓·연산량↑" />
+    </>}
+    <div className="param-empty" style={{ fontSize: 10 }}>출력은 항상 최종 머지(리플렉션 제거) 이미지. 중간 단계는 결과창 드롭다운(디스플레이 전용)에서만 확인되며 검사 시간엔 반영되지 않습니다. (② I/LLT 게이팅은 추후)</div>
   </>
 }
 

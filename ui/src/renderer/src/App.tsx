@@ -19,6 +19,7 @@ declare global {
       saveFile: (filters?: Electron.FileFilter[]) => Promise<string | null>
       saveRecipe: (path: string, content: string) => Promise<boolean>
       loadRecipe: (path: string) => Promise<string>
+      onMenuAction: (cb: (action: string) => void) => () => void
       engineRun: (recipe: unknown) => Promise<{ ok?: boolean; error?: string }>
       enginePing: () => Promise<{ connected: boolean }>
       engineIsReady: () => Promise<{ connected: boolean }>
@@ -263,18 +264,18 @@ export default function App() {
     }
   }, [setNodes, setEdges, handleNodeRun])
 
-  // 단축키: Ctrl+S 저장(현재 경로), Ctrl+Shift+S 다른 이름으로 저장
+  // 네이티브 메뉴(File) 액션: 레시피 열기/저장/다른 이름으로 저장.
+  // 단축키(Ctrl+O / Ctrl+S / Ctrl+Shift+S)는 메뉴 accelerator가 처리하므로
+  // 렌더러 keydown 핸들러는 두지 않는다(중복 실행 방지).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
-        e.preventDefault()
-        if (e.shiftKey) handleSaveRecipeAs()
-        else handleSaveRecipe()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [handleSaveRecipe, handleSaveRecipeAs])
+    const api = window.electronAPI
+    if (!api?.onMenuAction) return
+    return api.onMenuAction((action) => {
+      if (action === 'openRecipe') handleLoadRecipe()
+      else if (action === 'saveRecipe') handleSaveRecipe()
+      else if (action === 'saveRecipeAs') handleSaveRecipeAs()
+    })
+  }, [handleLoadRecipe, handleSaveRecipe, handleSaveRecipeAs])
 
   // 엔진 강제 재시작 / 재연결
   const handleRestartEngine = useCallback(async () => {

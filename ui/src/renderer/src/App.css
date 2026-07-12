@@ -369,7 +369,11 @@
   border-radius: 50%;
   cursor: crosshair;
 }
-/* 마우스 오버 시 커지는 효과 제거 */
+
+/* 연결선(엣지)을 노드 위에 그려 노드에 가려지지 않게. 드래그 중인 노드도 안 가리게 높게. */
+.react-flow__edges,
+.react-flow__edge { z-index: 1002 !important; }
+.react-flow__edge-path { pointer-events: stroke; }
 
 /* ── 노드 인라인 결과 ── */
 .tool-node-result {
