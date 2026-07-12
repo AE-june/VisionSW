@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <atomic>
+#include <opencv2/core.hpp>
 
 namespace vision {
 
@@ -37,41 +39,43 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     // 마스크 경계를 픽셀 좌표로 1회 해석 → 픽셀 루프에서 재사용 (픽셀마다 재계산 방지)
     const auto masks = resolveMasks(map, offCol, offRow);
 
-    bool allPass = true;
-    for (const auto& roi : m_params.measureRois) {
-        auto pts = extractPoints(map, roi, offCol, offRow, masks);
+    // ROI별 측정은 서로 독립 → ROI 단위 병렬. 결과는 인덱스로 기록해 직렬과 동일 순서/값 보장.
+    const int nRoi = static_cast<int>(m_params.measureRois.size());
+    m_result.measures.assign(nRoi, HeightMeasure{});
+    std::atomic<bool> allPassA{true};
+    cv::parallel_for_(cv::Range(0, nRoi), [&](const cv::Range& rg) {
+        for (int i = rg.start; i < rg.end; ++i) {
+            const auto& roi = m_params.measureRois[i];
+            auto pts = extractPoints(map, roi, offCol, offRow, masks);
 
-        HeightMeasure hm;
-        if (pts.empty()) {
-            hm.pointCount = 0;
-            hm.pass = false;
-            allPass = false;
-            m_result.measures.push_back(hm);
-            continue;
+            HeightMeasure hm;
+            if (pts.empty()) {
+                hm.pointCount = 0;
+                hm.pass = false;
+                allPassA = false;
+                m_result.measures[i] = hm;
+                continue;
+            }
+
+            Pt3 rep = aggregate(pts);
+            hm.cx = rep[0];
+            hm.cy = rep[1];
+            hm.z  = rep[2];
+            hm.pointCount = static_cast<int>(pts.size());
+            hm.distance   = plane ? plane->signedDistance(rep[0], rep[1], rep[2]) : rep[2];
+
+            if (m_params.useTolerance) {
+                hm.pass = std::abs(hm.distance - m_params.nominalMm) <= m_params.toleranceMm;
+                if (!hm.pass) allPassA = false;
+            } else {
+                hm.pass = true;
+            }
+            m_result.measures[i] = hm;
         }
-
-        Pt3 rep = aggregate(pts);
-        hm.cx = rep[0];
-        hm.cy = rep[1];
-        hm.z  = rep[2];
-        hm.pointCount = static_cast<int>(pts.size());
-        hm.distance   = plane ? plane->signedDistance(rep[0], rep[1], rep[2]) : rep[2];
-
-        if (m_params.useTolerance) {
-            hm.pass = std::abs(hm.distance - m_params.nominalMm) <= m_params.toleranceMm;
-            if (!hm.pass) allPass = false;
-        } else {
-            hm.pass = true;
-        }
-
-        VISION_LOG_INFO("HeightMeasure [DIAG] roi={} rawZ={:.4f} planeH={:.4f} pts={}",
-            m_result.measures.size(), hm.z, hm.distance, hm.pointCount);
-
-        m_result.measures.push_back(hm);
-    }
+    });
 
     m_result.valid   = true;
-    m_result.allPass = allPass;
+    m_result.allPass = allPassA.load();
 
     // 타입화 출력: 측정된 높이값 배열만 전달 (이미지/plane 미포함).
     // 높이는 입력 zmap을 입력 plane 기준으로 측정 — 결과창 이미지는 엔진이 입력 zmap으로 폴백 표시.
