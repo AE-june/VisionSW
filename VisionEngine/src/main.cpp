@@ -23,6 +23,9 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <cmath>
+#include <algorithm>
 
 using json = nlohmann::json;
 using namespace vision;
@@ -67,7 +70,9 @@ static std::mutex g_cacheMtx;
 
 // ── Pipeline execution ───────────────────────────────────────────────────
 
-static json runPipeline(const json& msg, crow::websocket::connection& conn) {
+static json runPipeline(const json& msg, crow::websocket::connection* conn) {
+    // conn==nullptr 이면 헤드리스 실행 — 이벤트 전송/프리뷰 인코딩 생략, 결과 json만 반환.
+    auto emit = [&](const std::string& s){ if (conn) conn->send_text(s); };
     const bool useCache = msg.value("useCache", false);
     // 배치 검사 등 화면 표시가 필요 없을 때 미리보기(PNG 인코딩+z스캔) 생략 → 대폭 가속
     const bool noPreview = msg.value("noPreview", false);
@@ -128,7 +133,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 
     // Send start event
     const auto pipeStart = std::chrono::steady_clock::now();
-    conn.send_text(json{{"event","start"}}.dump());
+    emit(json{{"event","start"}}.dump());
 
     for (const auto& nodeId : order) {
         if (nodeIdx.find(nodeId) == nodeIdx.end()) continue;
@@ -153,14 +158,14 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         dirty[nodeId] = true;   // 재실행됨 → 하류도 dirty
 
         // Log tool start
-        conn.send_text(json{
+        emit(json{
             {"event","log"},{"level","info"},
             {"msg", "Running " + ns.type + " [" + ns.id + "]"}
         }.dump());
 
         auto tool = ToolFactory::create(ns.type, ns.params, noPreview);
         if (!tool) {
-            conn.send_text(json{
+            emit(json{
                 {"event","log"},{"level","error"},
                 {"msg", "Unknown tool type: " + ns.type}
             }.dump());
@@ -348,7 +353,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
         }
 
         results.push_back(jr);
-        conn.send_text(jr.dump());
+        emit(jr.dump());
     }
 
     if (batchMode && !zmapPathsUsed.empty()) {
@@ -358,7 +363,7 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
 
     const double totalMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipeStart).count();
-    conn.send_text(json{
+    emit(json{
         {"event","log"},{"level","info"},
         {"msg", "전체 실행시간: " + std::to_string(static_cast<long long>(totalMs + 0.5)) + " ms"}
     }.dump());
@@ -371,6 +376,87 @@ static json runPipeline(const json& msg, crow::websocket::connection& conn) {
     return done;
 }
 
+// ── [검증용] 반복성 분석 헤드리스 러너 (feat/repeatability 브랜치) ──────────────
+//   레시피를 폴더의 모든 ZMap에 적용해 HeightMeasure 영역별 높이/PlaneFit 파라미터를
+//   수집하고, 영역별 반복성(σ, range)을 산출한다.
+static double vstd(const std::vector<double>& v, double& mean) {
+    if (v.empty()) { mean = 0; return 0; }
+    double s = 0; for (double x : v) s += x; mean = s / v.size();
+    double a = 0; for (double x : v) a += (x - mean) * (x - mean);
+    return std::sqrt(a / v.size());
+}
+static int repeatAnalyze(const std::string& recipePath, const std::string& folder, const std::string& outCsv) {
+    namespace fs = std::filesystem;
+    std::ifstream rf(recipePath);
+    if (!rf) { std::cerr << "recipe open fail: " << recipePath << "\n"; return 1; }
+    json recipe; try { rf >> recipe; } catch (const std::exception& e) { std::cerr << "recipe parse: " << e.what() << "\n"; return 1; }
+
+    std::vector<std::string> files;
+    for (const auto& e : fs::directory_iterator(folder)) {
+        auto ext = e.path().extension().string();
+        if (ext == ".png" || ext == ".PNG") files.push_back(e.path().string());
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) { std::cerr << "no png in " << folder << "\n"; return 1; }
+    std::cout << "[repeat-analyze] recipe=" << recipePath << " files=" << files.size() << "\n";
+
+    std::ofstream csv(outCsv);
+    std::vector<std::vector<double>> dist, npts;   // [region][sample]
+    std::vector<double> planeA, planeB, planeC, rmseV, tiltV;
+    bool header = false;
+
+    for (size_t fi = 0; fi < files.size(); ++fi) {
+        json msg = recipe;
+        msg["cmd"] = "run"; msg["noPreview"] = true; msg["useCache"] = false; msg["batch"] = true;
+        for (auto& n : msg["nodes"])
+            if (n.value("type", "") == "ZMapLoader") { n["params"]["path"] = files[fi]; n["params"]["mode"] = "file"; }
+        json done = runPipeline(msg, nullptr);
+
+        std::vector<double> d, np;
+        for (const auto& r : done["results"]) {
+            if (r.value("tool", "") == "HeightMeasure" && r.contains("measures")) {
+                for (const auto& m : r["measures"]) { d.push_back(m.value("distance", 0.0)); np.push_back(m.value("pointCount", 0.0)); }
+            }
+            if (r.value("tool", "") == "PlaneFit") {
+                planeA.push_back(r.value("planeA", 0.0)); planeB.push_back(r.value("planeB", 0.0));
+                planeC.push_back(r.value("planeC", 0.0)); rmseV.push_back(r.value("rmse", 0.0)); tiltV.push_back(r.value("tiltDeg", 0.0));
+            }
+        }
+        if (!header) {
+            dist.resize(d.size()); npts.resize(d.size());
+            csv << "file";
+            for (size_t k = 0; k < d.size(); ++k) csv << ",d" << (k + 1);
+            for (size_t k = 0; k < d.size(); ++k) csv << ",n" << (k + 1);
+            csv << ",planeA,planeB,planeC,rmse,tiltDeg\n"; header = true;
+        }
+        csv << fs::path(files[fi]).filename().string();
+        for (size_t k = 0; k < d.size(); ++k) { csv << "," << d[k]; if (k < dist.size()) dist[k].push_back(d[k]); }
+        for (size_t k = 0; k < np.size(); ++k) { csv << "," << np[k]; if (k < npts.size()) npts[k].push_back(np[k]); }
+        csv << "," << (planeA.empty()?0:planeA.back()) << "," << (planeB.empty()?0:planeB.back())
+            << "," << (planeC.empty()?0:planeC.back()) << "," << (rmseV.empty()?0:rmseV.back())
+            << "," << (tiltV.empty()?0:tiltV.back()) << "\n";
+        if ((fi + 1) % 10 == 0) std::cout << "  " << (fi + 1) << "/" << files.size() << "\n";
+    }
+    csv.close();
+
+    std::cout << "\n=== 영역별 반복성 (mm) ===\n";
+    std::cout << "region   mean       sigma      range(max-min)   ptCount(mean/σ)\n";
+    double sumSig = 0, maxRange = 0;
+    for (size_t k = 0; k < dist.size(); ++k) {
+        double mean, sig = vstd(dist[k], mean);
+        double mn = *std::min_element(dist[k].begin(), dist[k].end());
+        double mx = *std::max_element(dist[k].begin(), dist[k].end());
+        double nmean, nsig = vstd(npts[k], nmean);
+        std::printf("  %2zu   %9.5f  %9.6f  %12.6f     %.0f/%.0f\n", k + 1, mean, sig, mx - mn, nmean, nsig);
+        sumSig += sig; if (mx - mn > maxRange) maxRange = mx - mn;
+    }
+    std::cout << "-- avg sigma=" << (dist.empty()?0:sumSig/dist.size()) << "  worst range=" << maxRange << "\n";
+    double pam, pas = vstd(planeA, pam), pbm, pbs = vstd(planeB, pbm), pcm, pcs = vstd(planeC, pcm), tm, ts = vstd(tiltV, tm);
+    std::printf("plane: a σ=%.6g  b σ=%.6g  c σ=%.6g  tilt mean=%.4f σ=%.4f\n", pas, pbs, pcs, tm, ts);
+    std::cout << "CSV: " << outCsv << "\n";
+    return 0;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
@@ -381,6 +467,9 @@ int main(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
             port = std::atoi(argv[++i]);
+        }
+        if (arg == "--repeat-analyze" && i + 3 < argc) {
+            return repeatAnalyze(argv[i + 1], argv[i + 2], argv[i + 3]);   // <recipe> <folder> <out.csv>
         }
     }
     std::cout << "[VisionEngine] Starting on ws://localhost:" << port << "\n";
@@ -413,7 +502,7 @@ int main(int argc, char** argv) {
                     return;
                 }
                 if (cmd == "run") {
-                    auto done = runPipeline(msg, conn);
+                    auto done = runPipeline(msg, &conn);
                     conn.send_text(done.dump());
                     return;
                 }
