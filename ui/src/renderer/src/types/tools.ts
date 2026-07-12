@@ -42,7 +42,7 @@ export const TOOL_DEFS: ToolDef[] = [
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: {
       matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
-      chunkMode: false, chunkRows: 100, overlapRows: 320,
+      chunkMode: false, chunkRows: 1000, overlapRows: 320,
     },
   },
   {

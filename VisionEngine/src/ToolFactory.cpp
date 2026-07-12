@@ -992,7 +992,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("halfRes",     true),
             noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
             p.value("chunkMode",   false),   // 청크 모드 off → 전체 이미지 연산(기존 동작)
-            p.value("chunkRows",   100),     // 청크당 입력 프로파일(행) 수
+            p.value("chunkRows",   1000),    // 청크당 입력 프로파일(행) 수 (겹침 부담 희석 위해 크게)
             p.value("overlapRows", 320));    // 청크 겹침 행 수 (리플렉션 제거 연결성 확보; 검증상 ≥320이면 전체모드와 동일)
     }
     if (type == "ImageLoader") {
