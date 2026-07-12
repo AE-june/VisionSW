@@ -357,8 +357,8 @@ function ExposureMerge2Params({ params, onChange }: { params: Record<string, unk
     {(params.chunkMode as boolean) && <>
       <NumField label="청크 행 수" value={params.chunkRows as number ?? 100} step={10} onChange={v => set('chunkRows', v)}
         tooltip="청크 하나에 담을 입력 프로파일(행) 수. 콜백당 받는 프로파일 수에 맞추면 됨" />
-      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 40} step={10} onChange={v => set('overlapRows', v)}
-        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 클수록 이음매 결함↓·연산량↑" />
+      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 320} step={20} onChange={v => set('overlapRows', v)}
+        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 리플렉션 최장 streak를 덮어야 전체모드와 동일. SDC 100장 검증상 ≥320이면 완전 일치. 클수록 이음매 결함↓·연산량↑ (청크행 대비 겹침이 크면 재연산 비율↑ → 청크행을 키워 상쇄)" />
     </>}
     <div className="param-empty" style={{ fontSize: 10 }}>출력은 항상 최종 머지(리플렉션 제거) 이미지. 중간 단계는 결과창 드롭다운(디스플레이 전용)에서만 확인되며 검사 시간엔 반영되지 않습니다. (② I/LLT 게이팅은 추후)</div>
   </>

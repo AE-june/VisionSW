@@ -384,7 +384,7 @@ public:
         //   outLowC/outHigh/outMerged 포인터를 주면 디스플레이용 중간단계도 반환(전체모드 전용).
         auto computeFiltered = [&](int pr0, int pr1, long& removedOut, float& offsetOut,
                                    std::vector<float>* outLowC, std::vector<float>* outHigh,
-                                   std::vector<float>* outMerged) -> std::vector<float> {
+                                   std::vector<float>* outMerged, float forcedOffset) -> std::vector<float> {
             const int bn = pr1 - pr0;
             const size_t BN = (size_t)bn * w;
             // ① 홀짝 분리 (짝수행=저노출 가정) — 행 단위 병렬
@@ -393,13 +393,19 @@ public:
                 for (int r = rg.start; r < rg.end; ++r) { const int gr = pr0 + r;
                     for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*gr,c); high[i]=at(2*gr+1,c); } }
             });
-            // ② 오프셋 보정: 겹침 일치 픽셀 (low-high) 중앙값(stride-4 서브샘플)만큼 저노출 이동
-            std::vector<float> diffs; diffs.reserve(BN/4 + 1);
-            for (size_t i = 0; i < BN; i += 4)
-                if (!std::isnan(low[i]) && !std::isnan(high[i]) && std::fabs(low[i]-high[i]) <= m_matchTol)
-                    diffs.push_back(low[i]-high[i]);
-            float offset = 0.f;
-            if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
+            // ② 오프셋 보정: 겹침 일치 픽셀 (low-high) 중앙값(stride-4 서브샘플)만큼 저노출 이동.
+            //    forcedOffset이 유효하면(청크 모드) 전역 오프셋을 그대로 사용 — 청크별 편차 방지.
+            float offset;
+            if (!std::isnan(forcedOffset)) {
+                offset = forcedOffset;
+            } else {
+                std::vector<float> diffs; diffs.reserve(BN/4 + 1);
+                for (size_t i = 0; i < BN; i += 4)
+                    if (!std::isnan(low[i]) && !std::isnan(high[i]) && std::fabs(low[i]-high[i]) <= m_matchTol)
+                        diffs.push_back(low[i]-high[i]);
+                offset = 0.f;
+                if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
+            }
             offsetOut = offset;
             std::vector<float> lowC = std::move(low);
             cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
@@ -466,22 +472,35 @@ public:
             // 청크 미사용: 기존처럼 전체 이미지에 대해 한 번에 연산.
             const bool wantStages = !m_noPreview;
             filtered = computeFiltered(0, n, removed, offset,
-                wantStages ? &lowCFull : nullptr, wantStages ? &highFull : nullptr, wantStages ? &mergedFull : nullptr);
+                wantStages ? &lowCFull : nullptr, wantStages ? &highFull : nullptr, wantStages ? &mergedFull : nullptr, NaN);
         } else {
             // 청크 모드: 코어 청크를 위·아래 겹침만큼 확장해 처리하고, 코어 행만 출력에 기록.
             //   겹침은 BFS 연속성 컨텍스트를 청크 경계 너머까지 확보해 이음매 결함을 방지.
             filtered.assign((size_t)n*w, NaN);
             const int chunkPairs = std::max(1, m_chunkRows/2);   // 입력행/2 = pair(출력행)
             const int ov         = std::max(0, m_overlapRows/2); // 겹침도 pair 단위
+            // 오프셋은 두 노출의 전역 캘리브레이션 성질 → 전체 이미지에서 1회 산출해 모든 청크가 공유.
+            //   (전체 모드와 동일한 flat stride-4 샘플링으로 값 일치 보장)
+            float gOffset = 0.f;
+            {
+                std::vector<float> d; d.reserve((size_t)n*w/4 + 1);
+                for (size_t i = 0; i < (size_t)n*w; i += 4) {
+                    int r = (int)(i / w), c = (int)(i % w);
+                    float lo = at(2*r, c), hi = at(2*r+1, c);
+                    if (!std::isnan(lo) && !std::isnan(hi) && std::fabs(lo-hi) <= m_matchTol) d.push_back(lo-hi);
+                }
+                if (!d.empty()) { size_t mid=d.size()/2; std::nth_element(d.begin(),d.begin()+mid,d.end()); gOffset=d[mid]; }
+            }
+            offset = gOffset;
             int nChunks = 0;
             for (int p0 = 0; p0 < n; p0 += chunkPairs) {
                 const int p1 = std::min(n, p0 + chunkPairs);       // 코어 [p0,p1)
                 const int e0 = std::max(0, p0 - ov), e1 = std::min(n, p1 + ov);   // 확장 [e0,e1)
                 float ofs = 0.f;
-                auto blk = computeFiltered(e0, e1, removed, ofs, nullptr, nullptr, nullptr);
+                auto blk = computeFiltered(e0, e1, removed, ofs, nullptr, nullptr, nullptr, gOffset);
                 for (int r = p0; r < p1; ++r)                      // 코어 행만 기록(겹침 여백은 버림)
                     std::copy(&blk[(size_t)(r-e0)*w], &blk[(size_t)(r-e0)*w+w], &filtered[(size_t)r*w]);
-                offset = ofs; ++nChunks;
+                ++nChunks;
             }
             VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, m_chunkRows, m_overlapRows, removed);
         }
@@ -974,7 +993,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
             p.value("chunkMode",   false),   // 청크 모드 off → 전체 이미지 연산(기존 동작)
             p.value("chunkRows",   100),     // 청크당 입력 프로파일(행) 수
-            p.value("overlapRows", 40));     // 청크 겹침 행 수
+            p.value("overlapRows", 320));    // 청크 겹침 행 수 (리플렉션 제거 연결성 확보; 검증상 ≥320이면 전체모드와 동일)
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));
