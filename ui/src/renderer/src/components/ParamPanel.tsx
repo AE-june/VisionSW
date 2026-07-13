@@ -355,10 +355,10 @@ function ExposureMerge2Params({ params, onChange }: { params: Record<string, unk
     <CheckField label="청크 단위 연산" value={params.chunkMode as boolean ?? false} onChange={v => set('chunkMode', v)}
       tooltip="끄면 전체 이미지를 한 번에 연산(기본). 켜면 입력을 청크로 나눠 겹침 포함 처리 — 프로파일이 스트리밍으로 들어오는 실시간 검사용" />
     {(params.chunkMode as boolean) && <>
-      <NumField label="청크 행 수" value={params.chunkRows as number ?? 100} step={10} onChange={v => set('chunkRows', v)}
-        tooltip="청크 하나에 담을 입력 프로파일(행) 수. 콜백당 받는 프로파일 수에 맞추면 됨" />
-      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 40} step={10} onChange={v => set('overlapRows', v)}
-        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 클수록 이음매 결함↓·연산량↑" />
+      <NumField label="청크 행 수" value={params.chunkRows as number ?? 1000} step={100} onChange={v => set('chunkRows', v)}
+        tooltip="청크 하나에 담을 입력 프로파일(행) 수. 클수록 겹침 재연산 비율↓(예 1000+겹침320이면 낭비 1.64배). 실시간이면 여러 콜백을 모아 이 크기로 처리" />
+      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 320} step={20} onChange={v => set('overlapRows', v)}
+        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 리플렉션 최장 streak를 덮어야 전체모드와 동일. SDC 100장 검증상 ≥320이면 완전 일치. 클수록 이음매 결함↓·연산량↑ (청크행 대비 겹침이 크면 재연산 비율↑ → 청크행을 키워 상쇄)" />
     </>}
     <div className="param-empty" style={{ fontSize: 10 }}>출력은 항상 최종 머지(리플렉션 제거) 이미지. 중간 단계는 결과창 드롭다운(디스플레이 전용)에서만 확인되며 검사 시간엔 반영되지 않습니다. (② I/LLT 게이팅은 추후)</div>
   </>
