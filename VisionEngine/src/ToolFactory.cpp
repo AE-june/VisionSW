@@ -8,6 +8,7 @@
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
 #include "AlignTool.h"
+#include "ExposureMergeCore.h"
 #include "IZMapLoader.h"
 #include "VisionData.h"
 #include "ZMap.h"
@@ -459,74 +460,36 @@ public:
                 for (int r = rg.start; r < rg.end; ++r) { const int gr = pr0 + r;
                     for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*gr,c); high[i]=at(2*gr+1,c); } }
             });
-            // ② 오프셋 보정: 겹침 일치 픽셀 (low-high) 중앙값(stride-4 서브샘플)만큼 저노출 이동.
-            //    forcedOffset이 유효하면(청크 모드) 전역 오프셋을 그대로 사용 — 청크별 편차 방지.
-            float offset;
-            if (!std::isnan(forcedOffset)) {
-                offset = forcedOffset;
-            } else {
-                std::vector<float> diffs; diffs.reserve(BN/4 + 1);
-                for (size_t i = 0; i < BN; i += 4)
-                    if (!std::isnan(low[i]) && !std::isnan(high[i]) && std::fabs(low[i]-high[i]) <= m_matchTol)
-                        diffs.push_back(low[i]-high[i]);
-                offset = 0.f;
-                if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
-            }
+            // ②③④ 공유 코어: 오프셋 → 저노출우선 → 연속성 BFS → 셀별 source(0제거/1저/2고)
+            std::vector<uint8_t> source;
+            float offset = exposureMergeDecision(low, high, w, bn, m_matchTol, m_tolX, m_tolY, m_gapK, forcedOffset, source);
             offsetOut = offset;
-            std::vector<float> lowC = std::move(low);
-            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
-                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) if (!std::isnan(lowC[i])) lowC[i] -= offset;
-            });
-            // ③ 기본 머지: 저노출 유효 → 저노출(보정), 없으면 장노출.
-            std::vector<float> merged(BN);
-            std::vector<uint8_t> mvalid(BN);
-            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
-                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) {
-                    float m = !std::isnan(lowC[i]) ? lowC[i] : (!std::isnan(high[i]) ? high[i] : NaN);
-                    merged[i] = m; mvalid[i] = std::isnan(m) ? 0 : 1;
-                }
-            });
-            // ④ 연속성(영역성장) 필터: 씨앗 = 저노출 유효 && 겹침 일치(신뢰 픽셀).
-            std::vector<uint8_t> visited(BN, 0);
-            for (size_t i = 0; i < BN; ++i)
-                if (!std::isnan(lowC[i]) && !std::isnan(high[i]) && std::fabs(lowC[i]-high[i]) <= m_matchTol) visited[i]=1;
-            // 경계 씨앗만 큐에 (내부 씨앗은 뻗을 데 없음 → 결과 동일, 헛 pop 제거)
-            std::vector<int> q; q.reserve(BN/2 + 1);
-            for (int r = 0; r < bn; ++r) for (int c = 0; c < w; ++c) {
-                size_t i=(size_t)r*w+c;
-                if (!visited[i]) continue;
-                if ((c>0 && !visited[i-1]) || (c<w-1 && !visited[i+1]) ||
-                    (r>0 && !visited[i-w]) || (r<bn-1 && !visited[i+w])) q.push_back((int)i);
-            }
-            auto tryRay = [&](int r, int c, float z, int dr, int dc, float tol) {
-                for (int k = 1; k <= m_gapK+1; ++k) {
-                    int nr=r+dr*k, nc=c+dc*k;
-                    if (nr<0||nr>=bn||nc<0||nc>=w) break;
-                    size_t ni=(size_t)nr*w+nc;
-                    if (visited[ni]) break;
-                    if (!mvalid[ni]) continue;                  // NaN 갭: 계속 진행
-                    if (std::fabs(merged[ni]-z) <= tol*k) { visited[ni]=1; q.push_back((int)ni); }
-                    break;                                      // 유효 픽셀 만나면 종료
-                }
-            };
-            while (!q.empty()) {
-                int idx=q.back(); q.pop_back();
-                int r=idx/w, c=idx%w; float z=merged[idx];
-                tryRay(r,c,z, 0,-1,m_tolX); tryRay(r,c,z, 0,1,m_tolX);
-                tryRay(r,c,z,-1, 0,m_tolY); tryRay(r,c,z, 1,0,m_tolY);
-            }
-            std::vector<float> filtered = merged;               // merged는 아래서 outMerged로 넘길 수 있어 복사 유지
+            // source → 최종 Z: 저=low-offset, 고=high, 제거=NaN. (제거된 fill 리플렉션 카운트)
+            std::vector<float> filtered(BN);
             std::atomic<long> removedA{0};
             cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
                 long loc = 0;
-                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i)
-                    if (std::isnan(lowC[i]) && !std::isnan(high[i]) && !visited[i]) { filtered[i]=NaN; ++loc; }
+                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) {
+                    uint8_t s = source[i];
+                    if      (s == 1) filtered[i] = low[i] - offset;
+                    else if (s == 2) filtered[i] = high[i];
+                    else { filtered[i] = NaN; if (!std::isnan(high[i])) ++loc; }
+                }
                 removedA += loc;
             });
             removedOut += removedA.load();
-            if (outMerged) *outMerged = std::move(merged);
-            if (outLowC)   *outLowC   = std::move(lowC);
-            if (outHigh)   *outHigh   = std::move(high);
+            // 디스플레이 중간단계 재구성(전체모드 + !noPreview): lowC=low-offset, merged=저우선(리플제거 전), high
+            if (outLowC) {
+                std::vector<float> lc(BN);
+                for (size_t i=0;i<BN;++i) lc[i] = std::isnan(low[i]) ? NaN : low[i]-offset;
+                *outLowC = std::move(lc);
+            }
+            if (outMerged) {
+                std::vector<float> mg(BN);
+                for (size_t i=0;i<BN;++i) { float lc=std::isnan(low[i])?NaN:low[i]-offset; mg[i]=!std::isnan(lc)?lc:(!std::isnan(high[i])?high[i]:NaN); }
+                *outMerged = std::move(mg);
+            }
+            if (outHigh) *outHigh = high;
             return filtered;
         };
 
