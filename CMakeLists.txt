@@ -36,5 +36,8 @@ add_subdirectory(VisionTools)
 # ── VisionEngine (WebSocket server) ──────────────────────────────────
 add_subdirectory(VisionEngine)
 
+# ── VisionSDK (모든 노드를 C ABI DLL로 노출 — C++/C# 외부 사용) ────────
+add_subdirectory(VisionSDK)
+
 enable_testing()
 add_subdirectory(Tests)
