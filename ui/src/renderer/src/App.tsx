@@ -631,7 +631,7 @@ export default function App() {
   const upstreamRes = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
-    if (tt !== 'PlaneFit' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter') return undefined
+    if (tt !== 'PlaneFit' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter' && tt !== 'RowStretch') return undefined
     const tEdges = edges.filter(e => e.target === selectedNode.id)
     if (tEdges.length === 0) return undefined
     // ZMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지

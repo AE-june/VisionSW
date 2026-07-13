@@ -434,13 +434,15 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               onChange={(next) => onParamChange(nodeId, next)}
             />
           ) : toolType === 'RowStretch' ? (
+            // 설정 뷰는 항상 원본(입력) 이미지 위에 밴드를 그린다. 자기 출력(늘어난 이미지)로
+            // 폴백하면 크기가 달라져 ROI 위치가 어긋나므로 upstream만 사용(없으면 빈 화면).
             <RowStretchEditor
               params={params}
-              preview={upstreamPreview ?? result?.preview}
-              zMin={upstreamZMin ?? result?.zMin}
-              zMax={upstreamZMax ?? result?.zMax}
-              resXMm={upstreamResX ?? result?.xResMm}
-              resYMm={upstreamResY ?? result?.yResMm}
+              preview={upstreamPreview}
+              zMin={upstreamZMin}
+              zMax={upstreamZMax}
+              resXMm={upstreamResX}
+              resYMm={upstreamResY}
               originCol={upstreamOriginCol}
               originRow={upstreamOriginRow}
               viewKey={nodeId}
