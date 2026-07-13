@@ -123,6 +123,11 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { step: 1 },
   },
   {
+    type: 'ExposureMergeCloud', label: 'Exposure Merge (Cloud)', category: '변환',
+    inputs: ['ZMap'], outputs: ['PointCloud3D'],
+    defaultParams: { matchTol: 20, tolX: 5, tolY: 30, gapK: 0 },
+  },
+  {
     type: 'CloudSaver', label: 'Cloud Saver', category: '출력',
     inputs: ['PointCloud3D'], outputs: [],
     defaultParams: { folder: '', filename: '', format: 'ply' },

@@ -669,6 +669,61 @@ public:
     }
 };
 
+// ── ExposureMergeCloud: 인터리브 ZMap(짝=저/홀=고) → 이중노출 머지 → PointCloud3D. ──
+//   공유 코어(exposureMergeDecision)로 Z 결정 후 이긴 노출 셀만 (x,y,z)mm 점 생성.
+//   VisionSW ZMap은 균일 X(col×xRes) — per-point 보정 X는 SDK(vsdk_exposure_merge_cloud) 경로 전용.
+class ExposureMergeCloudTool : public IAlgorithmTool {
+    float m_matchTol, m_tolX, m_tolY; int m_gapK;
+public:
+    ExposureMergeCloudTool(float matchTol, float tolX, float tolY, int gapK)
+        : m_matchTol(matchTol), m_tolX(tolX), m_tolY(tolY), m_gapK(gapK) {}
+    std::string name() const override { return "ExposureMergeCloud"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap())
+            return { ToolStatus::Fail, "이중노출 머지(클라우드): ZMap 입력이 필요합니다" };
+        const auto& zm = *input->zmap;
+        const int w = zm.width, h = zm.height;
+        if (h < 2) return { ToolStatus::Fail, "이미지 높이가 너무 작습니다" };
+        const int n = h / 2;
+        const size_t BN = (size_t)n * w;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
+
+        // 홀짝 분리 → 공유 코어 결정
+        std::vector<float> low(BN), high(BN);
+        cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+            for (int r = rg.start; r < rg.end; ++r)
+                for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*r,c); high[i]=at(2*r+1,c); }
+        });
+        std::vector<uint8_t> source;
+        float offset = exposureMergeDecision(low, high, w, n, m_matchTol, m_tolX, m_tolY, m_gapK, NaN, source);
+
+        // 이긴 노출 셀만 (x,y,z)mm 점 생성. 머지는 반해상도라 Y피치 ×2.
+        const float yRes2 = zm.yResMm * 2.f;
+        auto cloud = std::make_shared<PointCloud3D>();
+        cloud->points.reserve(BN / 2);
+        for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
+            size_t i = (size_t)r*w + c;
+            uint8_t s = source[i];
+            if (s == 0) continue;
+            float zc = (s == 1) ? (low[i] - offset) : high[i];
+            if (std::isnan(zc)) continue;
+            Point3f pt;
+            pt.x = (c - zm.originCol) * zm.xResMm;
+            pt.y = (r - zm.originRow) * yRes2;
+            pt.z = (zc - zm.zZeroCount) * zm.zResMm;
+            cloud->points.push_back(pt);
+        }
+
+        auto data = std::make_shared<VisionData>();
+        data->cloud = cloud;
+        data->sourceId = input->sourceId;
+        VISION_LOG_INFO("ExposureMergeCloud: {}x{} → {} points (offset={:.1f})", w, h, (long)cloud->points.size(), offset);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
 // ── ZMapToCloud: ZMap(높이맵) → PointCloud3D. 유효 픽셀마다 (x,y,z)mm 점 생성. ──
 //   x = (col-originCol)*xRes, y = (row-originRow)*yRes, z = (raw-zZero)*zRes (mm)
 //   step으로 서브샘플(대용량 클라우드 감축). NaN(무효) 픽셀은 건너뜀.
@@ -1050,6 +1105,11 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "ZMapToCloud") {
         return std::make_shared<ZMapToCloudTool>(p.value("step", 1));
+    }
+    if (type == "ExposureMergeCloud") {
+        return std::make_shared<ExposureMergeCloudTool>(
+            p.value("matchTol", 20.0f), p.value("tolX", 5.0f),
+            p.value("tolY", 30.0f), p.value("gapK", 0));
     }
     if (type == "GapFill") {
         std::string ms = p.value("method", "neighbor");
