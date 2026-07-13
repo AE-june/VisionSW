@@ -3,6 +3,7 @@
 #include "vision_sdk.h"
 #include <cstdio>
 #include <vector>
+#include <cmath>
 
 int main() {
     const int W = 16, H = 16;
@@ -51,6 +52,28 @@ int main() {
     std::printf("unknown node : status=%d msg='%s'\n", s4, r4.msg);
     ok &= (s4 == VSDK_FAIL);
     vsdk_free_result(&r4);
+
+    // 5) point cloud 이중노출 머지 — 조직화(width=4, profiles=4, 짝=저/홀=고). per-point X 보존 확인.
+    {
+        const int W = 4, P = 4;                 // n=2 출력 프로파일
+        std::vector<float> pc((size_t)W*P*3);
+        for (int pr = 0; pr < P; ++pr)
+            for (int c = 0; c < W; ++c) {
+                float* d = &pc[((size_t)pr*W + c)*3];
+                d[0] = c*0.01f + pr*0.0001f;    // per-point X (프로파일마다 미세 차 → 보존 검증)
+                d[1] = pr*0.05f;
+                d[2] = 1000.f + c;              // 저·고 동일 Z → 머지는 저노출 채택(offset≈0)
+            }
+        VsdkResult r5{};
+        int s5 = vsdk_exposure_merge_cloud(pc.data(), W, P, "{}", &r5);
+        // 출력 셀 (프로파일0=저=입력프로파일0, col1)의 X가 입력 저노출 점 X와 일치하는지
+        float gotX = (r5.cloud.xyz && r5.cloud.count >= 2) ? r5.cloud.xyz[(0*W+1)*3+0] : -1.f;
+        float expX = pc[((size_t)0*W+1)*3+0];   // 입력 저노출(프로파일0) col1 X
+        std::printf("merge_cloud  : status=%d count=%d (expect %d)  X=%.5f (expect %.5f, per-point 보존)\n",
+                    s5, r5.cloud.count, (P/2)*W, gotX, expX);
+        ok &= (s5 == VSDK_OK && r5.cloud.count == (P/2)*W && std::abs(gotX - expX) < 1e-6f);
+        vsdk_free_result(&r5);
+    }
 
     std::printf(ok ? "ALL OK\n" : "FAIL\n");
     return ok ? 0 : 1;
