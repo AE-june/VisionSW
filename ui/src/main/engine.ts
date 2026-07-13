@@ -62,7 +62,7 @@ export function startEngine() {
     : join(__dirname, '../../../build/bin/Release/VisionEngine.exe')
 
   try {
-    engineProcess = spawn(exePath, [], {
+    engineProcess = spawn(exePath, ['--parent-pid', String(process.pid)], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     })

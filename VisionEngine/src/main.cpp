@@ -26,9 +26,29 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using json = nlohmann::json;
 using namespace vision;
+
+// 부모(electron) 프로세스 감시: 부모가 사라지면(정상/강제 종료 모두) 엔진도 스스로 종료.
+//  → electron이 kill 되어 종료 핸들러(stopEngine)가 못 돌아도 엔진이 고아로 남지 않음.
+static void startParentWatchdog(unsigned long parentPid) {
+    if (parentPid == 0) return;
+#ifdef _WIN32
+    std::thread([parentPid]() {
+        HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(parentPid));
+        if (!h) { std::exit(0); return; }        // 부모가 이미 없음
+        WaitForSingleObject(h, INFINITE);        // 부모 종료(어떤 방식이든) 시 신호
+        CloseHandle(h);
+        std::cout << "[VisionEngine] parent(" << parentPid << ") exited → shutting down\n";
+        std::exit(0);
+    }).detach();
+#endif
+}
 
 // ── Topological sort (Kahn's algorithm) ─────────────────────────────────
 
@@ -463,15 +483,20 @@ int main(int argc, char** argv) {
     vision::LoggerInit();
 
     int port = 9000;
+    unsigned long parentPid = 0;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
             port = std::atoi(argv[++i]);
         }
+        if (arg == "--parent-pid" && i + 1 < argc) {
+            parentPid = std::strtoul(argv[++i], nullptr, 10);
+        }
         if (arg == "--repeat-analyze" && i + 3 < argc) {
             return repeatAnalyze(argv[i + 1], argv[i + 2], argv[i + 3]);   // <recipe> <folder> <out.csv>
         }
     }
+    startParentWatchdog(parentPid);   // 부모 종료 시 엔진 자동 종료 (고아 방지)
     std::cout << "[VisionEngine] Starting on ws://localhost:" << port << "\n";
 
     crow::SimpleApp app;

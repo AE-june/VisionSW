@@ -70,7 +70,7 @@ function connectWithRetry(port: number, retries = 15): Promise<WebSocket> {
 }
 
 async function spawnWorker(id: number, port: number): Promise<Worker> {
-  const proc = spawn(exePath(), ['--port', String(port)], {
+  const proc = spawn(exePath(), ['--port', String(port), '--parent-pid', String(process.pid)], {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   proc.stdout?.on('data', (d) => process.stdout.write(`[worker${id}] ${d}`))
