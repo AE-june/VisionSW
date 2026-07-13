@@ -345,6 +345,72 @@ public:
     }
 };
 
+// ── RowStretch (행 늘리기): 지정 ROI(세로 밴드, 가로 전체)의 행을 배수만큼 선형보간
+//    업샘플. 밴드마다 개별 배수. 밴드 밖은 ×1 그대로. 출력 높이 = Σ(행별 배수).
+//    (기존 이중노출 분리 노드가 저노출 상/하단을 늘리던 방식을 ROI로 일반화 — 홀짝 분리 없음)
+class RowStretchTool : public IAlgorithmTool {
+public:
+    struct Band { float yPct, hPct; int scale; };
+private:
+    std::vector<Band> m_bands;
+public:
+    explicit RowStretchTool(std::vector<Band> bands) : m_bands(std::move(bands)) {}
+    std::string name() const override { return "RowStretch"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap())
+            return { ToolStatus::Fail, "행 늘리기: ZMap 입력이 필요합니다" };
+        const auto& zm = *input->zmap;
+        const int w = zm.width, h = zm.height;
+        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "행 늘리기: 빈 ZMap" };
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+
+        // 입력 행마다 배수 결정 (밴드에 속하면 그 밴드 배수, 겹치면 뒤 밴드 우선, 아니면 1)
+        std::vector<int> rowScale((size_t)h, 1);
+        for (const auto& b : m_bands) {
+            int y0 = std::clamp((int)(b.yPct * h),            0, h);
+            int y1 = std::clamp((int)((b.yPct + b.hPct) * h), 0, h);
+            int s  = std::max(1, b.scale);
+            for (int r = y0; r < y1; ++r) rowScale[r] = s;
+        }
+        size_t outH = 0; for (int r = 0; r < h; ++r) outH += (size_t)rowScale[r];
+
+        auto z = std::make_shared<ZMap>();
+        z->width = w; z->height = (int)outH;
+        z->xResMm = zm.xResMm; z->yResMm = zm.yResMm;   // yRes는 기존 노드와 동일하게 유지
+        z->zResMm = zm.zResMm; z->zZeroCount = zm.zZeroCount;
+        z->originCol = zm.originCol; z->originRow = zm.originRow;
+        z->data.assign((size_t)outH * w, NaN);
+
+        auto at = [&](int r, int c){ return zm.data[(size_t)r * w + c]; };
+        size_t outRow = 0;
+        for (int r = 0; r < h; ++r) {
+            const int s = rowScale[r];
+            for (int k = 0; k < s; ++k) {
+                float* dst = &z->data[outRow * w];
+                if (k == 0 || r + 1 >= h) {          // 원본 행 그대로 (마지막 행도 그대로)
+                    std::copy(&zm.data[(size_t)r * w], &zm.data[(size_t)r * w + w], dst);
+                } else {                              // r ~ r+1 선형보간 (NaN 인지)
+                    const float t = (float)k / s;
+                    for (int c = 0; c < w; ++c) {
+                        float a = at(r, c), b = at(r + 1, c);
+                        if      (!std::isnan(a) && !std::isnan(b)) dst[c] = a * (1.f - t) + b * t;
+                        else if (!std::isnan(a))                    dst[c] = a;
+                        else                                        dst[c] = b;
+                    }
+                }
+                ++outRow;
+            }
+        }
+
+        auto data = std::make_shared<VisionData>();
+        data->zmap = z;
+        data->sourceId = input->sourceId;
+        VISION_LOG_INFO("RowStretch: {}x{} → {}x{} (밴드 {}개)", w, h, w, (int)outH, (int)m_bands.size());
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
 // ── DualExposureMerge (이중노출 머지, 재구현): 인터리브 홀짝 → 오프셋보정 →
 //    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
 //    규칙: 겹침은 저노출 우선(리플 자동배제), fill은 신뢰 씨앗에서 연결성으로 검증.
@@ -974,6 +1040,13 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("xResMm",  1.0f),
             p.value("yResMm",  1.0f),
             p.value("zResMm",  0.001f));
+    }
+    if (type == "RowStretch") {
+        std::vector<RowStretchTool::Band> bands;
+        if (p.contains("rois") && p["rois"].is_array())
+            for (const auto& r : p["rois"])
+                bands.push_back({ r.value("yPct", 0.f), r.value("hPct", 1.f), r.value("scale", 2) });
+        return std::make_shared<RowStretchTool>(std::move(bands));
     }
     if (type == "ExposureMerge") {
         // 이중노출 분리: 저노출(확장)/장노출 중 outputStage로 선택 (0/1).

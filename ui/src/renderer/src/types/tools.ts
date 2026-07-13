@@ -38,6 +38,11 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { outputStage: 0 },
   },
   {
+    type: 'RowStretch', label: 'Row Stretch', category: '필터',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: { rois: [] },
+  },
+  {
     type: 'ExposureMerge2', label: 'Exposure Merge', category: '필터',
     inputs: ['ZMap'], outputs: ['ZMap'],
     defaultParams: {

@@ -5,6 +5,7 @@ import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
 import NoiseFilterEditor from './NoiseFilterEditor'
+import RowStretchEditor from './RowStretchEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
@@ -421,6 +422,19 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
             />
           ) : toolType === 'NoiseFilter' ? (
             <NoiseFilterEditor
+              params={params}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
+              viewKey={nodeId}
+              onChange={(next) => onParamChange(nodeId, next)}
+            />
+          ) : toolType === 'RowStretch' ? (
+            <RowStretchEditor
               params={params}
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
