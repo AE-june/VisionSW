@@ -242,6 +242,18 @@ export default function ImageViewer({
     return { w, h, mL: Math.max(0, (box.w - w) / 2), mT: Math.max(0, (box.h - h) / 2) }
   }
 
+  // 기본 배율 = 전체보기(fit). 저장된 zoom이 없을 때만 이미지/박스 크기가 확정되는 즉시 1회 맞춤
+  // (사용자가 이후 휠/리셋으로 바꾼 값은 세션에 저장돼 유지됨).
+  const didAutoFitRef = useRef(false)
+  useLayoutEffect(() => {
+    if (didAutoFitRef.current) return
+    if (restored.zoom != null) { didAutoFitRef.current = true; return }   // 저장된 배율 우선
+    if (imgPx.w > 0 && imgPx.h > 0 && csize.w > 0 && csize.h > 0) {
+      applyZoom(Math.min(fitZoom(csize, imgPx), MAX_ZOOM))
+      didAutoFitRef.current = true
+    }
+  }, [imgPx, csize])
+
   // client 좌표 → 이미지 상대 퍼센트(0~1). 콘텐츠 rect는 스크롤/여백이 이미 반영됨.
   const toImgPct = useCallback((clientX: number, clientY: number) => {
     const c = contentRef.current
