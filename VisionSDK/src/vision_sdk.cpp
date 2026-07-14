@@ -6,6 +6,7 @@
 #include "ToolFactory.h"
 #include "VisionData.h"
 #include "ZMap.h"
+#include "ExposureMergeCore.h"
 #include <nlohmann/json.hpp>
 
 #include <cstring>
@@ -13,6 +14,10 @@
 #include <string>
 #include <memory>
 #include <exception>
+#include <vector>
+#include <cstdint>
+#include <cmath>
+#include <limits>
 
 using namespace vision;
 using json = nlohmann::json;
@@ -130,5 +135,61 @@ int vsdk_plane_fit    (const VsdkZMap* in, const char* p, VsdkResult* o) { retur
 int vsdk_zmap_to_cloud(const VsdkZMap* in, const char* p, VsdkResult* o) { return vsdk_run("ZMapToCloud",    p, in, nullptr, o); }
 int vsdk_thickness    (const VsdkZMap* in, const char* p, VsdkResult* o) { return vsdk_run("ThicknessMeasure", p, in, nullptr, o); }
 int vsdk_height_measure(const VsdkZMap* in, const VsdkPlane* pl, const char* p, VsdkResult* o) { return vsdk_run("HeightMeasure", p, in, pl, o); }
+
+/* ── 조직화된 point cloud 이중노출 머지 (per-point X 보존) ──────────────────────
+ *  xyz: numProfiles*width 개 점(각 x,y,z 3연속 float, row-major). 짝수 프로파일=저노출,
+ *       홀수=고노출. 무효점(NaN/Inf/−999999/(0,0,0))은 Z=NaN로 취급.
+ *  결과: out->cloud 에 머지된 조직화 cloud (count=(numProfiles/2)*width, row-major).
+ *        저=이긴 저노출 점(z−offset), 고=고노출 점, 제거=NaN 점. 그리드는 (numProfiles/2)×width. */
+int vsdk_exposure_merge_cloud(const float* xyz, int width, int numProfiles,
+                              const char* paramsJson, VsdkResult* out) {
+    if (!out) return VSDK_BADARG;
+    std::memset(out, 0, sizeof(VsdkResult));
+    if (!xyz || width <= 0 || numProfiles < 2) { out->status=VSDK_BADARG; setMsg(out,"bad args (xyz/width/numProfiles)"); return VSDK_BADARG; }
+
+    json p = json::object();
+    if (paramsJson && paramsJson[0]) {
+        try { p = json::parse(paramsJson); }
+        catch (const std::exception& e) { out->status=VSDK_BADARG; setMsg(out, std::string("param json: ")+e.what()); return VSDK_BADARG; }
+    }
+    const float matchTol = p.value("matchTol", 20.f), tolX = p.value("tolX", 5.f), tolY = p.value("tolY", 30.f);
+    const int   gapK     = p.value("gapK", 0);
+
+    const float NaN = std::numeric_limits<float>::quiet_NaN();
+    const int n = numProfiles / 2;               // 출력 프로파일(pair) 수
+    const size_t BN = (size_t)n * width;
+    auto invalid = [](float x, float y, float z) {
+        return std::isnan(x)||std::isnan(y)||std::isnan(z)||std::isinf(x)||std::isinf(y)||std::isinf(z)
+            || x==-999999.f||y==-999999.f||z==-999999.f || (x==0.f&&y==0.f&&z==0.f);
+    };
+
+    // 짝/홀 프로파일 → 저/고 Z 그리드
+    std::vector<float> low(BN), high(BN);
+    for (int r = 0; r < n; ++r) for (int c = 0; c < width; ++c) {
+        size_t i = (size_t)r*width + c;
+        const float* pl = &xyz[((size_t)(2*r)*width   + c)*3];
+        const float* ph = &xyz[((size_t)(2*r+1)*width + c)*3];
+        low[i]  = invalid(pl[0],pl[1],pl[2]) ? NaN : pl[2];
+        high[i] = invalid(ph[0],ph[1],ph[2]) ? NaN : ph[2];
+    }
+
+    std::vector<uint8_t> source;
+    float offset = exposureMergeDecision(low, high, width, n, matchTol, tolX, tolY, gapK, NaN, source);
+
+    // source → 이긴 노출의 점(x,y,z) (저는 z−offset). 제거/무효는 NaN 점.
+    float* mc = (float*)std::malloc(BN * 3 * sizeof(float));
+    if (!mc) { out->status=VSDK_FAIL; setMsg(out,"oom"); return VSDK_FAIL; }
+    for (int r = 0; r < n; ++r) for (int c = 0; c < width; ++c) {
+        size_t i = (size_t)r*width + c; float* d = &mc[i*3];
+        uint8_t s = source[i];
+        if (s == 1)      { const float* pl=&xyz[((size_t)(2*r)*width  +c)*3]; d[0]=pl[0]; d[1]=pl[1]; d[2]=pl[2]-offset; }
+        else if (s == 2) { const float* ph=&xyz[((size_t)(2*r+1)*width+c)*3]; d[0]=ph[0]; d[1]=ph[1]; d[2]=ph[2]; }
+        else             { d[0]=d[1]=d[2]=NaN; }
+    }
+    out->status = VSDK_OK;
+    out->cloud.count = (int)BN;    // 그리드 = (numProfiles/2) × width (호출자가 앎)
+    out->cloud.xyz   = mc;
+    return VSDK_OK;
+}
 
 } // extern "C"

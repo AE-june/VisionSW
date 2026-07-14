@@ -405,6 +405,23 @@ function ZMapToCloudParams({ params, onChange }: { params: Record<string, unknow
   </>
 }
 
+// ExposureMergeCloud: 인터리브 ZMap → 이중노출 머지 → PointCloud3D (X는 균일, col×xRes)
+function ExposureMergeCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 ZMap(짝=저/홀=고)을 이중노출 머지 후 3D 점으로 출력. VisionSW는 균일 X(col×xRes) — per-point 보정 X는 SDK 경로 전용.</div>
+    <div className="param-section">머지 / 연속성 필터</div>
+    <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
+      tooltip="저·장노출 |차이| ≤ 이 값이면 겹침 일치. 오프셋·씨앗에 사용" />
+    <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 5} step={1} onChange={v => set('tolX', v)}
+      tooltip="연속성 확장 X방향 Z 허용 차이" />
+    <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 30} step={5} onChange={v => set('tolY', v)}
+      tooltip="연속성 확장 Y방향 Z 허용 차이" />
+    <NumField label="갭 점프 (px)" value={params.gapK as number ?? 0} step={1} onChange={v => set('gapK', v)}
+      tooltip="연속성이 NaN 픽셀을 건너뛸 최대 거리" />
+  </>
+}
+
 // CloudSaver: PointCloud3D → PLY/XYZ 파일 저장
 function CloudSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -455,6 +472,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
@@ -480,6 +498,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}

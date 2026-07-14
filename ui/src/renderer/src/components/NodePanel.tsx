@@ -74,7 +74,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 }) {
   const [stageIdx, setStageIdx] = useState(0)
   // cloud 출력 노드: 3D↔2D를 드롭다운으로 전환. ZMapToCloud는 3D, PlaneFit은 2D를 기본으로.
-  const [cloudView, setCloudView] = useState(toolType === 'ZMapToCloud')
+  const [cloudView, setCloudView] = useState(toolType === 'ZMapToCloud' || toolType === 'ExposureMergeCloud')
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {

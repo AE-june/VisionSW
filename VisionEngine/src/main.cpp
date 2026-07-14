@@ -264,7 +264,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["cloud"] = pts;
             }
         }
-        if (ns.type == "ZMapToCloud" && result.output && result.output->cloud) {
+        if ((ns.type == "ZMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
             // 3D 미리보기용 서브샘플(최대 ~50k점) — 저장 파일은 전체 해상도(영향 없음)
             const auto& cpts = result.output->cloud->points;
             const size_t cap = 50000;

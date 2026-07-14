@@ -104,6 +104,13 @@ VSDK_API int vsdk_thickness    (const VsdkZMap* in, const char* paramsJson, Vsdk
 /* HeightMeasure: ZMap + (선택)평면 입력 → 영역별 높이. */
 VSDK_API int vsdk_height_measure(const VsdkZMap* in, const VsdkPlane* plane, const char* paramsJson, VsdkResult* out);
 
+/* 조직화된 point cloud 이중노출 머지 (per-point X 보존).
+ *  xyz = numProfiles*width 개 점(x,y,z 3연속 float, row-major). 짝수 프로파일=저노출, 홀수=고노출.
+ *  결과 = out->cloud (count=(numProfiles/2)*width, row-major 조직화, 무효셀=NaN점).
+ *  paramsJson: matchTol/tolX/tolY/gapK (기본 strict 20/5/30/0). */
+VSDK_API int vsdk_exposure_merge_cloud(const float* xyz, int width, int numProfiles,
+                                       const char* paramsJson, VsdkResult* out);
+
 #ifdef __cplusplus
 }
 #endif
