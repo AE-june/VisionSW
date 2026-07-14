@@ -145,10 +145,15 @@ public:
             std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
             auto it = g_zmapFileCache.find(m_path);
             if (it != g_zmapFileCache.end()) {
+                // 캐시엔 픽셀 데이터만 신뢰 — 분해능은 로더 파라미터가 최신이므로 캐시 히트 시에도 재적용.
+                // (경로만으로 캐시돼 처음 로드 분해능이 박히던 문제 수정: 분해능 변경이 이제 즉시 반영)
+                it->second->xResMm = m_xResMm;
+                it->second->yResMm = m_yResMm;
+                it->second->zResMm = m_zResMm;
                 auto data = std::make_shared<VisionData>();
                 data->zmap = it->second;
                 data->sourceId = m_path;
-                VISION_LOG_INFO("ZMapLoader: cache hit {}", m_path);
+                VISION_LOG_INFO("ZMapLoader: cache hit {} (res x{} y{} z{})", m_path, m_xResMm, m_yResMm, m_zResMm);
                 return { ToolStatus::Ok, "", data };
             }
         }
