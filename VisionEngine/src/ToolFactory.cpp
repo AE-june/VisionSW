@@ -789,13 +789,14 @@ public:
         } else if (ext == "xyz") {                // 단순 텍스트: "x y z" 한 줄씩
             ofs << std::fixed << std::setprecision(4);
             for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
-        } else {                                  // PLY ascii (기본, CloudCompare/MeshLab 호환)
-            ofs << "ply\nformat ascii 1.0\n";
+        } else {                                  // PLY binary_little_endian (기본, CloudCompare/MeshLab 호환·고속)
+            ofs << "ply\nformat binary_little_endian 1.0\n";
             ofs << "element vertex " << pts.size() << "\n";
             ofs << "property float x\nproperty float y\nproperty float z\n";
             ofs << "end_header\n";
-            ofs << std::fixed << std::setprecision(4);
-            for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
+            // 헤더 뒤 raw float32 x,y,z 연속(Point3f=12B 그대로). x64는 리틀엔디안 → 1회 write.
+            ofs.write(reinterpret_cast<const char*>(pts.data()),
+                      (std::streamsize)pts.size() * sizeof(Point3f));
         }
         if (!ofs.good()) return { ToolStatus::Fail, "CloudSaver: 저장 중 오류: " + savePath };
         VISION_LOG_INFO("CloudSaver: {} points → {}", pts.size(), savePath);
