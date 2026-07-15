@@ -150,11 +150,30 @@ export async function respawnWorker(workerId: number): Promise<{ ok?: boolean; e
 
 export async function stopBatchPool(): Promise<void> {
   intentionalStop = true
-  for (const w of workers) {
+  const dying = workers
+  workers = []
+  // 실제 프로세스 종료(=포트 해제)를 기다린 뒤 리턴해야, 다음 startBatchPool이 같은 포트(9001~)에
+  // 새 워커를 띄울 때 이전 워커가 물고 있는 포트 때문에 바인딩 실패 → 스폰 실패하는 문제를 막는다.
+  await Promise.all(dying.map((w) => new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => { if (!settled) { settled = true; resolve() } }
+    // 이미 종료됨
+    if (w.proc.exitCode !== null || w.proc.pid == null) { finish(); return }
+    w.proc.once('exit', finish)
     try { w.ws?.terminate() } catch { /* ignore */ }
     try { w.proc.kill() } catch { /* ignore */ }
-  }
-  workers = []
+    // kill이 2초 내 안 먹으면 강제 종료(트리 포함) — 그래도 exit 이벤트가 안 오면 그냥 진행.
+    setTimeout(() => {
+      if (settled) return
+      if (w.proc.pid) {
+        try {
+          if (process.platform === 'win32') spawn('taskkill', ['/PID', String(w.proc.pid), '/F', '/T'], { stdio: 'ignore' })
+          else w.proc.kill('SIGKILL')
+        } catch { /* ignore */ }
+      }
+      setTimeout(finish, 800)
+    }, 2000)
+  })))
 }
 
 export function registerBatchIpc(): void {
