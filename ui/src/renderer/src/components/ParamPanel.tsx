@@ -444,8 +444,8 @@ function CloudSaverParams({ params, onChange }: { params: Record<string, unknown
       <input className="param-input" type="text" value={filename} placeholder="비우면 소스 파일명"
         onChange={e => set('filename', e.target.value)} />
     </div>
-    <SelectField label="포맷" value={format} options={['ply', 'xyz']} onChange={v => set('format', v)}
-      tooltip="ply=ascii(CloudCompare/MeshLab 호환), xyz=텍스트(x y z 한 줄씩)" />
+    <SelectField label="포맷" value={format} options={['ply', 'xyz', 'bin']} onChange={v => set('format', v)}
+      tooltip="ply=ascii(CloudCompare/MeshLab 호환), xyz=텍스트(x y z 한 줄씩), bin=생 바이너리(float32 x,y,z 연속·헤더없음·최고속, 점수=파일크기/12)" />
     <div className="param-empty" style={{ fontSize: 10 }}>
       저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷
     </div>

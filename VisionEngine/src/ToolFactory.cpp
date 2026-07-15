@@ -782,7 +782,11 @@ public:
         std::ofstream ofs(savePath, std::ios::binary);
         if (!ofs) return { ToolStatus::Fail, "CloudSaver: 파일을 열 수 없습니다: " + savePath };
 
-        if (ext == "xyz") {                       // 단순 텍스트: "x y z" 한 줄씩
+        if (ext == "bin") {                       // 생 바이너리: float32 x,y,z 연속(헤더 없음). 점수=파일크기/12.
+            // Point3f = {float x,y,z} 연속(12B)이라 배열 통째로 1회 write → 텍스트 변환 없이 최고속.
+            ofs.write(reinterpret_cast<const char*>(pts.data()),
+                      (std::streamsize)pts.size() * sizeof(Point3f));
+        } else if (ext == "xyz") {                // 단순 텍스트: "x y z" 한 줄씩
             ofs << std::fixed << std::setprecision(4);
             for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
         } else {                                  // PLY ascii (기본, CloudCompare/MeshLab 호환)
