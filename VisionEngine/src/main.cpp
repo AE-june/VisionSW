@@ -548,7 +548,7 @@ int main(int argc, char** argv) {
                             auto zmap = vision::loadZMapFromFile(path, xRes, yRes, zRes);
                             if (!zmap) return;
                             std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-                            g_zmapFileCache[path] = zmap;
+                            vision::zmapCachePut(path, zmap);
                         }).detach();
                     }
                     return;

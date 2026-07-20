@@ -44,6 +44,21 @@ std::unordered_map<std::string, std::shared_ptr<ZMap>> g_zmapFileCache;
 std::unordered_set<std::string> g_preloadedFolders;
 std::mutex g_zmapFileCacheMtx;
 
+// 파일 캐시 상한 — 최근 N장만 유지(폴더 브라우징·연속 로드로 메모리 무한 누적 방지).
+//  삽입 순서(FIFO)로 오래된 것 축출. 사용 중(shared_ptr 참조)인 ZMap은 map에서 빠져도 안전히 유지됨.
+//  반드시 g_zmapFileCacheMtx를 보유한 상태에서 호출할 것.
+static const size_t ZMAP_CACHE_CAP = 8;
+static std::deque<std::string> g_zmapCacheOrder;
+void zmapCachePut(const std::string& path, const std::shared_ptr<ZMap>& zm) {
+    if (g_zmapFileCache.find(path) == g_zmapFileCache.end()) g_zmapCacheOrder.push_back(path);
+    g_zmapFileCache[path] = zm;
+    while (g_zmapCacheOrder.size() > ZMAP_CACHE_CAP) {
+        std::string old = g_zmapCacheOrder.front();
+        g_zmapCacheOrder.pop_front();
+        if (old != path) g_zmapFileCache.erase(old);   // 방금 넣은 건 축출 안 함
+    }
+}
+
 std::shared_ptr<ZMap> loadZMapFromFile(const std::string& path,
                                        float xRes, float yRes, float zRes) {
     int w, h, ch;
@@ -116,7 +131,7 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
     {
         std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
         for (auto& [path, zm] : results)
-            if (zm) { g_zmapFileCache[path] = zm; ++loaded; }
+            if (zm) { zmapCachePut(path, zm); ++loaded; }
     }
     return loaded;
 }
@@ -166,7 +181,7 @@ public:
 
         {
             std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-            g_zmapFileCache[m_path] = zmap;
+            zmapCachePut(m_path, zmap);
         }
         VISION_LOG_INFO("ZMapLoader: {}x{} loaded from {}", zmap->width, zmap->height, m_path);
         auto data = std::make_shared<VisionData>();
@@ -209,7 +224,7 @@ public:
 //   장노출은 2배 복원(makeZ). 출력: 1.저노출(확장) / 2.장노출 중 선택.
 //   (머지/리플렉션 제거는 별도 '이중노출 머지'(ExposureMerge2) 노드로 분리됨)
 class ExposureMergeTool : public IAlgorithmTool {
-    int   m_outputStage;   // 0=저노출(확장), 1=장노출
+    int   m_outputStage;   // 0=저노출, 1=장노출
     bool  m_skipStages;    // true면 결과창 미리보기용 다른 단계는 만들지 않음(배치 가속/메모리 절약)
 public:
     ExposureMergeTool(int outputStage, bool skipStages)
@@ -234,8 +249,7 @@ public:
 
 
         const int n = h / 2;                 // 홀짝 쌍 개수 = 출력 행 수
-        const int si = std::clamp(m_outputStage, 0, 1);   // 0=저노출(확장), 1=장노출
-        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const int si = std::clamp(m_outputStage, 0, 1);   // 0=저노출, 1=장노출
         // 입력 ZMap 데이터(raw count float, 무효=NaN)를 그대로 사용
         auto zAt = [&](int row, int c) -> float { return zm.data[(size_t)row * w + c]; };
 
@@ -253,87 +267,27 @@ public:
         }
         lap("홀짝 분리");
 
-        // 각 단계를 원본 행수(h)로 복제해 ZMap 생성 (병합행 r → 원래 두 행 2r,2r+1)
-        // half(n행) → scale배 확장 (선형 보간). 다른 단계에 사용.
-        auto makeZ = [&](const std::vector<float>& half, int scale = 2) {
+        // 홀짝만 분리 — 행 확장/보간 없이 각 단계를 n행 그대로 ZMap으로 만든다.
+        auto makeZRaw = [&](const std::vector<float>& half) {
             auto z = std::make_shared<ZMap>();
-            const int outH = n * scale;
-            z->width=w; z->height=outH;
+            z->width=w; z->height=n;
             z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
             z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->data.assign((size_t)outH*w, NaN);
-            for (int r = 0; r < n; ++r) {
-                for (int s = 0; s < scale; ++s) {
-                    float* dst = &z->data[(size_t)(r*scale+s)*w];
-                    if (s == 0 || r+1 >= n) {
-                        std::copy(&half[(size_t)r*w], &half[(size_t)r*w+w], dst);
-                    } else {
-                        const float t = (float)s / scale;
-                        for (int c = 0; c < w; ++c) {
-                            float a = half[(size_t)r*w+c];
-                            float b = half[(size_t)(r+1)*w+c];
-                            if      (!std::isnan(a) && !std::isnan(b)) dst[c] = a*(1.f-t) + b*t;
-                            else if (!std::isnan(a))                    dst[c] = a;
-                            else                                        dst[c] = b;
-                        }
-                    }
-                }
-            }
-            return z;
-        };
-
-        // 저노출 전용: 상부/하부 각 1000행은 8배 선형 보간, 중간은 1배 그대로.
-        auto makeZLow = [&](const std::vector<float>& half) {
-            const int top = std::min(200, n / 2);
-            const int bot = std::min(200, n - top);
-            const int mid = n - top - bot;
-            const int outH = top*8 + mid + bot*8;
-            auto z = std::make_shared<ZMap>();
-            z->width=w; z->height=outH;
-            z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
-            z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->data.assign((size_t)outH*w, NaN);
-            int outRow = 0;
-            // 8배 보간 구간 (r0..r0+count-1)
-            auto expand8 = [&](int r0, int count) {
-                for (int r = r0; r < r0+count; ++r) {
-                    for (int s = 0; s < 8; ++s) {
-                        float* dst = &z->data[(size_t)outRow*w];
-                        if (s == 0 || r+1 >= n) {
-                            std::copy(&half[(size_t)r*w], &half[(size_t)r*w+w], dst);
-                        } else {
-                            const float t = (float)s / 8;
-                            for (int c = 0; c < w; ++c) {
-                                float a = half[(size_t)r*w+c];
-                                float b = half[(size_t)(r+1)*w+c];
-                                if      (!std::isnan(a) && !std::isnan(b)) dst[c] = a*(1.f-t)+b*t;
-                                else if (!std::isnan(a))                    dst[c] = a;
-                                else                                        dst[c] = b;
-                            }
-                        }
-                        ++outRow;
-                    }
-                }
-            };
-            expand8(0, top);
-            for (int r = top; r < top+mid; ++r) {   // 중간: 1배 그대로
-                std::copy(&half[(size_t)r*w], &half[(size_t)r*w+w], &z->data[(size_t)outRow*w]);
-                ++outRow;
-            }
-            expand8(top+mid, bot);
+            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            z->data = half;   // 이미 n×w
             return z;
         };
 
         ZMapPtr zLow, zHigh;
         if (m_skipStages) {
-            // 미리보기가 필요 없으면 실제 출력으로 쓸 단계 하나만 업샘플링(메모리 절약).
-            if (si == 0) { zLow = makeZLow(low); }
-            else         { zHigh = makeZ(high);  }
-            lap("makeZ(선택 1단계)");
+            // 미리보기가 필요 없으면 실제 출력으로 쓸 단계 하나만 만든다(메모리 절약).
+            if (si == 0) { zLow = makeZRaw(low); }
+            else         { zHigh = makeZRaw(high); }
         } else {
-            zLow = makeZLow(low); lap("makeZLow(8x)");
-            zHigh = makeZ(high);  lap("makeZ(2x)");
+            zLow = makeZRaw(low);
+            zHigh = makeZRaw(high);
         }
+        lap("홀짝 ZMap 생성");
 
         const ZMapPtr stageZmaps[] = { zLow, zHigh };
 
@@ -342,8 +296,8 @@ public:
         data->sourceId = input->sourceId;
         if (!m_skipStages) {
             data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
-            data->stages->push_back({ "1. 저노출(확장)", zLow });
-            data->stages->push_back({ "2. 장노출",       zHigh });
+            data->stages->push_back({ "1. 저노출", zLow });
+            data->stages->push_back({ "2. 장노출", zHigh });
         }
         VISION_LOG_INFO("ExposureSplit: {}x{} → 저노출 {}행 / 장노출 {}행",
                         w, h, zLow ? zLow->height : 0, zHigh ? zHigh->height : 0);
@@ -467,7 +421,7 @@ public:
             });
             // ②③④ 공유 코어: 오프셋 → 저노출우선 → 연속성 BFS → 셀별 source(0제거/1저/2고)
             std::vector<uint8_t> source;
-            float offset = exposureMergeDecision(low, high, w, bn, m_matchTol, m_tolX, m_tolY, m_gapK, forcedOffset, source);
+            float offset = exposureMergeDecision(low.data(), high.data(), w, bn, m_matchTol, m_tolX, m_tolY, m_gapK, forcedOffset, source);
             offsetOut = offset;
             // source → 최종 Z: 저=low-offset, 고=high, 제거=NaN. (제거된 fill 리플렉션 카운트)
             std::vector<float> filtered(BN);
@@ -575,6 +529,154 @@ public:
         if (!m_chunkMode)
             VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
                             offset, removed, m_matchTol, m_tolX, m_tolY);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── TripleExposureMerge (3노출 머지): 인터리브 저/중/장(행 r%3=0/1/2) → 공유 결정 코어를
+//    캐스케이드로 2번 적용. 우선순위 저>중>장, 각 단계 오프셋 보정 + 연속성 BFS 리플렉션 제거.
+//    (기능은 ExposureMerge2와 동일; 청크 모드는 미포함 — 전체 이미지 1회 연산)
+class TripleExposureMergeTool : public IAlgorithmTool {
+    float m_matchTol;   // 겹침 일치 허용(카운트) — 씨앗/오프셋 추정용
+    float m_reflTol;    // 리플 허용(카운트) — ② 예약(현재 미사용, 파라미터 parity)
+    float m_tolX, m_tolY;
+    int   m_gapK;
+    bool  m_halfRes;
+    bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
+    int   m_bands;      // 각 캐스케이드 단계의 행-밴드 수(병렬). 0=auto(코어수), 1=직렬(=기존 결과 검증용)
+public:
+    TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
+                            int gapK, bool halfRes, bool noPreview, int bands)
+        : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
+          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview), m_bands(bands) {}
+    std::string name() const override { return "ExposureMerge3"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->hasZMap())
+            return { ToolStatus::Fail, "3노출 머지: ZMap 입력이 필요합니다" };
+        const auto& zm = *input->zmap;
+        const int w = zm.width, h = zm.height;
+        if (h < 3) return { ToolStatus::Fail, "3노출 머지: 이미지 높이가 너무 작습니다(≥3행)" };
+        const int n = h / 3;                        // 3중 프로파일당 출력행 수
+        const size_t BN = (size_t)n * w;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
+
+        // 세부 계측(동작 불변): 각 구간 소요시간을 로그로.
+        using clk = std::chrono::steady_clock;
+        auto t0 = clk::now();
+        auto lap = [&](const char* tag) {
+            auto ms = std::chrono::duration<double,std::milli>(clk::now()-t0).count();
+            VISION_LOG_INFO("[ExposureMerge3] {}: {:.1f} ms", tag, ms);
+            t0 = clk::now();
+        };
+
+        // ① 저/중/장 분리 (행 r → 전역행 3r, 3r+1, 3r+2)
+        std::vector<float> lo(BN), mid(BN), hi(BN);
+        cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+            for (int r = rg.start; r < rg.end; ++r)
+                for (int c = 0; c < w; ++c) {
+                    size_t i = (size_t)r*w + c;
+                    lo[i] = at(3*r, c); mid[i] = at(3*r+1, c); hi[i] = at(3*r+2, c);
+                }
+        });
+        lap("① 저/중/장 분리");
+
+        // 전역 오프셋(median(A−B), stride-4 서브샘플) — 결정 코어 내부와 동일 산식.
+        //  밴드 병렬에서도 모든 밴드가 이 값을 forcedOffset으로 공유해야 전체-1회 연산과 비트 동일.
+        auto globalOffset = [&](const std::vector<float>& A, const std::vector<float>& B) {
+            std::vector<float> d; d.reserve(BN/4 + 1);
+            for (size_t i = 0; i < BN; i += 4)
+                if (!std::isnan(A[i]) && !std::isnan(B[i]) && std::fabs(A[i]-B[i]) <= m_matchTol) d.push_back(A[i]-B[i]);
+            float o = 0.f;
+            if (!d.empty()) { size_t m = d.size()/2; std::nth_element(d.begin(), d.begin()+m, d.end()); o = d[m]; }
+            return o;
+        };
+
+        // 캐스케이드 한 단계를 행-밴드로 병렬 실행. offset은 전역에서 강제(forced).
+        //  각 밴드는 위·아래 겹침(OV행)까지 확장해 결정하고 코어 행만 out에 기록 →
+        //  겹침이 리플렉션 최장 streak를 덮으면 전체-1회 결과와 동일(2노출 청크검증 근거).
+        const int OV = 160;   // 출력행 단위 겹침(2노출 검증 입력 320행 = 출력 160행)
+        const int nBands = (m_bands > 0) ? m_bands
+                                         : std::max(1, std::min(std::max(1, cv::getNumThreads()), n));
+        // 밴드 슬롯별 작업 버퍼 — 결정 호출마다 새 할당하던 것을 재사용(힙 경합 제거). 단계 간에도 재사용.
+        std::vector<ExposureMergeScratch> scratch(nBands);
+        std::vector<std::vector<uint8_t>>  srcBufs(nBands);
+        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) {
+            std::vector<float> out(BN);
+            const int bands = std::max(1, std::min(bandsReq, n));
+            cv::parallel_for_(cv::Range(0, bands), [&](const cv::Range& rg) {
+                for (int b = rg.start; b < rg.end; ++b) {
+                    const int p0 = (int)((long long)n * b / bands);
+                    const int p1 = (int)((long long)n * (b+1) / bands);
+                    if (p0 >= p1) continue;
+                    const int e0 = std::max(0, p0 - OV), e1 = std::min(n, p1 + OV);
+                    const int bn = e1 - e0;
+                    // 확장 밴드 [e0,e1)를 복사 없이 전체 배열의 포인터로 직접 처리. source/스크래치는 밴드 슬롯 재사용.
+                    std::vector<uint8_t>& src = srcBufs[b];
+                    exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
+                                          m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b]);
+                    // source → Z, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림). 승자 값은 전체 배열에서 직접.
+                    for (int r = p0; r < p1; ++r) {
+                        const size_t so = (size_t)(r - e0) * w, dst = (size_t)r * w;
+                        for (int c = 0; c < w; ++c) {
+                            uint8_t s = src[so + c];
+                            out[dst + c] = (s == 1) ? low[dst + c] - offset : (s == 2 ? high[dst + c] : NaN);
+                        }
+                    }
+                }
+            });
+            return out;
+        };
+
+        // ② 캐스케이드 1단계: 저(우선) + 중(fill) → mergedA (중 노출 좌표계)
+        const float ofs1 = globalOffset(lo, mid);
+        std::vector<float> mergedA = runStage(lo, mid, ofs1, nBands);
+        lap("② 1단계(저+중) 밴드병렬");
+
+        // ③ 캐스케이드 2단계: (저·중 결과, 우선) + 장(fill) → final (장 노출 좌표계)
+        const float ofs2 = globalOffset(mergedA, hi);
+        std::vector<float> finalZ = runStage(mergedA, hi, ofs2, nBands);
+        lap("③ 2단계(저·중+장) 밴드병렬");
+
+        // ④ 출력 ZMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
+        auto makeOut = [&](std::vector<float> src) {   // by-value: 최종은 move로 넘겨 복사 제거
+            auto z = std::make_shared<ZMap>();
+            z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
+            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            if (m_halfRes) {
+                z->height=n; z->yResMm=zm.yResMm*3.f; z->data = std::move(src);
+            } else {
+                z->height=3*n; z->yResMm=zm.yResMm;
+                z->data.resize((size_t)3*n*w);
+                cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                    for (int r=rg.start;r<rg.end;++r)
+                        for (int s=0;s<3;++s)
+                            std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(3*r+s)*w]);
+                });
+            }
+            return z;
+        };
+        auto zFinal = makeOut(std::move(finalZ));
+
+        auto data = std::make_shared<VisionData>();
+        data->zmap = zFinal;
+        data->sourceId = input->sourceId;
+        // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview 일 때만.
+        if (!m_noPreview) {
+            // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
+            auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
+                 zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
+            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
+            data->stages->push_back({ "2. 저·중 머지",          zMerged });
+            data->stages->push_back({ "3. 저노출",             zLo });
+            data->stages->push_back({ "4. 중간노출",           zMid });
+            data->stages->push_back({ "5. 장노출",             zHi });
+        }
+        lap("④ 출력 ZMap + 스테이지");
+        VISION_LOG_INFO("ExposureMerge3: {}x{} → {}행, offset1={:.1f} offset2={:.1f}cnt (matchTol={}, tolX={}, tolY={})",
+                        w, h, n, ofs1, ofs2, m_matchTol, m_tolX, m_tolY);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -702,7 +804,7 @@ public:
                 for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*r,c); high[i]=at(2*r+1,c); }
         });
         std::vector<uint8_t> source;
-        float offset = exposureMergeDecision(low, high, w, n, m_matchTol, m_tolX, m_tolY, m_gapK, NaN, source);
+        float offset = exposureMergeDecision(low.data(), high.data(), w, n, m_matchTol, m_tolX, m_tolY, m_gapK, NaN, source);
 
         // 이긴 노출 셀만 (x,y,z)mm 점 생성. 머지는 반해상도라 Y피치 ×2.
         const float yRes2 = zm.yResMm * 2.f;
@@ -1095,6 +1197,17 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("chunkMode",   false),   // 청크 모드 off → 전체 이미지 연산(기존 동작)
             p.value("chunkRows",   1000),    // 청크당 입력 프로파일(행) 수 (겹침 부담 희석 위해 크게)
             p.value("overlapRows", 320));    // 청크 겹침 행 수 (리플렉션 제거 연결성 확보; 검증상 ≥320이면 전체모드와 동일)
+    }
+    if (type == "ExposureMerge3") {
+        return std::make_shared<TripleExposureMergeTool>(
+            p.value("matchTol", 20.0f),
+            p.value("reflTol",  30.0f),
+            p.value("tolX",     10.0f),
+            p.value("tolY",     100.0f),
+            p.value("gapK",     2),
+            p.value("halfRes",  true),
+            noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
+            p.value("mergeBands", 0));   // 결정 밴드 병렬 수. 0=auto(코어수), 1=직렬(검증용)
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));

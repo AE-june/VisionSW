@@ -216,13 +216,9 @@ function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown
   const pickFolder = async () => {
     const dir = await window.electronAPI?.openFolder?.()
     if (dir) {
+      // 폴더 전체를 미리 로드하지 않는다(메모리 폭증 방지). 엔진은 실행 시 현재 index의
+      // 파일만 그때그때 로드하고, 인터랙티브 캐시는 상한(LRU)으로 최근 몇 장만 유지한다.
       onChange({ ...params, folder: dir, index: 0 })
-      window.electronAPI?.enginePreload?.(
-        dir,
-        params.xResMm as number ?? 1.0,
-        params.yResMm as number ?? 1.0,
-        params.zResMm as number ?? 0.001,
-      )
     }
   }
 
@@ -364,6 +360,26 @@ function ExposureMerge2Params({ params, onChange }: { params: Record<string, unk
   </>
 }
 
+// ExposureMerge3 (3노출 머지): 저/중/장 인터리브 → 캐스케이드로 2번 머지(저>중>장 우선). ExposureMerge2와 동일 규칙, 청크 모드 없음.
+function ExposureMerge3Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 저/중/장 3노출 인터리브 Z PNG(행 순서 저·중·장 반복)를 연결하세요. 우선순위 저&gt;중&gt;장, fill 리플렉션은 연속성으로 제거합니다.</div>
+    <div className="param-section">머지 / 연속성 필터</div>
+    <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
+      tooltip="두 노출 값이 모두 유효하고 |차이| ≤ 이 값이면 '겹침 일치'로 판정. 오프셋 추정과 연속성 씨앗에 사용(각 캐스케이드 단계). 단위: raw count" />
+    <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
+      tooltip="연속성 확장 시 X방향 이웃과의 Z 허용 차이. X 피치(~6µm)가 작으므로 작게. 단위: count/px" />
+    <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
+      tooltip="연속성 확장 시 Y방향 이웃과의 Z 허용 차이. Y 피치가 X의 ~15배라 크게. 단위: count/px" />
+    <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
+      tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
+    <CheckField label="반해상도 출력 (Y×3)" value={params.halfRes as boolean ?? true} onChange={v => set('halfRes', v)}
+      tooltip="머지는 3중 프로파일당 1행이라 켜면 n행·Y피치×3로 출력. 끄면 각 행을 3배 복제해 원본 높이 유지" />
+    <div className="param-empty" style={{ fontSize: 10 }}>출력은 항상 최종 머지(리플렉션 제거) 이미지. 중간 단계(저·중 머지 / 저·중·장 원본)는 결과창 드롭다운(디스플레이 전용)에서만 확인됩니다.</div>
+  </>
+}
+
 // ImageSaver: 입력(ZMap/이미지)을 저장. 폴더(필수)+파일명(선택,비우면 소스명)+포맷.
 function ImageSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -467,6 +483,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
@@ -493,6 +510,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}

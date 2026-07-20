@@ -14,10 +14,19 @@
 
 namespace vision {
 
+// 재사용 가능한 작업 버퍼 — 밴드/청크 병렬에서 밴드 슬롯마다 하나씩 두고 재사용하면
+//  결정 호출마다 큰 벡터를 새로 할당하는 힙 경합을 없앤다(nullptr면 함수가 로컬로 할당 = 기존 동작).
+struct ExposureMergeScratch {
+    std::vector<float> lowC, merged;
+    std::vector<uint8_t> mvalid, visited;
+    std::vector<int> q;
+};
+
 inline float exposureMergeDecision(
-    const std::vector<float>& low, const std::vector<float>& high,
+    const float* low, const float* high,
     int w, int bn, float matchTol, float tolX, float tolY, int gapK,
-    float forcedOffset, std::vector<uint8_t>& source)
+    float forcedOffset, std::vector<uint8_t>& source,
+    ExposureMergeScratch* scratch = nullptr)
 {
     const float NaN = std::numeric_limits<float>::quiet_NaN();
     const size_t BN = (size_t)bn * w;
@@ -35,9 +44,15 @@ inline float exposureMergeDecision(
         if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
     }
 
+    // 작업 버퍼(스크래치) — 제공되면 재사용, 아니면 로컬. 크기는 BN으로 맞춤(용량 유지 → 재할당 회피).
+    ExposureMergeScratch localScratch;
+    ExposureMergeScratch& s = scratch ? *scratch : localScratch;
+    s.lowC.resize(BN); s.merged.resize(BN); s.mvalid.resize(BN);
+    float*   lowC   = s.lowC.data();
+    float*   merged = s.merged.data();
+    uint8_t* mvalid = s.mvalid.data();
+
     // ③ 저노출우선 머지용 lowC/merged/유효마스크 (BFS 조회용)
-    std::vector<float> lowC(BN), merged(BN);
-    std::vector<uint8_t> mvalid(BN);
     cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
         for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) {
             float lc = std::isnan(low[i]) ? NaN : low[i]-offset;
@@ -48,10 +63,11 @@ inline float exposureMergeDecision(
     });
 
     // ④ 연속성 필터: 씨앗 = 저노출 유효 && 겹침 일치. 경계 씨앗만 큐에.
-    std::vector<uint8_t> visited(BN, 0);
+    s.visited.assign(BN, 0);
+    uint8_t* visited = s.visited.data();
     for (size_t i = 0; i < BN; ++i)
         if (!std::isnan(lowC[i]) && !std::isnan(high[i]) && std::fabs(lowC[i]-high[i]) <= matchTol) visited[i]=1;
-    std::vector<int> q; q.reserve(BN/2 + 1);
+    std::vector<int>& q = s.q; q.clear(); q.reserve(BN/2 + 1);
     for (int r = 0; r < bn; ++r) for (int c = 0; c < w; ++c) {
         size_t i=(size_t)r*w+c;
         if (!visited[i]) continue;

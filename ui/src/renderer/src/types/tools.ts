@@ -51,6 +51,13 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: '필터',
+    inputs: ['ZMap'], outputs: ['ZMap'],
+    defaultParams: {
+      matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
+    },
+  },
+  {
     type: 'LineCenter', label: 'Line Finder', category: '정렬',
     inputs: ['ZMap'], outputs: ['Point'],
     defaultParams: { rois: [], threshold: 1, xRoi: 0, yRoi: 0 },
