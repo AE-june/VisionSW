@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <fstream>
 #include <iomanip>
+#include <filesystem>
 
 namespace vision {
 
@@ -16,7 +17,9 @@ ToolResult CsvWriterTool::execute(VisionDataPtr input) {
         return { ToolStatus::Fail, "CsvWriter: 입력에 높이값(Heights)이 없습니다. HeightMeasure를 먼저 연결하세요." };
 
     // append 모드 — 실행할 때마다 한 행 추가
-    std::ofstream ofs(m_params.path, std::ios::app);
+    // m_params.path는 UTF-8 — narrow std::string 그대로 열면 ANSI 코드페이지로 해석돼
+    // 한글 등 비-ASCII 경로에서 open 자체가 실패한다. u8path로 감싸 정확히 연다.
+    std::ofstream ofs(std::filesystem::u8path(m_params.path), std::ios::app);
     if (!ofs.is_open())
         return { ToolStatus::Fail, "CsvWriter: 파일을 열 수 없습니다: " + m_params.path };
 

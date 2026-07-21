@@ -3,6 +3,7 @@ add_library(VisionTools STATIC
     src/EdgeDetector.cpp
     src/ThicknessMeasure.cpp
     src/PlaneFitTool.cpp
+    src/RefHeightTool.cpp
     src/HeightFromPlaneTool.cpp
     src/CsvWriterTool.cpp
     src/LineCenterTool.cpp

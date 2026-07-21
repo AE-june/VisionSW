@@ -4,6 +4,7 @@
 #include "EdgeDetector.h"
 #include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
+#include "RefHeightTool.h"
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
@@ -30,6 +31,10 @@
 #include <iomanip>
 
 // stb for PNG/JPG loading
+// STBI_WINDOWS_UTF8: stbi__fopen이 char* 경로를 시스템 ANSI 코드페이지가 아니라
+// UTF-8로 해석해 _wfopen으로 열도록 함. 없으면 비-ASCII(한글 등) 경로의 파일을
+// 전혀 못 읽는다(코드페이지에 없는 문자는 fopen 자체가 실패).
+#define STBI_WINDOWS_UTF8
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 // OpenCV for saving (16-bit PNG/TIFF + 일반 포맷)
@@ -98,9 +103,11 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
         if (g_preloadedFolders.count(folder)) return 0;
         g_preloadedFolders.insert(folder);
         std::error_code ec;
-        for (auto& e : fs::directory_iterator(folder, ec)) {
+        // folder는 UTF-8 문자열 — u8path로 넣어야 한글 등 비-ASCII 경로를 찾을 수 있고,
+        // u8string으로 꺼내야 나중에 stbi_load(UTF-8 가정)로 다시 넘길 때 왕복이 맞는다.
+        for (auto& e : fs::directory_iterator(fs::u8path(folder), ec)) {
             if (e.path().extension() == ".png") {
-                std::string fp = e.path().string();
+                std::string fp = e.path().u8string();
                 if (!g_zmapFileCache.count(fp))
                     toLoad.push_back(fp);
             }
@@ -709,11 +716,11 @@ static std::string buildSavePath(const std::string& folder, const std::string& f
                                  const std::string& format, const std::string& sourceId) {
     namespace fs = std::filesystem;
     std::string stem = !filename.empty() ? filename
-                     : (!sourceId.empty() ? fs::path(sourceId).stem().string() : std::string("output"));
+                     : (!sourceId.empty() ? fs::u8path(sourceId).stem().u8string() : std::string("output"));
     std::string ext = format;
     if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
     if (ext.empty()) ext = "png";
-    return (fs::path(folder) / (msStamp() + "_" + stem + "." + ext)).string();
+    return (fs::u8path(folder) / (msStamp() + "_" + stem + "." + ext)).u8string();
 }
 
 // ── ImageSaver: 입력(ZMap 또는 Image2D)을 파일로 저장 (OpenCV cv::imwrite) ──────
@@ -1218,8 +1225,8 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         if (folder.empty()) {
             std::string path = p.value("path", "");
             if (!path.empty()) {
-                std::filesystem::path pp(path);
-                folder = pp.parent_path().string(); filename = pp.stem().string();
+                std::filesystem::path pp = std::filesystem::u8path(path);
+                folder = pp.parent_path().u8string(); filename = pp.stem().u8string();
                 std::string e = pp.extension().string(); if (!e.empty() && e[0]=='.') e = e.substr(1);
                 if (!e.empty()) format = e;
             }
@@ -1257,8 +1264,8 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         if (folder.empty()) {
             std::string path = p.value("path", "");
             if (!path.empty()) {
-                std::filesystem::path pp(path);
-                folder = pp.parent_path().string(); filename = pp.stem().string();
+                std::filesystem::path pp = std::filesystem::u8path(path);
+                folder = pp.parent_path().u8string(); filename = pp.stem().u8string();
                 std::string e = pp.extension().string(); if (!e.empty() && e[0]=='.') e = e.substr(1);
                 if (!e.empty()) format = e;
             }
@@ -1329,6 +1336,32 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.maxCloudPoints    = p.value("maxCloudPoints",    200000);
 
         return std::make_shared<PlaneFitTool>(params);
+    }
+    if (type == "RefHeight") {
+        RefHeightParams params;
+
+        // rois 배열: 전부 풀링해서 평균 높이 계산에 쓰임 (PlaneFit의 refRois와 동일 파싱)
+        if (p.contains("rois") && p["rois"].is_array()) {
+            for (const auto& r : p["rois"]) {
+                RefHeightParams::ROI roi;
+                roi.xPct = r.value("xPct", 0.f);
+                roi.yPct = r.value("yPct", 0.f);
+                roi.wPct = r.value("wPct", 1.f);
+                roi.hPct = r.value("hPct", 1.f);
+                params.rois.push_back(roi);
+            }
+        }
+
+        std::string mode = p.value("mode", "sor");
+        params.mode = (mode == "percentileTrim")
+            ? RefHeightParams::OutlierMode::PercentileTrim
+            : RefHeightParams::OutlierMode::Sor;
+
+        params.sorSigma    = p.value("sorSigma",    2.0f);
+        params.lowTailPct  = p.value("lowTailPct",  5.0f);
+        params.highTailPct = p.value("highTailPct", 5.0f);
+
+        return std::make_shared<RefHeightTool>(params);
     }
     if (type == "HeightMeasure") {
         HeightFromPlaneParams params;

@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import ParamPanel from './ParamPanel'
 import { getViewState, patchViewState } from './viewStore'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
+import RefHeightEditor, { type RefHeightROI } from './RefHeightEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
 import NoiseFilterEditor from './NoiseFilterEditor'
@@ -29,6 +30,8 @@ interface NodeResult {
   planeA?: number; planeB?: number; planeC?: number
   rmse?: number; tiltDeg?: number; refPointCount?: number; inlierCount?: number
   cloud?: [number, number, number][]
+  // RefHeight
+  avgHeightMm?: number; sampleCount?: number; rejectedCount?: number
   // HeightFromPlane
   measures?: HeightMeasure[]; allPass?: boolean
   // LineCenter — 찾은 모든 라인
@@ -228,6 +231,18 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         </div>
       )}
 
+      {toolType === 'RefHeight' && result.avgHeightMm !== undefined && (
+        <div className="node-result-measures">
+          <div className="node-result-row">
+            <span className="node-result-label">평균 높이</span>
+            <span className="node-result-val">{result.avgHeightMm.toFixed(4)} mm</span>
+          </div>
+          <div className="node-result-row">
+            <span className="node-result-label">샘플 / 제거</span>
+            <span className="node-result-val">{result.sampleCount} / {result.rejectedCount}</span>
+          </div>
+        </div>
+      )}
 
       {toolType === 'LineCenter' && searchRois.length > 0 && (() => {
         const found = result.lines ?? []
@@ -376,6 +391,23 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               ransacThreshold={(params.ransacThreshold as number) ?? 0.05}
               ransacIterations={(params.ransacIterations as number) ?? 200}
               maxCloudPoints={(params.maxCloudPoints as number) ?? 200000}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
+              viewKey={nodeId}
+              onChange={(next) => onParamChange(nodeId, { ...params, ...next })}
+            />
+          ) : toolType === 'RefHeight' ? (
+            <RefHeightEditor
+              rois={(params.rois as RefHeightROI[]) ?? []}
+              mode={(params.mode as string) ?? 'sor'}
+              sorSigma={(params.sorSigma as number) ?? 2.0}
+              lowTailPct={(params.lowTailPct as number) ?? 5}
+              highTailPct={(params.highTailPct as number) ?? 5}
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
               zMax={upstreamZMax ?? result?.zMax}

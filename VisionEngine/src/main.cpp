@@ -5,6 +5,7 @@
 #include "Logger.h"
 #include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
+#include "RefHeightTool.h"
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
@@ -208,7 +209,10 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 if (o->image   && !merged->image)   merged->image   = o->image;
                 if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
                 if (o->plane   && !merged->plane)   merged->plane   = o->plane;
-                if (o->heights && !merged->heights) merged->heights = o->heights;
+                if (o->heights) {   // 여러 입력(예: RefHeight 평균값 + HeightMeasure 측정값들)을 한 행으로 이어붙임
+                    if (!merged->heights) merged->heights = std::make_shared<std::vector<double>>();
+                    merged->heights->insert(merged->heights->end(), o->heights->begin(), o->heights->end());
+                }
                 if (o->points) {   // 여러 입력의 기준점들을 모두 이어붙임
                     if (!merged->points) merged->points = std::make_shared<std::vector<RefPoint>>();
                     merged->points->insert(merged->points->end(), o->points->begin(), o->points->end());
@@ -262,6 +266,15 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 for (const auto& p : r.cloudPoints)
                     pts.push_back({ p[0], p[1], p[2] });
                 jr["cloud"] = pts;
+            }
+        }
+        if (ns.type == "RefHeight") {
+            auto* m = dynamic_cast<RefHeightTool*>(tool.get());
+            if (m && m->lastResult().valid) {
+                const auto& r = m->lastResult();
+                jr["avgHeightMm"]   = r.avgHeightMm;
+                jr["sampleCount"]   = r.sampleCount;
+                jr["rejectedCount"] = r.rejectedCount;
             }
         }
         if ((ns.type == "ZMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
