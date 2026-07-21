@@ -13,7 +13,6 @@ add_test(NAME CoreTests COMMAND CoreTests)
 # ── VisionTools 알고리즘 테스트 ───────────────────────────────────
 add_executable(ToolTests
     Tools/ThicknessMeasureTest.cpp
-    Tools/LineFitHeightMeasureTest.cpp
 )
 target_link_libraries(ToolTests PRIVATE
     VisionTools

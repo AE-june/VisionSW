@@ -174,7 +174,7 @@ int vsdk_exposure_merge_cloud(const float* xyz, int width, int numProfiles,
     }
 
     std::vector<uint8_t> source;
-    float offset = exposureMergeDecision(low, high, width, n, matchTol, tolX, tolY, gapK, NaN, source);
+    float offset = exposureMergeDecision(low.data(), high.data(), width, n, matchTol, tolX, tolY, gapK, NaN, source);
 
     // source → 이긴 노출의 점(x,y,z) (저는 z−offset). 제거/무효는 NaN 점.
     float* mc = (float*)std::malloc(BN * 3 * sizeof(float));
