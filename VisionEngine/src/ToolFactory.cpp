@@ -326,10 +326,12 @@ public:
         const float NaN = std::numeric_limits<float>::quiet_NaN();
 
         // 입력 행마다 배수 결정 (밴드에 속하면 그 밴드 배수, 겹치면 뒤 밴드 우선, 아니면 1)
+        //   밴드 yPct는 좌표 원점(Align) 기준 상대값 → 원점 행만큼 이동. 원점 0이면 기존과 동일.
+        const int offRow = (int)std::lround(zm.originRow);
         std::vector<int> rowScale((size_t)h, 1);
         for (const auto& b : m_bands) {
-            int y0 = std::clamp((int)(b.yPct * h),            0, h);
-            int y1 = std::clamp((int)((b.yPct + b.hPct) * h), 0, h);
+            int y0 = std::clamp((int)(b.yPct * h)            + offRow, 0, h);
+            int y1 = std::clamp((int)((b.yPct + b.hPct) * h) + offRow, 0, h);
             int s  = std::max(1, b.scale);
             for (int r = y0; r < y1; ++r) rowScale[r] = s;
         }
@@ -537,18 +539,20 @@ public:
 //    캐스케이드로 2번 적용. 우선순위 저>중>장, 각 단계 오프셋 보정 + 연속성 BFS 리플렉션 제거.
 //    (기능은 ExposureMerge2와 동일; 청크 모드는 미포함 — 전체 이미지 1회 연산)
 class TripleExposureMergeTool : public IAlgorithmTool {
-    float m_matchTol;   // 겹침 일치 허용(카운트) — 씨앗/오프셋 추정용
-    float m_reflTol;    // 리플 허용(카운트) — ② 예약(현재 미사용, 파라미터 parity)
+    float m_matchTol;   // 겹침 일치 허용(카운트) — 오프셋 추정용
+    float m_reflTol;    // 리플렉션 씨앗 허용(카운트) — 클수록 고노출 fill 더 유지 → 덜 제거
     float m_tolX, m_tolY;
     int   m_gapK;
     bool  m_halfRes;
+    bool  m_removeReflection;  // 리플렉션 제거(연속성 BFS) on/off. off면 유효 노출 그대로 유지
     bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
     int   m_bands;      // 각 캐스케이드 단계의 행-밴드 수(병렬). 0=auto(코어수), 1=직렬(=기존 결과 검증용)
 public:
     TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
-                            int gapK, bool halfRes, bool noPreview, int bands)
+                            int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
-          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview), m_bands(bands) {}
+          m_gapK(gapK), m_halfRes(halfRes), m_removeReflection(removeReflection),
+          m_noPreview(noPreview), m_bands(bands) {}
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -615,7 +619,8 @@ public:
                     // 확장 밴드 [e0,e1)를 복사 없이 전체 배열의 포인터로 직접 처리. source/스크래치는 밴드 슬롯 재사용.
                     std::vector<uint8_t>& src = srcBufs[b];
                     exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
-                                          m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b]);
+                                          m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b],
+                                          m_removeReflection, m_reflTol);
                     // source → Z, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림). 승자 값은 전체 배열에서 직접.
                     for (int r = p0; r < p1; ++r) {
                         const size_t so = (size_t)(r - e0) * w, dst = (size_t)r * w;
@@ -1206,6 +1211,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("tolY",     100.0f),
             p.value("gapK",     2),
             p.value("halfRes",  true),
+            p.value("removeReflection", true),   // 리플렉션 제거 on/off
             noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
             p.value("mergeBands", 0));   // 결정 밴드 병렬 수. 0=auto(코어수), 1=직렬(검증용)
     }

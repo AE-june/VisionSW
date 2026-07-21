@@ -246,6 +246,16 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         jr["msg"]       = result.message;
         jr["elapsedMs"] = elapsedMs;
 
+        // 모든 노드: 출력(표시) ZMap의 치수+좌표원점을 함께 보고 → 하류 ROI 에디터가
+        //  '전파된 원점' 기준으로 ROI를 상대저장하게 한다(중간에 머지/필터가 껴도 원점 유지).
+        //  (예전엔 Align 결과에만 offCol/offRow가 있어, 중간 노드가 끼면 UI 원점이 0이 됐음)
+        if (dispZ) {
+            jr["imgW"]      = dispZ->width;
+            jr["imgH"]      = dispZ->height;
+            jr["originCol"] = dispZ->originCol;   // 전파된 좌표원점(모든 노드) — Align의 offCol/offRow와 별개
+            jr["originRow"] = dispZ->originRow;
+        }
+
         // Attach measurements for known tool types
         if (ns.type == "PlaneFit") {
             auto* m = dynamic_cast<PlaneFitTool*>(tool.get());

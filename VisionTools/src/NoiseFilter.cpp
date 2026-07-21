@@ -182,11 +182,14 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
         // ROI별로 (경계 halo 포함) 잘라서 필터 후, halo 제외한 ROI 코어만 되쓰기.
         // halo = max(kx,ky) → ROI 내부 결과는 전체 필터와 동일 (커널 도달범위 확보).
         const int halo = std::max(kx, ky);
+        // 좌표 원점(Align) 보정: ROI 좌표는 원점 기준 상대값 → 원점만큼 이동. 원점 0이면 기존과 동일.
+        const int offCol = static_cast<int>(std::lround(src.originCol));
+        const int offRow = static_cast<int>(std::lround(src.originRow));
         for (const auto& roi : m_params.rois) {
-            int rx0 = std::clamp(static_cast<int>(roi.xPct * W), 0, W - 1);
-            int ry0 = std::clamp(static_cast<int>(roi.yPct * H), 0, H - 1);
-            int rx1 = std::clamp(static_cast<int>((roi.xPct + roi.wPct) * W), 0, W);
-            int ry1 = std::clamp(static_cast<int>((roi.yPct + roi.hPct) * H), 0, H);
+            int rx0 = std::clamp(static_cast<int>(roi.xPct * W)               + offCol, 0, W - 1);
+            int ry0 = std::clamp(static_cast<int>(roi.yPct * H)               + offRow, 0, H - 1);
+            int rx1 = std::clamp(static_cast<int>((roi.xPct + roi.wPct) * W)  + offCol, 0, W);
+            int ry1 = std::clamp(static_cast<int>((roi.yPct + roi.hPct) * H)  + offRow, 0, H);
             if (rx1 <= rx0 || ry1 <= ry0) continue;
 
             int ex0 = std::max(0, rx0 - halo), ey0 = std::max(0, ry0 - halo);

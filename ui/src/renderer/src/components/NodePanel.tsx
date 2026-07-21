@@ -280,11 +280,11 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         <div className="node-result-measures">
           <div className="node-result-row">
             <span className="node-result-label">원점 (px)</span>
-            <span className="node-result-val">({result.offCol.toFixed(1)}, {result.offRow!.toFixed(1)})</span>
+            <span className="node-result-val">({result.offCol.toFixed(1)}, {result.offRow?.toFixed(1) ?? '—'})</span>
           </div>
           <div className="node-result-row">
             <span className="node-result-label">이동량 (mm)</span>
-            <span className="node-result-val">({result.offXMm!.toFixed(3)}, {result.offYMm!.toFixed(3)})</span>
+            <span className="node-result-val">({result.offXMm?.toFixed(3) ?? '—'}, {result.offYMm?.toFixed(3) ?? '—'})</span>
           </div>
         </div>
       )}

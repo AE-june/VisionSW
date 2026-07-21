@@ -26,7 +26,8 @@ inline float exposureMergeDecision(
     const float* low, const float* high,
     int w, int bn, float matchTol, float tolX, float tolY, int gapK,
     float forcedOffset, std::vector<uint8_t>& source,
-    ExposureMergeScratch* scratch = nullptr)
+    ExposureMergeScratch* scratch = nullptr,
+    bool removeReflection = true, float seedTol = -1.f)
 {
     const float NaN = std::numeric_limits<float>::quiet_NaN();
     const size_t BN = (size_t)bn * w;
@@ -62,11 +63,22 @@ inline float exposureMergeDecision(
         }
     });
 
-    // ④ 연속성 필터: 씨앗 = 저노출 유효 && 겹침 일치. 경계 씨앗만 큐에.
+    // 리플렉션 제거 OFF: 연속성 검증 없이 유효한 노출을 그대로 채택(저 우선). BFS 생략(빠름).
+    //  → 글라스처럼 저노출이 빠져 중·장만 남는 곳도 안 지우고 살림.
+    if (!removeReflection) {
+        source.assign(BN, 0);
+        for (size_t i = 0; i < BN; ++i)
+            source[i] = !std::isnan(lowC[i]) ? 1 : (!std::isnan(high[i]) ? 2 : 0);
+        return offset;
+    }
+
+    // ④ 연속성 필터: 씨앗 = 저노출 유효 && 겹침 일치(허용=seedTol, 미지정 시 matchTol). 경계 씨앗만 큐에.
+    //  seedTol이 클수록 신뢰 씨앗↑ → 고노출 fill 더 유지 → 리플렉션 제거 약해짐(=리플 허용↑).
+    const float st = (seedTol >= 0.f) ? seedTol : matchTol;
     s.visited.assign(BN, 0);
     uint8_t* visited = s.visited.data();
     for (size_t i = 0; i < BN; ++i)
-        if (!std::isnan(lowC[i]) && !std::isnan(high[i]) && std::fabs(lowC[i]-high[i]) <= matchTol) visited[i]=1;
+        if (!std::isnan(lowC[i]) && !std::isnan(high[i]) && std::fabs(lowC[i]-high[i]) <= st) visited[i]=1;
     std::vector<int>& q = s.q; q.clear(); q.reserve(BN/2 + 1);
     for (int r = 0; r < bn; ++r) for (int c = 0; c < w; ++c) {
         size_t i=(size_t)r*w+c;
