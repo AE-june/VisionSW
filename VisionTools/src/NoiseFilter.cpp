@@ -49,6 +49,10 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
 
     // ── 코어 필터: float Mat(NaN=무효) → 같은 크기 필터 결과 Mat ────────────
     //   전체/부분 영역 공용. 영역 dims는 인자 Mat에서 읽는다.
+    // 경계 처리: 모든 창 연산에 BORDER_CONSTANT(0) 사용.
+    //  NaN 인지 정규화(num/den)에서 이미지 밖은 값 0·가중치 0 → 자동 제외되므로,
+    //  최상/최하단 행도 '실제 이웃'만으로 필터링됨. (BORDER_REPLICATE면 가장자리 행을
+    //  복제해 이웃 통계가 자기 편향 → SOR가 가장자리 이상치를 못 걸러내는 문제가 있었음)
     auto filterRegion = [&](const cv::Mat& data) -> cv::Mat {
         const int w = data.cols, h = data.rows;
         const size_t n = static_cast<size_t>(w) * h;
@@ -72,22 +76,22 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
 
         if (type == Type::Mean) {
             cv::Mat num, den;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
             normalize(num, den);
         }
         else if (type == Type::Gaussian) {
             cv::Mat num, den;
-            cv::GaussianBlur(filled, num, cv::Size(kx, ky), 0, 0, cv::BORDER_REPLICATE);
-            cv::GaussianBlur(maskF,  den, cv::Size(kx, ky), 0, 0, cv::BORDER_REPLICATE);
+            cv::GaussianBlur(filled, num, cv::Size(kx, ky), 0, 0, cv::BORDER_CONSTANT);
+            cv::GaussianBlur(maskF,  den, cv::Size(kx, ky), 0, 0, cv::BORDER_CONSTANT);
             normalize(num, den);
         }
         else if (type == Type::Median) {
             // OpenCV medianBlur: CV_32F는 정사각 커널 3/5만 지원
             const int mk = (std::max(kx, ky) <= 3) ? 3 : 5;
             cv::Mat num, den;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
             const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
             cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
             for (size_t i = 0; i < n; ++i)
@@ -101,8 +105,8 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
             // bilateral은 정사각 윈도우만 지원 → max(kx,ky) 사용
             const int kb = std::max(kx, ky);
             cv::Mat num, den;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
             const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
             cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
             for (size_t i = 0; i < n; ++i)
@@ -112,16 +116,16 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
                 : static_cast<double>(m_params.sigmaRangeMm);
             double sigmaSpace = std::max(1.0, kb / 3.0);
             cv::Mat bil;
-            cv::bilateralFilter(base, bil, kb, sigmaRangeCount, sigmaSpace, cv::BORDER_REPLICATE);
+            cv::bilateralFilter(base, bil, kb, sigmaRangeCount, sigmaSpace, cv::BORDER_CONSTANT);
             const float* bilp = bil.ptr<float>();
             for (size_t i = 0; i < n; ++i) rp[i] = vp[i] ? bilp[i] : NaN;
         }
         else {  // SOR — 이웃 통계(중심 픽셀 제외)로 이상치 판정 → NaN
             cv::Mat num, den, sq, numSq;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
             cv::multiply(filled, filled, sq);
-            cv::blur(sq, numSq, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_REPLICATE);
+            cv::blur(sq, numSq, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
             const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
             const float* nsp = numSq.ptr<float>();
             const float k2 = static_cast<float>(kx * ky);
