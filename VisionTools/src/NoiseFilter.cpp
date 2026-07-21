@@ -74,6 +74,50 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
                 rp[i] = (vp[i] && dnp[i] > EPS) ? np[i] / dnp[i] : NaN;
         };
 
+        // 무효(NaN) 픽셀을 '가장 가까운 유효 데이터'로 채워 base 생성 — median/bilateral 전용.
+        //  이 필터들은 NaN 마스킹이 안 돼 채운 값이 그대로 창에 들어간다. 지역평균/0으로 채우면
+        //  데이터 경계 밖 여백값이 경계 행을 오염시키지만, 최근접 유효값으로 채우면 데이터가
+        //  경계 너머로 자연 확장돼 경계(상/하단) 행도 내부와 동일하게 필터링된다(=데이터 경계 기준).
+        auto nearestFillBase = [&]() -> cv::Mat {
+            cv::Mat inv; cv::bitwise_not(valid, inv);   // 무효=비영(distanceTransform 측정대상), 유효=영(타깃)
+            cv::Mat dist, labels;
+            cv::distanceTransform(inv, dist, labels, cv::DIST_L2, 3, cv::DIST_LABEL_PIXEL);
+            double maxL = 0; cv::minMaxLoc(labels, nullptr, &maxL);
+            std::vector<float> lut((size_t)maxL + 1, 0.f);
+            const int* lp = labels.ptr<int>();
+            for (size_t i = 0; i < n; ++i) if (vp[i]) lut[(size_t)lp[i]] = dp[i];   // 유효 픽셀 → 자기 라벨에 값
+            cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
+            for (size_t i = 0; i < n; ++i) bp[i] = vp[i] ? dp[i] : lut[(size_t)lp[i]];  // 무효 → 최근접 유효값
+            return base;
+        };
+
+        // median/bilateral 공통: 최근접 채움 base를 데이터 행밴드[상단..하단]로 자르고
+        //  상/하단을 REFLECT(미러) 패딩 후 필터 → 경계 행이 '미러된 실제 이웃'으로 필터링돼
+        //  상/하단 필터 효과가 내부와 같아진다(복제 채움의 자기편향으로 경계가 덜 걸리던 문제 해결).
+        //  결과를 rp에 직접 기록(유효 픽셀만, 나머지 NaN).
+        auto bandReflectFilter = [&](bool isMedian, int mk, int kb, double srC, double ss) {
+            cv::Mat base = nearestFillBase();
+            cv::Mat rowSum; cv::reduce(maskF, rowSum, 1, cv::REDUCE_SUM, CV_32F);  // 행별 유효수
+            const float* rs = rowSum.ptr<float>();
+            int r0 = 0;      while (r0 < h  && rs[r0] < 0.5f) ++r0;   // 첫 유효행
+            int r1 = h - 1;  while (r1 >= 0 && rs[r1] < 0.5f) --r1;   // 끝 유효행
+            for (size_t i = 0; i < n; ++i) rp[i] = NaN;
+            if (r1 < r0) return;                                      // 데이터 없음
+            const int bh = r1 - r0 + 1;
+            const int padY = std::min(ky, bh);                       // REFLECT 패딩은 밴드높이 이하
+            cv::Mat band = base.rowRange(r0, r1 + 1);
+            cv::Mat padded; cv::copyMakeBorder(band, padded, padY, padY, 0, 0, cv::BORDER_REFLECT);
+            cv::Mat filt;
+            if (isMedian) cv::medianBlur(padded, filt, mk);
+            else          cv::bilateralFilter(padded, filt, kb, srC, ss, cv::BORDER_REFLECT);
+            cv::Mat core = filt.rowRange(padY, padY + bh);           // 패드 제거 → 밴드 코어
+            const float* cp = core.ptr<float>();
+            for (int r = r0; r <= r1; ++r) {
+                const float* crow = cp + (size_t)(r - r0) * w;
+                for (int c = 0; c < w; ++c) { size_t i = (size_t)r * w + c; if (vp[i]) rp[i] = crow[c]; }
+            }
+        };
+
         if (type == Type::Mean) {
             cv::Mat num, den;
             cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
@@ -89,36 +133,16 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
         else if (type == Type::Median) {
             // OpenCV medianBlur: CV_32F는 정사각 커널 3/5만 지원
             const int mk = (std::max(kx, ky) <= 3) ? 3 : 5;
-            cv::Mat num, den;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
-            const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
-            cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
-            for (size_t i = 0; i < n; ++i)
-                bp[i] = vp[i] ? dp[i] : (dnp[i] > EPS ? np[i] / dnp[i] : 0.f);
-            cv::Mat m; cv::medianBlur(base, m, mk);
-            const float* mp = m.ptr<float>();
-            for (size_t i = 0; i < n; ++i) rp[i] = vp[i] ? mp[i] : NaN;
+            bandReflectFilter(true, mk, 0, 0.0, 0.0);   // 데이터밴드 REFLECT 패딩 → 상/하단도 강하게
         }
         else if (type == Type::Bilateral) {
-            // NaN → 지역평균으로 채운 뒤 bilateral, 이후 원래 NaN 복원
             // bilateral은 정사각 윈도우만 지원 → max(kx,ky) 사용
             const int kb = std::max(kx, ky);
-            cv::Mat num, den;
-            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
-            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
-            const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
-            cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
-            for (size_t i = 0; i < n; ++i)
-                bp[i] = vp[i] ? dp[i] : (dnp[i] > EPS ? np[i] / dnp[i] : 0.f);
             double sigmaRangeCount = (src.zResMm > 0)
                 ? static_cast<double>(m_params.sigmaRangeMm) / src.zResMm
                 : static_cast<double>(m_params.sigmaRangeMm);
             double sigmaSpace = std::max(1.0, kb / 3.0);
-            cv::Mat bil;
-            cv::bilateralFilter(base, bil, kb, sigmaRangeCount, sigmaSpace, cv::BORDER_CONSTANT);
-            const float* bilp = bil.ptr<float>();
-            for (size_t i = 0; i < n; ++i) rp[i] = vp[i] ? bilp[i] : NaN;
+            bandReflectFilter(false, 0, kb, sigmaRangeCount, sigmaSpace);   // 데이터밴드 REFLECT 패딩
         }
         else {  // SOR — 이웃 통계(중심 픽셀 제외)로 이상치 판정 → NaN
             cv::Mat num, den, sq, numSq;
