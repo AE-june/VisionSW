@@ -90,6 +90,18 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    type: 'RefHeight', label: 'Ref Height', category: '측정',
+    inputs: ['ZMap'], outputs: ['Plane', 'Heights'],
+    outputLabels: ['Plane', 'Avg'],
+    defaultParams: {
+      rois: [],
+      mode: 'sor',
+      sorSigma: 2.0,
+      lowTailPct: 5,
+      highTailPct: 5,
+    },
+  },
+  {
     type: 'HeightMeasure', label: 'Height Measure', category: '측정',
     inputs: ['ZMap', 'Plane'], outputs: ['Heights'],
     defaultParams: {
