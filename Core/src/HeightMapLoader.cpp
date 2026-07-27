@@ -1,23 +1,23 @@
-#include "IZMapLoader.h"
+#include "IHeightMapLoader.h"
 #include "Logger.h"
 #include <fstream>
 #include <stdexcept>
 
 namespace vision {
 
-ZMapPtr RawBinaryZMapLoader::load(const std::string& path,
+HeightMapPtr RawBinaryHeightMapLoader::load(const std::string& path,
                                    float xResMm, float yResMm, float zResMm) {
     std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("ZMap file not found: " + path);
+    if (!f) throw std::runtime_error("HeightMap file not found: " + path);
 
     int32_t w = 0, h = 0;
     f.read(reinterpret_cast<char*>(&w), sizeof(w));
     f.read(reinterpret_cast<char*>(&h), sizeof(h));
 
     if (w <= 0 || h <= 0 || w > 65536 || h > 65536)
-        throw std::runtime_error("Invalid ZMap dimensions in: " + path);
+        throw std::runtime_error("Invalid HeightMap dimensions in: " + path);
 
-    auto map = std::make_shared<ZMap>();
+    auto map = std::make_shared<HeightMap>();
     map->width   = w;
     map->height  = h;
     map->xResMm  = xResMm;
@@ -28,13 +28,13 @@ ZMapPtr RawBinaryZMapLoader::load(const std::string& path,
     f.read(reinterpret_cast<char*>(map->data.data()),
            static_cast<std::streamsize>(map->data.size() * sizeof(float)));
 
-    if (!f) throw std::runtime_error("ZMap read failed (truncated?): " + path);
+    if (!f) throw std::runtime_error("HeightMap read failed (truncated?): " + path);
 
-    VISION_LOG_INFO("ZMapLoader: loaded {}x{} from {}", w, h, path);
+    VISION_LOG_INFO("HeightMapLoader: loaded {}x{} from {}", w, h, path);
     return map;
 }
 
-bool saveZMapRaw(const ZMap& map, const std::string& path) {
+bool saveHeightMapRaw(const HeightMap& map, const std::string& path) {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
 

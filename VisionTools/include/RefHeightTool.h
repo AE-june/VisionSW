@@ -1,6 +1,6 @@
 #pragma once
 #include "IAlgorithmTool.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <vector>
 #include <string>
 
@@ -14,7 +14,7 @@ namespace vision {
 //    (signedDistance = z - avgHeightMm, PlaneFit의 기울어진 평면 대신 수평 기준높이).
 // ─────────────────────────────────────────────────────────────────────
 struct RefHeightParams {
-    // ROI in percentage of ZMap dimensions (0.0 ~ 1.0)
+    // ROI in percentage of HeightMap dimensions (0.0 ~ 1.0)
     struct ROI {
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
         bool valid() const { return wPct > 0.f && hPct > 0.f; }
@@ -58,7 +58,7 @@ private:
     RefHeightParams m_params;
     RefHeightResult m_result;
 
-    std::vector<float> extractZ(const ZMap& map, const RefHeightParams::ROI& roi,
+    std::vector<float> extractZ(const HeightMap& map, const RefHeightParams::ROI& roi,
                                  int offCol, int offRow) const;
 };
 

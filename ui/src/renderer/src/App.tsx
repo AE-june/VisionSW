@@ -66,7 +66,7 @@ export default function App() {
   // ── 폴더검사(연속검사) 상태 ──
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchRunning, setBatchRunning] = useState(false)
-  const [batchLoaders, setBatchLoaders] = useState<BatchLoader[]>([])   // folder 모드 ZMapLoader 목록
+  const [batchLoaders, setBatchLoaders] = useState<BatchLoader[]>([])   // folder 모드 HeightMapLoader 목록
   const [batchSortKey, setBatchSortKey] = useState<BatchSortKey>('name') // 폴더 간 매칭 정렬 기준
   const [batchIndex, setBatchIndex] = useState(0)
   const [batchCycle, setBatchCycle] = useState(1)
@@ -359,10 +359,10 @@ export default function App() {
   }, [])
 
   // ── 폴더검사 ──
-  // folder 모드인 ZMapLoader 노드 수집 (id, 라벨, 폴더). 여러 로더가 각자 폴더를 순회.
+  // folder 모드인 HeightMapLoader 노드 수집 (id, 라벨, 폴더). 여러 로더가 각자 폴더를 순회.
   const folderLoaderNodes = useCallback(() => nodesRef.current.filter(n => {
     const d = n.data as { toolType: string; params?: Record<string, unknown> }
-    return d.toolType === 'ZMapLoader' && d.params?.mode === 'folder' && !!d.params?.folder
+    return d.toolType === 'HeightMapLoader' && d.params?.mode === 'folder' && !!d.params?.folder
   }), [])
 
   // 폴더별 이미지 나열 후 정렬키(name/time) 적용
@@ -398,7 +398,7 @@ export default function App() {
     const allEdges = edgesRef.current
     const loaderNodes = folderLoaderNodes()
     if (loaderNodes.length === 0) {
-      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 폴더 모드 ZMapLoader가 없습니다' }])
+      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 폴더 모드 HeightMapLoader가 없습니다' }])
       return
     }
 
@@ -627,14 +627,14 @@ export default function App() {
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
 
-  // PlaneFit / HeightMeasure / LineCenter 노드용: ZMap 입력(input-0) 소스의 결과를 ROI 에디터 배경으로
+  // PlaneFit / HeightMeasure / LineCenter 노드용: HeightMap 입력(input-0) 소스의 결과를 ROI 에디터 배경으로
   const upstreamRes = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
     if (tt !== 'PlaneFit' && tt !== 'RefHeight' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter' && tt !== 'RowStretch') return undefined
     const tEdges = edges.filter(e => e.target === selectedNode.id)
     if (tEdges.length === 0) return undefined
-    // ZMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지
+    // HeightMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지
     const zEdge = tEdges.find(e => (e.targetHandle ?? 'input-0') === 'input-0') ?? tEdges[0]
     return nodeResults[zEdge.source] as
       { preview?: string; zMin?: number; zMax?: number; xResMm?: number; yResMm?: number; offCol?: number; offRow?: number; originCol?: number; originRow?: number } | undefined

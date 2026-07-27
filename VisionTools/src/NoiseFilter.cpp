@@ -10,27 +10,27 @@
 
 namespace vision {
 
-static std::vector<float> makeGaussianKernel(int size);   // 전방 선언 (filterZMap보다 아래 정의)
+static std::vector<float> makeGaussianKernel(int size);   // 전방 선언 (filterHeightMap보다 아래 정의)
 
 NoiseFilter::NoiseFilter(Params params) : m_params(params) {}
 
 ToolResult NoiseFilter::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "null input" };
-    if (input->hasZMap()) return filterZMap(input);   // ZMap 우선
+    if (input->hasHeightMap()) return filterHeightMap(input);   // HeightMap 우선
     if (input->hasImage()) return filter2D(input);
     if (input->hasCloud()) return filter3D(input);
     return { ToolStatus::Skip, "no data to filter" };
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//  filterZMap — ZMap(높이맵) 필터. 전부 NaN(무효 픽셀) 인지: 유효 이웃만 사용.
+//  filterHeightMap — HeightMap(높이맵) 필터. 전부 NaN(무효 픽셀) 인지: 유효 이웃만 사용.
 //   Mean/Median/Gaussian: 평활화 (창 내 유효값으로 대체)
 //   SOR: 창 내 유효 이웃의 평균/표준편차로 이상치 판정 → 제거(NaN)
 // ─────────────────────────────────────────────────────────────────────
-ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
-    const ZMap& src = *input->zmap;
+ToolResult NoiseFilter::filterHeightMap(VisionDataPtr input) {
+    const HeightMap& src = *input->heightmap;
     const int W = src.width, H = src.height;
-    if (W <= 0 || H <= 0) return { ToolStatus::Fail, "NoiseFilter: 빈 ZMap" };
+    if (W <= 0 || H <= 0) return { ToolStatus::Fail, "NoiseFilter: 빈 HeightMap" };
 
     const int kx = std::max(3, m_params.kernelSizeX | 1);   // 홀수 보장
     const int ky = std::max(3, m_params.kernelSizeY | 1);
@@ -41,11 +41,11 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
 
     const char* modeName = type == Type::Mean ? "mean" : type == Type::Median ? "median"
                          : type == Type::Gaussian ? "gaussian" : type == Type::Bilateral ? "bilateral" : "sor";
-    VISION_LOG_INFO("NoiseFilter::filterZMap type={} kx={} ky={} stdRatio={:.2f}",
+    VISION_LOG_INFO("NoiseFilter::filterHeightMap type={} kx={} ky={} stdRatio={:.2f}",
                     modeName, kx, ky, m_params.stdRatio);
 
     auto out  = std::make_shared<VisionData>(*input);
-    auto zmap = std::make_shared<ZMap>(src);   // 메타데이터+데이터 복사 (ROI 밖은 원본 유지)
+    auto heightmap = std::make_shared<HeightMap>(src);   // 메타데이터+데이터 복사 (ROI 밖은 원본 유지)
 
     // ── 코어 필터: float Mat(NaN=무효) → 같은 크기 필터 결과 Mat ────────────
     //   전체/부분 영역 공용. 영역 dims는 인자 Mat에서 읽는다.
@@ -177,7 +177,7 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
     if (m_params.rois.empty()) {
         // ROI 없음 → 전체 이미지 필터 (기존 동작)
         cv::Mat res = filterRegion(full);
-        std::memcpy(zmap->data.data(), res.ptr<float>(), sizeof(float) * N);
+        std::memcpy(heightmap->data.data(), res.ptr<float>(), sizeof(float) * N);
     } else {
         // ROI별로 (경계 halo 포함) 잘라서 필터 후, halo 제외한 ROI 코어만 되쓰기.
         // halo = max(kx,ky) → ROI 내부 결과는 전체 필터와 동일 (커널 도달범위 확보).
@@ -199,13 +199,13 @@ ToolResult NoiseFilter::filterZMap(VisionDataPtr input) {
 
             for (int row = ry0; row < ry1; ++row) {
                 const float* sr = subRes.ptr<float>(row - ey0);
-                float* dz = &zmap->data[static_cast<size_t>(row) * W];
+                float* dz = &heightmap->data[static_cast<size_t>(row) * W];
                 for (int col = rx0; col < rx1; ++col)
                     dz[col] = sr[col - ex0];
             }
         }
     }
-    out->zmap = zmap;
+    out->heightmap = heightmap;
     return { ToolStatus::Ok, "", out };
 }
 

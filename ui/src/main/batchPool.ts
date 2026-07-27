@@ -34,7 +34,7 @@ function poolLog(level: 'info' | 'warn' | 'error', msg: string) {
 }
 
 // 워커 수 = CPU 코어 기준과 가용 메모리 기준 중 더 보수적인 쪽.
-// 대용량(라인스캔) ZMap을 여러 VisionEngine 프로세스가 동시에 처리하면 프로세스당
+// 대용량(라인스캔) HeightMap을 여러 VisionEngine 프로세스가 동시에 처리하면 프로세스당
 // 순간 피크가 수 GB까지 올라갈 수 있어(실측), CPU 코어 수만으로 워커 수를 정하면
 // 메모리가 부족한 PC/큰 이미지 조합에서 워커가 그대로 죽어버린다(bad_alloc/응답불능).
 function computeSafeWorkerCount(): { n: number; cpuBased: number; memBased: number; freeGB: number } {

@@ -39,7 +39,7 @@ interface NodeResult {
   imgW?: number; imgH?: number
   // Align (좌표정렬)
   offCol?: number; offRow?: number; offXMm?: number; offYMm?: number
-  // ZMap 실제 z 범위 + 분해능
+  // HeightMap 실제 z 범위 + 분해능
   zMin?: number; zMax?: number
   xResMm?: number; yResMm?: number
   // 단계별 미리보기 (ExposureMerge 등) — 결과창 드롭다운으로 선택 조회
@@ -76,15 +76,15 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   originCol?: number; originRow?: number; viewKey?: string
 }) {
   const [stageIdx, setStageIdx] = useState(0)
-  // cloud 출력 노드: 3D↔2D를 드롭다운으로 전환. ZMapToCloud는 3D, PlaneFit은 2D를 기본으로.
-  const [cloudView, setCloudView] = useState(toolType === 'ZMapToCloud' || toolType === 'ExposureMergeCloud')
+  // cloud 출력 노드: 3D↔2D를 드롭다운으로 전환. HeightMapToCloud는 3D, PlaneFit은 2D를 기본으로.
+  const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
 
-  // cloud를 가진 모든 노드(PlaneFit/ZMapToCloud 등)에서 이미지/3D를 드롭다운으로 전환 (따로 쌓지 않음)
+  // cloud를 가진 모든 노드(PlaneFit/HeightMapToCloud 등)에서 이미지/3D를 드롭다운으로 전환 (따로 쌓지 않음)
   const hasCloud = !!result.cloud && result.cloud.length > 0
   const showCloud = hasCloud && cloudView
 
@@ -166,7 +166,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
           <select className="param-select" value={showCloud ? 'cloud' : 'image'}
             onChange={e => setCloudView(e.target.value === 'cloud')}>
             <option value="cloud">3D 포인트클라우드</option>
-            <option value="image">ZMap 이미지</option>
+            <option value="image">HeightMap 이미지</option>
           </select>
         </div>
       )}

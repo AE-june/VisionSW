@@ -14,14 +14,14 @@ RefHeightTool::RefHeightTool(RefHeightParams params) : m_params(std::move(params
 ToolResult RefHeightTool::execute(VisionDataPtr input) {
     m_result = {};
 
-    if (!input || !input->hasZMap())
-        return { ToolStatus::Fail, "RefHeight: ZMap이 없습니다." };
+    if (!input || !input->hasHeightMap())
+        return { ToolStatus::Fail, "RefHeight: HeightMap이 없습니다." };
     if (m_params.rois.empty())
         return { ToolStatus::Fail, "RefHeight: ROI가 없습니다." };
 
-    const ZMap& map = *input->zmap;
+    const HeightMap& map = *input->heightmap;
 
-    // ZMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동. PlaneFit/HeightMeasure와 동일 규칙.
+    // HeightMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동. PlaneFit/HeightMeasure와 동일 규칙.
     const int offCol = static_cast<int>(std::lround(map.originCol));
     const int offRow = static_cast<int>(std::lround(map.originRow));
 
@@ -105,7 +105,7 @@ ToolResult RefHeightTool::execute(VisionDataPtr input) {
 // ─────────────────────────────────────────────────────────────────────
 //  extractZ — percentage ROI → 유효 Z값 목록
 // ─────────────────────────────────────────────────────────────────────
-std::vector<float> RefHeightTool::extractZ(const ZMap& map, const RefHeightParams::ROI& roi,
+std::vector<float> RefHeightTool::extractZ(const HeightMap& map, const RefHeightParams::ROI& roi,
                                             int offCol, int offRow) const {
     int x0 = static_cast<int>(roi.xPct * map.width)               + offCol;
     int y0 = static_cast<int>(roi.yPct * map.height)              + offRow;

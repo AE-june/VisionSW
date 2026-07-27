@@ -9,7 +9,7 @@ public static class VisionSdk
     const string DLL = "VisionSDK.dll";
 
     [StructLayout(LayoutKind.Sequential)]
-    public struct ZMap
+    public struct HeightMap
     {
         public int width, height;
         public float xResMm, yResMm, zResMm, zZeroCount, originCol, originRow;
@@ -29,7 +29,7 @@ public static class VisionSdk
     public struct Result
     {
         public int status;                 // 0=OK
-        public ZMap zmap;
+        public HeightMap heightmap;
         public Cloud cloud;
         public Plane plane;
         public Heights heights;
@@ -45,16 +45,16 @@ public static class VisionSdk
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
     public static extern int vsdk_run(string type, string paramsJson,
-                                      ref ZMap inZmap, IntPtr inPlane, out Result outp);
+                                      ref HeightMap inHeightmap, IntPtr inPlane, out Result outp);
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int vsdk_noise_filter(ref ZMap inZmap, string paramsJson, out Result outp);
+    public static extern int vsdk_noise_filter(ref HeightMap inHeightmap, string paramsJson, out Result outp);
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int vsdk_exposure_merge(ref ZMap inZmap, string paramsJson, out Result outp);
+    public static extern int vsdk_exposure_merge(ref HeightMap inHeightmap, string paramsJson, out Result outp);
 
     [DllImport(DLL, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int vsdk_plane_fit(ref ZMap inZmap, string paramsJson, out Result outp);
+    public static extern int vsdk_plane_fit(ref HeightMap inHeightmap, string paramsJson, out Result outp);
 
     // ── 사용 예시 ────────────────────────────────────────────────────────
     static void Main()
@@ -69,7 +69,7 @@ public static class VisionSdk
         var handle = GCHandle.Alloc(buf, GCHandleType.Pinned);
         try
         {
-            var zin = new ZMap
+            var zin = new HeightMap
             {
                 width = W, height = H,
                 xResMm = 0.01f, yResMm = 0.05f, zResMm = 0.001f,
@@ -78,12 +78,12 @@ public static class VisionSdk
 
             // 1) NoiseFilter
             int s = vsdk_noise_filter(ref zin, "{\"filterType\":\"mean\",\"kernelSizeX\":3,\"kernelSizeY\":3}", out Result r1);
-            Console.WriteLine($"noise_filter status={s} out={r1.zmap.width}x{r1.zmap.height}");
-            // 출력 ZMap 읽기
-            if (r1.zmap.data != IntPtr.Zero)
+            Console.WriteLine($"noise_filter status={s} out={r1.heightmap.width}x{r1.heightmap.height}");
+            // 출력 HeightMap 읽기
+            if (r1.heightmap.data != IntPtr.Zero)
             {
-                var outBuf = new float[r1.zmap.width * r1.zmap.height];
-                Marshal.Copy(r1.zmap.data, outBuf, 0, outBuf.Length);
+                var outBuf = new float[r1.heightmap.width * r1.heightmap.height];
+                Marshal.Copy(r1.heightmap.data, outBuf, 0, outBuf.Length);
             }
             vsdk_free_result(ref r1);   // 반드시 해제
 

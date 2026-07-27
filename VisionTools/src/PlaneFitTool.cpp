@@ -16,14 +16,14 @@ PlaneFitTool::PlaneFitTool(PlaneFitParams params) : m_params(std::move(params)) 
 ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     m_result = {};
 
-    if (!input || !input->hasZMap())
-        return { ToolStatus::Fail, "PlaneFit: ZMap이 없습니다." };
+    if (!input || !input->hasHeightMap())
+        return { ToolStatus::Fail, "PlaneFit: HeightMap이 없습니다." };
     if (m_params.refRois.empty())
         return { ToolStatus::Fail, "PlaneFit: Reference ROI가 없습니다." };
 
-    const ZMap& map = *input->zmap;
+    const HeightMap& map = *input->heightmap;
 
-    // ZMap 원점이 설정돼 있으면(Align 통과) reference ROI를 원점만큼 이동.
+    // HeightMap 원점이 설정돼 있으면(Align 통과) reference ROI를 원점만큼 이동.
     // ROI 좌표는 원점 기준 상대값(px). 원점이 0이면 기존과 동일(하위 호환).
     const int offCol = static_cast<int>(std::lround(map.originCol));
     const int offRow = static_cast<int>(std::lround(map.originRow));
@@ -69,7 +69,7 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     m_result.inlierCount   = plane.inliers;
     m_result.valid         = true;
 
-    // 3D 뷰용: 전체 ZMap을 격자 다운샘플 (목표 개수는 파라미터, 메모리 보호용 하드 상한)
+    // 3D 뷰용: 전체 HeightMap을 격자 다운샘플 (목표 개수는 파라미터, 메모리 보호용 하드 상한)
     const size_t HARD_CAP = 500000;
     const size_t target = std::min(HARD_CAP,
         static_cast<size_t>(std::max(1, m_params.maxCloudPoints)));
@@ -85,8 +85,8 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
         plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
 
-    // 타입화 출력: plane(a,b,c)만 하류로 전달. 이미지/zmap은 넘기지 않음
-    // (plane 엣지는 plane 정보만). 이 노드 결과창 이미지는 엔진이 입력 zmap으로 폴백해 표시.
+    // 타입화 출력: plane(a,b,c)만 하류로 전달. 이미지/heightmap은 넘기지 않음
+    // (plane 엣지는 plane 정보만). 이 노드 결과창 이미지는 엔진이 입력 heightmap으로 폴백해 표시.
     auto out = std::make_shared<VisionData>();
     out->plane = std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true });
     out->sourceId = input->sourceId;
@@ -97,7 +97,7 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
 //  extractPoints — percentage ROI → (x_mm, y_mm, z_mm)
 // ─────────────────────────────────────────────────────────────────────
 std::vector<PlaneFitTool::Pt3>
-PlaneFitTool::extractPoints(const ZMap& map, const PlaneFitParams::ROI& roi,
+PlaneFitTool::extractPoints(const HeightMap& map, const PlaneFitParams::ROI& roi,
                             int offCol, int offRow) const {
     int x0 = static_cast<int>(roi.xPct * map.width)               + offCol;
     int y0 = static_cast<int>(roi.yPct * map.height)              + offRow;

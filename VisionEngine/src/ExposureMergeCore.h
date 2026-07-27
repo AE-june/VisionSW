@@ -1,5 +1,5 @@
 #pragma once
-// 이중노출 머지 "결정" 코어 — ZMap 경로와 PointCloud 경로가 공유.
+// 이중노출 머지 "결정" 코어 — HeightMap 경로와 PointCloud 경로가 공유.
 //  본질은 Z 그리드 결정 연산(오프셋 보정 → 저노출우선 → 연속성 BFS 리플렉션 제거).
 //  low/high = bn*w Z 그리드(NaN=무효, 짝수/홀수 프로파일에서 분리된 저/고 노출).
 //  출력 source[i]: 0=제거, 1=저노출(값=low[i]-offset), 2=장노출(값=high[i]).
@@ -27,7 +27,8 @@ inline float exposureMergeDecision(
     int w, int bn, float matchTol, float tolX, float tolY, int gapK,
     float forcedOffset, std::vector<uint8_t>& source,
     ExposureMergeScratch* scratch = nullptr,
-    bool removeReflection = true, float seedTol = -1.f)
+    bool removeReflection = true, float seedTol = -1.f,
+    int* outOffsetSamples = nullptr)   // 오프셋 산출에 쓴 겹침 일치 표본 수(forcedOffset이면 -1). 0이면 호출측이 경고.
 {
     const float NaN = std::numeric_limits<float>::quiet_NaN();
     const size_t BN = (size_t)bn * w;
@@ -36,11 +37,13 @@ inline float exposureMergeDecision(
     float offset;
     if (!std::isnan(forcedOffset)) {
         offset = forcedOffset;
+        if (outOffsetSamples) *outOffsetSamples = -1;
     } else {
         std::vector<float> diffs; diffs.reserve(BN/4 + 1);
         for (size_t i = 0; i < BN; i += 4)
             if (!std::isnan(low[i]) && !std::isnan(high[i]) && std::fabs(low[i]-high[i]) <= matchTol)
                 diffs.push_back(low[i]-high[i]);
+        if (outOffsetSamples) *outOffsetSamples = (int)diffs.size();
         offset = 0.f;
         if (!diffs.empty()) { size_t mid=diffs.size()/2; std::nth_element(diffs.begin(),diffs.begin()+mid,diffs.end()); offset=diffs[mid]; }
     }

@@ -1,5 +1,5 @@
 #include "ToolFactory.h"
-#include "ZMapCache.h"
+#include "HeightMapCache.h"
 #include "NoiseFilter.h"
 #include "EdgeDetector.h"
 #include "ThicknessMeasure.h"
@@ -10,9 +10,9 @@
 #include "LineCenterTool.h"
 #include "AlignTool.h"
 #include "ExposureMergeCore.h"
-#include "IZMapLoader.h"
+#include "IHeightMapLoader.h"
 #include "VisionData.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include "Logger.h"
 #include <limits>
 #include <algorithm>
@@ -44,54 +44,54 @@
 
 namespace vision {
 
-// ── ZMap 파일 글로벌 캐시 (폴더검사 시 반복 IO 제거) ──────────────────────
-std::unordered_map<std::string, std::shared_ptr<ZMap>> g_zmapFileCache;
+// ── HeightMap 파일 글로벌 캐시 (폴더검사 시 반복 IO 제거) ──────────────────────
+std::unordered_map<std::string, std::shared_ptr<HeightMap>> g_heightmapFileCache;
 std::unordered_set<std::string> g_preloadedFolders;
-std::mutex g_zmapFileCacheMtx;
+std::mutex g_heightmapFileCacheMtx;
 
 // 파일 캐시 상한 — 최근 N장만 유지(폴더 브라우징·연속 로드로 메모리 무한 누적 방지).
-//  삽입 순서(FIFO)로 오래된 것 축출. 사용 중(shared_ptr 참조)인 ZMap은 map에서 빠져도 안전히 유지됨.
-//  반드시 g_zmapFileCacheMtx를 보유한 상태에서 호출할 것.
-static const size_t ZMAP_CACHE_CAP = 8;
-static std::deque<std::string> g_zmapCacheOrder;
-void zmapCachePut(const std::string& path, const std::shared_ptr<ZMap>& zm) {
-    if (g_zmapFileCache.find(path) == g_zmapFileCache.end()) g_zmapCacheOrder.push_back(path);
-    g_zmapFileCache[path] = zm;
-    while (g_zmapCacheOrder.size() > ZMAP_CACHE_CAP) {
-        std::string old = g_zmapCacheOrder.front();
-        g_zmapCacheOrder.pop_front();
-        if (old != path) g_zmapFileCache.erase(old);   // 방금 넣은 건 축출 안 함
+//  삽입 순서(FIFO)로 오래된 것 축출. 사용 중(shared_ptr 참조)인 HeightMap은 map에서 빠져도 안전히 유지됨.
+//  반드시 g_heightmapFileCacheMtx를 보유한 상태에서 호출할 것.
+static const size_t HEIGHTMAP_CACHE_CAP = 8;
+static std::deque<std::string> g_heightmapCacheOrder;
+void heightmapCachePut(const std::string& path, const std::shared_ptr<HeightMap>& zm) {
+    if (g_heightmapFileCache.find(path) == g_heightmapFileCache.end()) g_heightmapCacheOrder.push_back(path);
+    g_heightmapFileCache[path] = zm;
+    while (g_heightmapCacheOrder.size() > HEIGHTMAP_CACHE_CAP) {
+        std::string old = g_heightmapCacheOrder.front();
+        g_heightmapCacheOrder.pop_front();
+        if (old != path) g_heightmapFileCache.erase(old);   // 방금 넣은 건 축출 안 함
     }
 }
 
-std::shared_ptr<ZMap> loadZMapFromFile(const std::string& path,
+std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
                                        float xRes, float yRes, float zRes) {
     int w, h, ch;
     uint16_t* raw16 = stbi_load_16(path.c_str(), &w, &h, &ch, 1);
     if (raw16) {
-        auto zmap = std::make_shared<ZMap>();
-        zmap->width=w; zmap->height=h;
-        zmap->xResMm=xRes; zmap->yResMm=yRes; zmap->zResMm=zRes;
-        zmap->zZeroCount=32768.f;
-        zmap->data.resize((size_t)w*h);
+        auto heightmap = std::make_shared<HeightMap>();
+        heightmap->width=w; heightmap->height=h;
+        heightmap->xResMm=xRes; heightmap->yResMm=yRes; heightmap->zResMm=zRes;
+        heightmap->zZeroCount=32768.f;
+        heightmap->data.resize((size_t)w*h);
         for (int i=0;i<w*h;++i)
-            zmap->data[i] = raw16[i]==0 ? std::numeric_limits<float>::quiet_NaN()
+            heightmap->data[i] = raw16[i]==0 ? std::numeric_limits<float>::quiet_NaN()
                                         : static_cast<float>(raw16[i]);
         stbi_image_free(raw16);
-        return zmap;
+        return heightmap;
     }
     unsigned char* raw8 = stbi_load(path.c_str(), &w, &h, &ch, 1);
     if (!raw8) return nullptr;
-    auto zmap = std::make_shared<ZMap>();
-    zmap->width=w; zmap->height=h;
-    zmap->xResMm=xRes; zmap->yResMm=yRes; zmap->zResMm=zRes;
-    zmap->zZeroCount=128.f;
-    zmap->data.resize((size_t)w*h);
+    auto heightmap = std::make_shared<HeightMap>();
+    heightmap->width=w; heightmap->height=h;
+    heightmap->xResMm=xRes; heightmap->yResMm=yRes; heightmap->zResMm=zRes;
+    heightmap->zZeroCount=128.f;
+    heightmap->data.resize((size_t)w*h);
     for (int i=0;i<w*h;++i)
-        zmap->data[i] = raw8[i]==0 ? std::numeric_limits<float>::quiet_NaN()
+        heightmap->data[i] = raw8[i]==0 ? std::numeric_limits<float>::quiet_NaN()
                                    : static_cast<float>(raw8[i]);
     stbi_image_free(raw8);
-    return zmap;
+    return heightmap;
 }
 
 int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes) {
@@ -99,7 +99,7 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
     // Collect files not yet cached
     std::vector<std::string> toLoad;
     {
-        std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
+        std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
         if (g_preloadedFolders.count(folder)) return 0;
         g_preloadedFolders.insert(folder);
         std::error_code ec;
@@ -108,7 +108,7 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
         for (auto& e : fs::directory_iterator(fs::u8path(folder), ec)) {
             if (e.path().extension() == ".png") {
                 std::string fp = e.path().u8string();
-                if (!g_zmapFileCache.count(fp))
+                if (!g_heightmapFileCache.count(fp))
                     toLoad.push_back(fp);
             }
         }
@@ -118,13 +118,13 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
     // Load in parallel using hardware concurrency
     const int nThreads = static_cast<int>(std::thread::hardware_concurrency());
     const int n = static_cast<int>(toLoad.size());
-    std::vector<std::pair<std::string, std::shared_ptr<ZMap>>> results(n);
+    std::vector<std::pair<std::string, std::shared_ptr<HeightMap>>> results(n);
     std::atomic<int> idx{0};
 
     auto worker = [&]() {
         int i;
         while ((i = idx.fetch_add(1)) < n) {
-            results[i] = { toLoad[i], loadZMapFromFile(toLoad[i], xRes, yRes, zRes) };
+            results[i] = { toLoad[i], loadHeightMapFromFile(toLoad[i], xRes, yRes, zRes) };
         }
     };
 
@@ -136,16 +136,16 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
 
     int loaded = 0;
     {
-        std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
+        std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
         for (auto& [path, zm] : results)
-            if (zm) { zmapCachePut(path, zm); ++loaded; }
+            if (zm) { heightmapCachePut(path, zm); ++loaded; }
     }
     return loaded;
 }
 
 // ── Loader tools (defined here, used by ToolFactory) ─────────────────────
 
-class ZMapLoaderTool : public IAlgorithmTool {
+class HeightMapLoaderTool : public IAlgorithmTool {
     std::string m_path;
     std::string m_folder;
     float m_xResMm, m_yResMm, m_zResMm;
@@ -153,46 +153,46 @@ public:
     // 폴더 전체 프리로드는 여기서 하지 않음 — 인터랙티브 편집은 ParamPanel이 폴더 선택 시
     // 명시적으로 "preload" 커맨드를 보내고, 폴더검사(배치)는 워커별로 필요한 파일만
     // "prefetch" 커맨드로 미리 당겨오므로 생성자에서 폴더 전체를 긁으면 워커마다 중복 로드됨.
-    ZMapLoaderTool(std::string path, std::string folder, float xRes, float yRes, float zRes)
+    HeightMapLoaderTool(std::string path, std::string folder, float xRes, float yRes, float zRes)
         : m_path(std::move(path)), m_folder(std::move(folder)),
           m_xResMm(xRes), m_yResMm(yRes), m_zResMm(zRes)
     {}
-    std::string name() const override { return "ZMapLoader"; }
+    std::string name() const override { return "HeightMapLoader"; }
 
     ToolResult execute(VisionDataPtr) override {
         if (m_path.empty())
-            return { ToolStatus::Fail, "ZMapLoader: 파일 경로가 설정되지 않았습니다" };
+            return { ToolStatus::Fail, "HeightMapLoader: 파일 경로가 설정되지 않았습니다" };
 
         // 캐시 확인
         {
-            std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-            auto it = g_zmapFileCache.find(m_path);
-            if (it != g_zmapFileCache.end()) {
+            std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+            auto it = g_heightmapFileCache.find(m_path);
+            if (it != g_heightmapFileCache.end()) {
                 // 캐시엔 픽셀 데이터만 신뢰 — 분해능은 로더 파라미터가 최신이므로 캐시 히트 시에도 재적용.
                 // (경로만으로 캐시돼 처음 로드 분해능이 박히던 문제 수정: 분해능 변경이 이제 즉시 반영)
                 it->second->xResMm = m_xResMm;
                 it->second->yResMm = m_yResMm;
                 it->second->zResMm = m_zResMm;
                 auto data = std::make_shared<VisionData>();
-                data->zmap = it->second;
+                data->heightmap = it->second;
                 data->sourceId = m_path;
-                VISION_LOG_INFO("ZMapLoader: cache hit {} (res x{} y{} z{})", m_path, m_xResMm, m_yResMm, m_zResMm);
+                VISION_LOG_INFO("HeightMapLoader: cache hit {} (res x{} y{} z{})", m_path, m_xResMm, m_yResMm, m_zResMm);
                 return { ToolStatus::Ok, "", data };
             }
         }
 
         // 캐시 미스 → 파일 로드 후 캐시 저장
-        auto zmap = loadZMapFromFile(m_path, m_xResMm, m_yResMm, m_zResMm);
-        if (!zmap)
-            return { ToolStatus::Fail, "ZMapLoader: 파일을 읽을 수 없습니다: " + m_path };
+        auto heightmap = loadHeightMapFromFile(m_path, m_xResMm, m_yResMm, m_zResMm);
+        if (!heightmap)
+            return { ToolStatus::Fail, "HeightMapLoader: 파일을 읽을 수 없습니다: " + m_path };
 
         {
-            std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-            zmapCachePut(m_path, zmap);
+            std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+            heightmapCachePut(m_path, heightmap);
         }
-        VISION_LOG_INFO("ZMapLoader: {}x{} loaded from {}", zmap->width, zmap->height, m_path);
+        VISION_LOG_INFO("HeightMapLoader: {}x{} loaded from {}", heightmap->width, heightmap->height, m_path);
         auto data = std::make_shared<VisionData>();
-        data->zmap = zmap;
+        data->heightmap = heightmap;
         data->sourceId = m_path;
         return { ToolStatus::Ok, "", data };
     }
@@ -226,88 +226,67 @@ public:
     }
 };
 
-// ── ExposureSplit (이중노출 분리): 인터리브 홀짝 이중노출 ZMap → 저노출/장노출 분리.
-//   짝/홀 행 = 저/장 노출. 저노출은 상/하부 구간 8배 행확장(makeZLow),
-//   장노출은 2배 복원(makeZ). 출력: 1.저노출(확장) / 2.장노출 중 선택.
-//   (머지/리플렉션 제거는 별도 '이중노출 머지'(ExposureMerge2) 노드로 분리됨)
+// ── ExposureSplit (다중노출 분리): 인터리브된 다중노출 HeightMap을 노출별로 행 분리.
+//   splitCount=2: 짝/홀 행 = 저/장 노출. splitCount=3: r%3=0/1/2 = 저/중/장 노출.
+//   행 = r*splitCount + phase. 행확장/보간 없이 각 노출을 n(=h/splitCount)행 그대로 출력.
+//   출력: outputStage로 노출 하나 선택. (머지/리플렉션 제거는 ExposureMerge2/3 노드가 담당)
 class ExposureMergeTool : public IAlgorithmTool {
-    int   m_outputStage;   // 0=저노출, 1=장노출
+    int   m_splitCount;    // 2 또는 3
+    int   m_outputStage;   // 0..splitCount-1 (0=저노출 … 마지막=장노출)
     bool  m_skipStages;    // true면 결과창 미리보기용 다른 단계는 만들지 않음(배치 가속/메모리 절약)
 public:
-    ExposureMergeTool(int outputStage, bool skipStages)
-        : m_outputStage(outputStage), m_skipStages(skipStages) {}
+    ExposureMergeTool(int splitCount, int outputStage, bool skipStages)
+        : m_splitCount(std::clamp(splitCount, 2, 3)),
+          m_outputStage(outputStage), m_skipStages(skipStages) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "ExposureMerge: ZMap 입력이 필요합니다" };
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
 
-        using clk = std::chrono::steady_clock;
-        auto t0 = clk::now();
-        auto lap = [&](const char* tag) {
-            auto ms = std::chrono::duration<double,std::milli>(clk::now()-t0).count();
-            VISION_LOG_INFO("[ExposureMerge] {}: {:.1f} ms", tag, ms);
-            t0 = clk::now();
-        };
-
-        const auto& zm = *input->zmap;
+        const auto& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
-        if (h < 2) return { ToolStatus::Fail, "ExposureMerge: 이미지 높이가 너무 작습니다" };
+        const int sc = m_splitCount;
+        if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
 
+        const int n = h / sc;                              // 노출별 출력 행 수
+        const int si = std::clamp(m_outputStage, 0, sc - 1);
 
-        const int n = h / 2;                 // 홀짝 쌍 개수 = 출력 행 수
-        const int si = std::clamp(m_outputStage, 0, 1);   // 0=저노출, 1=장노출
-        // 입력 ZMap 데이터(raw count float, 무효=NaN)를 그대로 사용
-        auto zAt = [&](int row, int c) -> float { return zm.data[(size_t)row * w + c]; };
-
-        // 짝수행 = 저노출로 가정 (I/L 파일 로드 없이 ZMap만 사용)
-        const bool evenIsLow = true;
-        auto loRow = [&](int r){ return evenIsLow ? 2*r   : 2*r+1; };
-        auto hiRow = [&](int r){ return evenIsLow ? 2*r+1 : 2*r;   };
-
-        // ① 홀짝 분리 → 저노출(low)/장노출(high) 배열 (n×w, 무효=NaN)
-        std::vector<float> low((size_t)n*w), high((size_t)n*w);
-        for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-            size_t i = (size_t)r*w + c;
-            low[i]  = zAt(loRow(r), c);
-            high[i] = zAt(hiRow(r), c);
-        }
-        lap("홀짝 분리");
-
-        // 홀짝만 분리 — 행 확장/보간 없이 각 단계를 n행 그대로 ZMap으로 만든다.
-        auto makeZRaw = [&](const std::vector<float>& half) {
-            auto z = std::make_shared<ZMap>();
+        // 노출 하나를 n×w로 추출 (행 = r*sc + phase). 행확장 없음.
+        auto extract = [&](int phase) {
+            std::vector<float> half((size_t)n * w);
+            for (int r = 0; r < n; ++r)
+                for (int c = 0; c < w; ++c)
+                    half[(size_t)r*w + c] = zm.data[(size_t)(r*sc + phase)*w + c];
+            return half;
+        };
+        auto makeZRaw = [&](std::vector<float> half) {
+            auto z = std::make_shared<HeightMap>();
             z->width=w; z->height=n;
             z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
             z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
             z->originCol=zm.originCol; z->originRow=zm.originRow;
-            z->data = half;   // 이미 n×w
+            z->data = std::move(half);   // 이미 n×w
             return z;
         };
 
-        ZMapPtr zLow, zHigh;
-        if (m_skipStages) {
-            // 미리보기가 필요 없으면 실제 출력으로 쓸 단계 하나만 만든다(메모리 절약).
-            if (si == 0) { zLow = makeZRaw(low); }
-            else         { zHigh = makeZRaw(high); }
-        } else {
-            zLow = makeZRaw(low);
-            zHigh = makeZRaw(high);
-        }
-        lap("홀짝 ZMap 생성");
-
-        const ZMapPtr stageZmaps[] = { zLow, zHigh };
+        static const char* const label2[] = { "1. 저노출", "2. 장노출" };
+        static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
+        const char* const* labels = (sc == 3) ? label3 : label2;
 
         auto data = std::make_shared<VisionData>();
-        data->zmap = stageZmaps[si];
         data->sourceId = input->sourceId;
-        if (!m_skipStages) {
-            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
-            data->stages->push_back({ "1. 저노출", zLow });
-            data->stages->push_back({ "2. 장노출", zHigh });
+        if (m_skipStages) {
+            data->heightmap = makeZRaw(extract(si));   // 선택 노출만 생성(메모리 절약)
+        } else {
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
+            for (int p = 0; p < sc; ++p) {
+                auto z = makeZRaw(extract(p));
+                if (p == si) data->heightmap = z;
+                data->stages->push_back({ labels[p], z });
+            }
         }
-        VISION_LOG_INFO("ExposureSplit: {}x{} → 저노출 {}행 / 장노출 {}행",
-                        w, h, zLow ? zLow->height : 0, zHigh ? zHigh->height : 0);
+        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행 (출력 {})", w, h, sc, n, si);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -325,11 +304,11 @@ public:
     std::string name() const override { return "RowStretch"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "행 늘리기: ZMap 입력이 필요합니다" };
-        const auto& zm = *input->zmap;
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "행 늘리기: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
-        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "행 늘리기: 빈 ZMap" };
+        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "행 늘리기: 빈 HeightMap" };
         const float NaN = std::numeric_limits<float>::quiet_NaN();
 
         // 입력 행마다 배수 결정 (밴드에 속하면 그 밴드 배수, 겹치면 뒤 밴드 우선, 아니면 1)
@@ -344,7 +323,7 @@ public:
         }
         size_t outH = 0; for (int r = 0; r < h; ++r) outH += (size_t)rowScale[r];
 
-        auto z = std::make_shared<ZMap>();
+        auto z = std::make_shared<HeightMap>();
         z->width = w; z->height = (int)outH;
         z->xResMm = zm.xResMm; z->yResMm = zm.yResMm;   // yRes는 기존 노드와 동일하게 유지
         z->zResMm = zm.zResMm; z->zZeroCount = zm.zZeroCount;
@@ -373,7 +352,7 @@ public:
         }
 
         auto data = std::make_shared<VisionData>();
-        data->zmap = z;
+        data->heightmap = z;
         data->sourceId = input->sourceId;
         VISION_LOG_INFO("RowStretch: {}x{} → {}x{} (밴드 {}개)", w, h, w, (int)outH, (int)m_bands.size());
         return { ToolStatus::Ok, "", data };
@@ -404,9 +383,9 @@ public:
     std::string name() const override { return "ExposureMerge2"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "이중노출 머지: ZMap 입력이 필요합니다" };
-        const auto& zm = *input->zmap;
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "이중노출 머지: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
         if (h < 2) return { ToolStatus::Fail, "이중노출 머지: 이미지 높이가 너무 작습니다" };
         const int n = h / 2;                        // 전체 pair(출력행) 수
@@ -429,8 +408,13 @@ public:
                     for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*gr,c); high[i]=at(2*gr+1,c); } }
             });
             // ②③④ 공유 코어: 오프셋 → 저노출우선 → 연속성 BFS → 셀별 source(0제거/1저/2고)
+            //   seedTol=m_reflTol(<0이면 코어가 matchTol로 폴백 → 기존 동작). offSamples로 오프셋 표본수 확인.
             std::vector<uint8_t> source;
-            float offset = exposureMergeDecision(low.data(), high.data(), w, bn, m_matchTol, m_tolX, m_tolY, m_gapK, forcedOffset, source);
+            int offSamples = -1;
+            float offset = exposureMergeDecision(low.data(), high.data(), w, bn, m_matchTol, m_tolX, m_tolY, m_gapK,
+                                                 forcedOffset, source, nullptr, true, m_reflTol, &offSamples);
+            if (offSamples == 0)
+                VISION_LOG_INFO("ExposureMerge2: 경고 — 겹침 일치 표본 0개 → 오프셋 보정 건너뜀(offset=0). matchTol을 키우거나 노출 정렬을 확인하세요.");
             offsetOut = offset;
             // source → 최종 Z: 저=low-offset, 고=high, 제거=NaN. (제거된 fill 리플렉션 카운트)
             std::vector<float> filtered(BN);
@@ -487,6 +471,7 @@ public:
                     if (!std::isnan(lo) && !std::isnan(hi) && std::fabs(lo-hi) <= m_matchTol) d.push_back(lo-hi);
                 }
                 if (!d.empty()) { size_t mid=d.size()/2; std::nth_element(d.begin(),d.begin()+mid,d.end()); gOffset=d[mid]; }
+                else VISION_LOG_INFO("ExposureMerge2[청크]: 경고 — 겹침 일치 표본 0개 → 오프셋 보정 건너뜀(offset=0). matchTol/노출 정렬 확인.");
             }
             offset = gOffset;
             int nChunks = 0;
@@ -502,9 +487,9 @@ public:
             VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, m_chunkRows, m_overlapRows, removed);
         }
 
-        // ⑤ 출력 ZMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
+        // ⑤ 출력 HeightMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
         auto makeOut = [&](std::vector<float> src) {   // by-value: 호출측에서 move로 넘겨 복사/할당 제거
-            auto z = std::make_shared<ZMap>();
+            auto z = std::make_shared<HeightMap>();
             z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
             if (m_halfRes) {
                 z->height=n; z->yResMm=zm.yResMm*2.f; z->data = std::move(src);
@@ -524,12 +509,12 @@ public:
         auto zFinal = makeOut(std::move(filtered));
 
         auto data = std::make_shared<VisionData>();
-        data->zmap = zFinal;
+        data->heightmap = zFinal;
         data->sourceId = input->sourceId;
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — 전체모드 && !noPreview 일 때만(청크 모드는 최종만).
         if (!m_chunkMode && !m_noPreview && !mergedFull.empty()) {
             auto zMerged=makeOut(std::move(mergedFull)), zLow=makeOut(std::move(lowCFull)), zHigh=makeOut(std::move(highFull));
-            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
             data->stages->push_back({ "2. 기본 머지",           zMerged });
             data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
@@ -563,9 +548,9 @@ public:
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "3노출 머지: ZMap 입력이 필요합니다" };
-        const auto& zm = *input->zmap;
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "3노출 머지: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
         if (h < 3) return { ToolStatus::Fail, "3노출 머지: 이미지 높이가 너무 작습니다(≥3행)" };
         const int n = h / 3;                        // 3중 프로파일당 출력행 수
@@ -601,6 +586,7 @@ public:
                 if (!std::isnan(A[i]) && !std::isnan(B[i]) && std::fabs(A[i]-B[i]) <= m_matchTol) d.push_back(A[i]-B[i]);
             float o = 0.f;
             if (!d.empty()) { size_t m = d.size()/2; std::nth_element(d.begin(), d.begin()+m, d.end()); o = d[m]; }
+            else VISION_LOG_INFO("ExposureMerge3: 경고 — 겹침 일치 표본 0개 → 오프셋 보정 건너뜀(offset=0). matchTol/노출 정렬 확인.");
             return o;
         };
 
@@ -651,9 +637,9 @@ public:
         std::vector<float> finalZ = runStage(mergedA, hi, ofs2, nBands);
         lap("③ 2단계(저·중+장) 밴드병렬");
 
-        // ④ 출력 ZMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
+        // ④ 출력 HeightMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
         auto makeOut = [&](std::vector<float> src) {   // by-value: 최종은 move로 넘겨 복사 제거
-            auto z = std::make_shared<ZMap>();
+            auto z = std::make_shared<HeightMap>();
             z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
             z->originCol=zm.originCol; z->originRow=zm.originRow;
             if (m_halfRes) {
@@ -672,21 +658,21 @@ public:
         auto zFinal = makeOut(std::move(finalZ));
 
         auto data = std::make_shared<VisionData>();
-        data->zmap = zFinal;
+        data->heightmap = zFinal;
         data->sourceId = input->sourceId;
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview 일 때만.
         if (!m_noPreview) {
             // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
             auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
                  zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
-            data->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
             data->stages->push_back({ "2. 저·중 머지",          zMerged });
             data->stages->push_back({ "3. 저노출",             zLo });
             data->stages->push_back({ "4. 중간노출",           zMid });
             data->stages->push_back({ "5. 장노출",             zHi });
         }
-        lap("④ 출력 ZMap + 스테이지");
+        lap("④ 출력 HeightMap + 스테이지");
         VISION_LOG_INFO("ExposureMerge3: {}x{} → {}행, offset1={:.1f} offset2={:.1f}cnt (matchTol={}, tolX={}, tolY={})",
                         w, h, n, ofs1, ofs2, m_matchTol, m_tolX, m_tolY);
         return { ToolStatus::Ok, "", data };
@@ -728,8 +714,8 @@ static std::string buildSavePath(const std::string& folder, const std::string& f
     return (fs::u8path(folder) / (msStamp() + "_" + stem + "." + ext)).u8string();
 }
 
-// ── ImageSaver: 입력(ZMap 또는 Image2D)을 파일로 저장 (OpenCV cv::imwrite) ──────
-//   ZMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화). Image2D → 그대로.
+// ── ImageSaver: 입력(HeightMap 또는 Image2D)을 파일로 저장 (OpenCV cv::imwrite) ──────
+//   HeightMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화). Image2D → 그대로.
 class ImageSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
 public:
@@ -756,15 +742,15 @@ public:
                 else if (im.channels == 4) cv::cvtColor(m, out, cv::COLOR_RGBA2BGRA);
                 if (!cv::imwrite(savePath, out)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
             }
-            else if (input->hasZMap()) {                   // ZMap → 16bit(png/tif) 또는 8bit
-                const ZMap& zm = *input->zmap;
+            else if (input->hasHeightMap()) {                   // HeightMap → 16bit(png/tif) 또는 8bit
+                const HeightMap& zm = *input->heightmap;
                 const size_t N = (size_t)zm.width * zm.height;
                 if (ext16) {
                     cv::Mat m16(zm.height, zm.width, CV_16U);
                     uint16_t* d = (uint16_t*)m16.data;
                     for (size_t i = 0; i < N; ++i) {
                         float v = zm.data[i];
-                        d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0 (ZMapLoader 규약)
+                        d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0 (HeightMapLoader 규약)
                     }
                     if (!cv::imwrite(savePath, m16)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
                 } else {
@@ -779,7 +765,7 @@ public:
                     if (!cv::imwrite(savePath, m8)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
                 }
             }
-            else return { ToolStatus::Fail, "ImageSaver: 저장할 ZMap/이미지가 입력에 없습니다" };
+            else return { ToolStatus::Fail, "ImageSaver: 저장할 HeightMap/이미지가 입력에 없습니다" };
         } catch (const std::exception& e) {
             return { ToolStatus::Fail, std::string("ImageSaver: ") + e.what() };
         }
@@ -788,9 +774,9 @@ public:
     }
 };
 
-// ── ExposureMergeCloud: 인터리브 ZMap(짝=저/홀=고) → 이중노출 머지 → PointCloud3D. ──
+// ── ExposureMergeCloud: 인터리브 HeightMap(짝=저/홀=고) → 이중노출 머지 → PointCloud3D. ──
 //   공유 코어(exposureMergeDecision)로 Z 결정 후 이긴 노출 셀만 (x,y,z)mm 점 생성.
-//   VisionSW ZMap은 균일 X(col×xRes) — per-point 보정 X는 SDK(vsdk_exposure_merge_cloud) 경로 전용.
+//   VisionSW HeightMap은 균일 X(col×xRes) — per-point 보정 X는 SDK(vsdk_exposure_merge_cloud) 경로 전용.
 class ExposureMergeCloudTool : public IAlgorithmTool {
     float m_matchTol, m_tolX, m_tolY; int m_gapK;
 public:
@@ -799,9 +785,9 @@ public:
     std::string name() const override { return "ExposureMergeCloud"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "이중노출 머지(클라우드): ZMap 입력이 필요합니다" };
-        const auto& zm = *input->zmap;
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "이중노출 머지(클라우드): HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
         if (h < 2) return { ToolStatus::Fail, "이미지 높이가 너무 작습니다" };
         const int n = h / 2;
@@ -843,19 +829,19 @@ public:
     }
 };
 
-// ── ZMapToCloud: ZMap(높이맵) → PointCloud3D. 유효 픽셀마다 (x,y,z)mm 점 생성. ──
+// ── HeightMapToCloud: HeightMap(높이맵) → PointCloud3D. 유효 픽셀마다 (x,y,z)mm 점 생성. ──
 //   x = (col-originCol)*xRes, y = (row-originRow)*yRes, z = (raw-zZero)*zRes (mm)
 //   step으로 서브샘플(대용량 클라우드 감축). NaN(무효) 픽셀은 건너뜀.
-class ZMapToCloudTool : public IAlgorithmTool {
+class HeightMapToCloudTool : public IAlgorithmTool {
     int m_step;
 public:
-    explicit ZMapToCloudTool(int step) : m_step(std::max(1, step)) {}
-    std::string name() const override { return "ZMapToCloud"; }
+    explicit HeightMapToCloudTool(int step) : m_step(std::max(1, step)) {}
+    std::string name() const override { return "HeightMapToCloud"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap())
-            return { ToolStatus::Fail, "ZMap→Cloud: ZMap 입력이 필요합니다" };
-        const ZMap& zm = *input->zmap;
+        if (!input || !input->hasHeightMap())
+            return { ToolStatus::Fail, "HeightMap→Cloud: HeightMap 입력이 필요합니다" };
+        const HeightMap& zm = *input->heightmap;
         auto cloud = std::make_shared<PointCloud3D>();
         cloud->frameId = input->sourceId;
         cloud->points.reserve((size_t)(zm.width / m_step + 1) * (zm.height / m_step + 1));
@@ -864,11 +850,11 @@ public:
                 if (!zm.valid(col, row)) continue;   // NaN 제외
                 cloud->points.push_back({ zm.xMm(col), zm.yMm(row), zm.zMm(col, row) });
             }
-        // 타입화 출력: 클라우드만 전달(다운스트림 저장/처리용). 결과창 이미지는 입력 zmap으로 폴백.
+        // 타입화 출력: 클라우드만 전달(다운스트림 저장/처리용). 결과창 이미지는 입력 heightmap으로 폴백.
         auto out = std::make_shared<VisionData>();
         out->cloud    = cloud;
         out->sourceId = input->sourceId;
-        VISION_LOG_INFO("ZMapToCloud: {} points (step={}, {}x{})",
+        VISION_LOG_INFO("HeightMapToCloud: {} points (step={}, {}x{})",
                         cloud->points.size(), m_step, zm.width, zm.height);
         return { ToolStatus::Ok, "", out };
     }
@@ -885,7 +871,7 @@ public:
 
     ToolResult execute(VisionDataPtr input) override {
         if (m_folder.empty())             return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
-        if (!input || !input->hasCloud()) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. ZMap→Cloud를 먼저 연결하세요." };
+        if (!input || !input->hasCloud()) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. HeightMap→Cloud를 먼저 연결하세요." };
 
         const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
         std::string ext = m_format;
@@ -918,7 +904,7 @@ public:
     }
 };
 
-// ── GapFill: ZMap의 결측(NaN) 픽셀을 보간해 메움. ───────────────────────────
+// ── GapFill: HeightMap의 결측(NaN) 픽셀을 보간해 메움. ───────────────────────────
 //   가장 가까운 유효 픽셀까지 거리 ≤ maxGap 인 결측만 채우고, 그보다 큰 구멍(중앙)은
 //   NaN으로 남긴다(검사에서 가짜 표면을 지어내지 않기 위함).
 //   method: neighbor(반복 이웃) / laplace(PDE) / nearest(최근접) / idw(역거리) / linear(행·열 선형)
@@ -939,8 +925,8 @@ public:
     std::string name() const override { return "GapFill"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasZMap()) return { ToolStatus::Fail, "GapFill: ZMap 입력이 필요합니다" };
-        const ZMap& zm = *input->zmap;
+        if (!input || !input->hasHeightMap()) return { ToolStatus::Fail, "GapFill: HeightMap 입력이 필요합니다" };
+        const HeightMap& zm = *input->heightmap;
         const int w = zm.width, h = zm.height;
         const size_t N = (size_t)w * h;
         const float NaN = std::numeric_limits<float>::quiet_NaN();
@@ -1127,24 +1113,24 @@ public:
         long filled = 0;
         for (size_t i=0;i<N;++i) if (fillable[i] && !std::isnan(out[i])) ++filled;
 
-        // 출력 ZMap (메타 유지). 미리보기 생략 모드면 실제 출력 단계 하나만 만든다.
+        // 출력 HeightMap (메타 유지). 미리보기 생략 모드면 실제 출력 단계 하나만 만든다.
         const int si = std::clamp(m_outputStage, 0, 2);
-        auto mk = [&](const std::vector<float>& d){ auto z=std::make_shared<ZMap>(zm); z->data=d; return z; };
+        auto mk = [&](const std::vector<float>& d){ auto z=std::make_shared<HeightMap>(zm); z->data=d; return z; };
         std::vector<float> maskData;
         if (si == 2 || !m_noPreview) {
             maskData.assign(N, NaN);
             for (size_t i=0;i<N;++i) maskData[i] = (fillable[i] && !std::isnan(out[i])) ? 1.f
                                                : (std::isnan(src[i]) ? NaN : 0.f);
         }
-        ZMapPtr zFilled = (si==0 || !m_noPreview) ? mk(out) : nullptr;
-        ZMapPtr zOrig   = (si==1 || !m_noPreview) ? mk(src) : nullptr;
-        ZMapPtr zMask   = (si==2 || !m_noPreview) ? mk(maskData) : nullptr;
+        HeightMapPtr zFilled = (si==0 || !m_noPreview) ? mk(out) : nullptr;
+        HeightMapPtr zOrig   = (si==1 || !m_noPreview) ? mk(src) : nullptr;
+        HeightMapPtr zMask   = (si==2 || !m_noPreview) ? mk(maskData) : nullptr;
 
         auto vd = std::make_shared<VisionData>();
-        vd->zmap = (si==0) ? zFilled : (si==1) ? zOrig : zMask;
+        vd->heightmap = (si==0) ? zFilled : (si==1) ? zOrig : zMask;
         vd->sourceId = input->sourceId;
         if (!m_noPreview) {
-            vd->stages = std::make_shared<std::vector<std::pair<std::string, ZMapPtr>>>();
+            vd->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             vd->stages->push_back({ "1. 메운 결과", zFilled });
             vd->stages->push_back({ "2. 원본",      zOrig });
             vd->stages->push_back({ "3. 메운 영역", zMask });
@@ -1175,8 +1161,8 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     const nlohmann::json& p,
     bool noPreview)
 {
-    if (type == "ZMapLoader") {
-        return std::make_shared<ZMapLoaderTool>(
+    if (type == "HeightMapLoader") {
+        return std::make_shared<HeightMapLoaderTool>(
             p.value("path",    ""),
             p.value("folder",  ""),
             p.value("xResMm",  1.0f),
@@ -1191,16 +1177,17 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         return std::make_shared<RowStretchTool>(std::move(bands));
     }
     if (type == "ExposureMerge") {
-        // 이중노출 분리: 저노출(확장)/장노출 중 outputStage로 선택 (0/1).
-        // 기존 레시피 호환: outputStage 2~4는 clamp되어 장노출로 처리됨.
+        // 다중노출 분리: splitCount(2/3)만큼 노출별 행 분리, outputStage로 선택.
+        // 기존 레시피 호환: splitCount 없으면 2(홀짝), outputStage는 splitCount-1로 clamp.
         return std::make_shared<ExposureMergeTool>(
+            p.value("splitCount", 2),
             p.value("outputStage", 0),
             noPreview);
     }
     if (type == "ExposureMerge2") {
         return std::make_shared<DualExposureMergeTool>(
             p.value("matchTol",    20.0f),
-            p.value("reflTol",     30.0f),
+            p.value("reflTol",     -1.0f),   // <0이면 코어가 씨앗 허용을 matchTol로 폴백(기존 동작 보존). 명시하면 씨앗만 분리 제어.
             p.value("tolX",        10.0f),
             p.value("tolY",        100.0f),
             p.value("gapK",        2),
@@ -1239,8 +1226,8 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         }
         return std::make_shared<ImageSaverTool>(folder, filename, format);
     }
-    if (type == "ZMapToCloud") {
-        return std::make_shared<ZMapToCloudTool>(p.value("step", 1));
+    if (type == "HeightMapToCloud") {
+        return std::make_shared<HeightMapToCloudTool>(p.value("step", 1));
     }
     if (type == "ExposureMergeCloud") {
         return std::make_shared<ExposureMergeCloudTool>(

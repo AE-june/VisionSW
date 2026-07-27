@@ -1,7 +1,7 @@
 #pragma once
 
 #include "VisionData.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <string>
 #include <vector>
 #include <cmath>
@@ -50,19 +50,19 @@ inline std::string imageToBase64(const Image2D& img) {
     return base64Encode(jpg);
 }
 
-// ── ZMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
+// ── HeightMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
 
 // outMin/outMax/outHasRange(옵션): 정규화하며 구한 실제 z범위를 반환 → 호출부 중복 스캔 방지
-inline std::string zmapToBase64(const ZMap& zmap,
+inline std::string heightmapToBase64(const HeightMap& heightmap,
                                 float* outMin = nullptr, float* outMax = nullptr,
                                 bool* outHasRange = nullptr) {
     if (outHasRange) *outHasRange = false;
-    if (zmap.empty()) return {};
+    if (heightmap.empty()) return {};
 
     // Normalize float → uint8
     float zMin =  std::numeric_limits<float>::max();
     float zMax = -std::numeric_limits<float>::max();
-    for (float v : zmap.data) {
+    for (float v : heightmap.data) {
         if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
     }
     if (zMin <= zMax) {   // 유효 픽셀 존재
@@ -72,15 +72,15 @@ inline std::string zmapToBase64(const ZMap& zmap,
     }
     float range = (zMax > zMin) ? (zMax - zMin) : 1.f;
 
-    std::vector<uint8_t> gray(static_cast<size_t>(zmap.width) * zmap.height);
-    for (int i = 0; i < zmap.width * zmap.height; ++i) {
-        float v = zmap.data[i];
+    std::vector<uint8_t> gray(static_cast<size_t>(heightmap.width) * heightmap.height);
+    for (int i = 0; i < heightmap.width * heightmap.height; ++i) {
+        float v = heightmap.data[i];
         gray[i] = std::isnan(v) ? 0
                 : static_cast<uint8_t>((v - zMin) / range * 255.f);
     }
 
     std::vector<uint8_t> jpg;
-    stbi_write_jpg_to_func(stbiCallback, &jpg, zmap.width, zmap.height, 1,
+    stbi_write_jpg_to_func(stbiCallback, &jpg, heightmap.width, heightmap.height, 1,
                            gray.data(), 85);
     return base64Encode(jpg);
 }

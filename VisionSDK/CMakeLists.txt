@@ -7,7 +7,7 @@ add_library(VisionSDK SHARED
 
 target_include_directories(VisionSDK
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_SOURCE_DIR}/VisionEngine/src   # ToolFactory.h, ZMapCache.h 등
+    PRIVATE ${CMAKE_SOURCE_DIR}/VisionEngine/src   # ToolFactory.h, HeightMapCache.h 등
 )
 
 # Core/VisionTools가 OpenCV/Eigen/spdlog/nlohmann을 PUBLIC 전파.

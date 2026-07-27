@@ -5,7 +5,7 @@ export type BatchSortKey = 'name' | 'time'
 
 interface Props {
   running: boolean
-  loaders: BatchLoader[]  // folder 모드 ZMapLoader 목록 (노드 folder 설정에서 수집)
+  loaders: BatchLoader[]  // folder 모드 HeightMapLoader 목록 (노드 folder 설정에서 수집)
   sortKey: BatchSortKey
   index: number           // 현재 세트 인덱스 (0-based)
   cycle: number           // 현재 회차 (1-based)
@@ -44,7 +44,7 @@ export default function FolderInspectPanel({
         <div className="fi-body">
           {loaders.length === 0 ? (
             <div className="fi-warn">
-              ⚠ 폴더 모드로 설정된 ZMapLoader가 없습니다. ZMapLoader 노드를 열어 <b>모드 → 폴더(연속검사)</b>로 설정하고 폴더를 지정하세요.
+              ⚠ 폴더 모드로 설정된 HeightMapLoader가 없습니다. HeightMapLoader 노드를 열어 <b>모드 → 폴더(연속검사)</b>로 설정하고 폴더를 지정하세요.
             </div>
           ) : (
             <>

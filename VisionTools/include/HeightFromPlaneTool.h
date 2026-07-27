@@ -1,6 +1,6 @@
 #pragma once
 #include "IAlgorithmTool.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <vector>
 #include <array>
 #include <string>
@@ -13,7 +13,7 @@ namespace vision {
 //  대표 Z를 추출하고 평면까지의 수직거리를 측정한다.
 // ─────────────────────────────────────────────────────────────────────
 struct HeightFromPlaneParams {
-    // ROI in percentage of ZMap dimensions (0.0 ~ 1.0)
+    // ROI in percentage of HeightMap dimensions (0.0 ~ 1.0)
     struct ROI {
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
         bool  isCircle = false;   // true면 ROI 사각 영역에 내접하는 타원
@@ -81,9 +81,9 @@ private:
         double cx = 0, cy = 0, rx = 1, ry = 1; // 내접 타원 (px)
         std::vector<std::array<double, 2>> poly;   // 폴리곤 꼭짓점 (px)
     };
-    std::vector<MaskPx> resolveMasks(const ZMap& map, int offCol, int offRow) const;
+    std::vector<MaskPx> resolveMasks(const HeightMap& map, int offCol, int offRow) const;
 
-    std::vector<Pt3> extractPoints(const ZMap& map,
+    std::vector<Pt3> extractPoints(const HeightMap& map,
                                    const HeightFromPlaneParams::ROI& roi,
                                    int offCol, int offRow,
                                    const std::vector<MaskPx>& masks) const;

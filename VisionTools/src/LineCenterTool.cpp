@@ -6,7 +6,7 @@
 namespace vision {
 
 // 단일 ROI에서 에지 캘리퍼로 라인 검색
-bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
+bool LineCenterTool::findLine(const HeightMap& map, const LineCenterParams::ROI& roi,
                               LineCenterResult::Line& out) const {
     // 회전된 검색 ROI: 중심/반치수(픽셀) + 회전각
     const double cxRoi = (roi.xPct + roi.wPct / 2.0) * map.width;
@@ -108,14 +108,14 @@ bool LineCenterTool::findLine(const ZMap& map, const LineCenterParams::ROI& roi,
 ToolResult LineCenterTool::execute(VisionDataPtr input) {
     m_result = {};
 
-    if (!input || !input->hasZMap())
-        return { ToolStatus::Fail, "LineCenter: ZMap 입력이 없습니다" };
+    if (!input || !input->hasHeightMap())
+        return { ToolStatus::Fail, "LineCenter: HeightMap 입력이 없습니다" };
     if (m_params.rois.empty())
         return { ToolStatus::Fail, "LineCenter: 검색 ROI가 없습니다" };
 
-    const auto& map = *input->zmap;
+    const auto& map = *input->heightmap;
 
-    // 타입화 출력: 검출 기준점(points)/원점(origin)만 전달. 이미지/zmap 미포함.
+    // 타입화 출력: 검출 기준점(points)/원점(origin)만 전달. 이미지/heightmap 미포함.
     auto out = std::make_shared<VisionData>();
     out->sourceId = input->sourceId;
     auto pts = std::make_shared<std::vector<RefPoint>>();

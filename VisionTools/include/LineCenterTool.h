@@ -1,14 +1,14 @@
 #pragma once
 
 #include "IAlgorithmTool.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <string>
 
 namespace vision {
 
 // ─────────────────────────────────────────────────────────────────────
 //  LineCenterTool
-//    ZMap을 임계값으로 이진화 → 설정한 ROI 내 전경(라인) 픽셀에
+//    HeightMap을 임계값으로 이진화 → 설정한 ROI 내 전경(라인) 픽셀에
 //    라인피팅 → 라인 중심 (x, y)을 출력.
 //    (좌표 정렬: 타겟 엣지를 찾아 기준점으로 사용)
 // ─────────────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ private:
     LineCenterResult m_result;
 
     // 단일 ROI에서 라인 검색 (찾으면 out 채우고 true)
-    bool findLine(const ZMap& map, const LineCenterParams::ROI& roi,
+    bool findLine(const HeightMap& map, const LineCenterParams::ROI& roi,
                   LineCenterResult::Line& out) const;
 };
 

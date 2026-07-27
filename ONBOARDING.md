@@ -1,6 +1,6 @@
 # VisionSW — 개발자 온보딩 가이드
 
-산업용 3D 비전 검사 소프트웨어. 노드 기반 파이프라인으로 ZMap(높이맵)·이미지·포인트클라우드를 처리하여 평면 피팅, 단차/높이 측정 등을 수행한다.
+산업용 3D 비전 검사 소프트웨어. 노드 기반 파이프라인으로 HeightMap(높이맵)·이미지·포인트클라우드를 처리하여 평면 피팅, 단차/높이 측정 등을 수행한다.
 
 ---
 
@@ -10,7 +10,7 @@
 |------|------|
 | 목적 | 노드 그래프로 검사 레시피를 구성 → 3D 센서 데이터에서 측정값 추출 (반복성 테스트 등) |
 | 아키텍처 | **C++ 알고리즘 엔진** + **Electron/React UI**, 둘은 **WebSocket**(`ws://localhost:9000`)으로 통신 |
-| 핵심 워크플로우 | `ZMapLoader → PlaneFit(평면 피팅) → HeightFromPlane(평면 대비 수직거리 측정)` |
+| 핵심 워크플로우 | `HeightMapLoader → PlaneFit(평면 피팅) → HeightFromPlane(평면 대비 수직거리 측정)` |
 
 데이터 흐름:
 ```
@@ -26,7 +26,7 @@
 **백엔드 (C++17)**
 - **Crow** — WebSocket 서버
 - **nlohmann/json** — JSON 직렬화
-- **stb_image / stb_image_write** — PNG 입출력 (ZMap 로딩, 미리보기 인코딩)
+- **stb_image / stb_image_write** — PNG 입출력 (HeightMap 로딩, 미리보기 인코딩)
 - **spdlog** — 로깅
 - **GoogleTest** — 단위 테스트
 - 의존성은 **vcpkg**(manifest 모드, `vcpkg.json`)로 관리
@@ -46,24 +46,30 @@ visionsw/
 ├── vcpkg.json              # C++ 의존성 매니페스트
 ├── Core/                   # 공용 데이터 타입 · 파이프라인
 │   ├── include/
-│   │   ├── VisionData.h     # Image2D / PointCloud3D / ZMap / PlaneModel 컨테이너
-│   │   ├── ZMap.h           # 높이맵 (mm 좌표 변환 포함)
+│   │   ├── VisionData.h     # Image2D / PointCloud3D / HeightMap / PlaneModel 컨테이너
+│   │   ├── HeightMap.h           # 높이맵 (mm 좌표 변환 포함)
 │   │   ├── IAlgorithmTool.h # 모든 툴의 인터페이스 (execute)
 │   │   └── Pipeline.h
 │   └── src/
 ├── VisionTools/            # 알고리즘 구현 (정적 라이브러리)
 │   ├── include/ · src/
-│   │   ├── NoiseFilter         # 2D 가우시안 / 3D 이웃수 필터
+│   │   ├── NoiseFilter         # 2D 가우시안·미디언 / 3D 이웃수 필터
 │   │   ├── EdgeDetector        # Sobel / Canny
-│   │   ├── LineFitHeightMeasure# 직선/평면 기준 높이 측정
 │   │   ├── PlaneFitTool        # 평면 피팅 (LS / RANSAC / SVD)
+│   │   ├── RefHeightTool       # 기준 평면 + 평균높이 산출
 │   │   ├── HeightFromPlaneTool # 평면 대비 수직거리 측정
+│   │   ├── LineCenterTool      # 라인 중심·각도 검출 (좌표정렬 기준점)
+│   │   ├── AlignTool           # 기준점을 좌표계 원점으로 설정
+│   │   ├── CsvWriterTool       # 측정값 CSV 저장
 │   │   └── ThicknessMeasure    # 두께 측정
 ├── VisionEngine/           # WebSocket 서버 (실행 파일)
 │   └── src/
-│       ├── main.cpp         # Crow 서버, 파이프라인 실행, 결과 직렬화
-│       ├── ToolFactory.cpp  # JSON 파라미터 → 툴 인스턴스 생성
-│       └── ImageEncoder.h   # ZMap/이미지 → base64 PNG 미리보기
+│       ├── main.cpp           # Crow 서버, 파이프라인 실행, 결과 직렬화
+│       ├── ToolFactory.cpp    # JSON 파라미터 → 툴 인스턴스 생성 (+ 다수 I/O·머지 툴 인라인 정의)
+│       ├── ExposureMergeCore.h# 이중/삼중 노출 머지 공유 코어
+│       ├── HeightMapCache.h        # HeightMap 파일 로드·LRU 캐시·폴더 프리로드
+│       ├── JsonBridge.*       # JSON ↔ 레시피 변환
+│       └── ImageEncoder.h     # HeightMap/이미지 → base64 PNG 미리보기
 ├── Tests/                  # GTest 단위 테스트
 └── ui/                     # Electron + React 앱
     └── src/
@@ -89,22 +95,40 @@ visionsw/
 
 ## 4. 노드 카탈로그
 
-| 노드 | 입력 → 출력 | 기능 |
-|------|------------|------|
-| **ZMapLoader** | – → ZMap | PNG(16/8bit)를 ZMap으로 로드. `xResMm/yResMm/zResMm` 분해능 지정 |
-| **ImageLoader** | – → Image2D | 일반 이미지 로드 |
-| **NoiseFilter** | Any → Any | 2D 가우시안 / 3D 포인트 노이즈 제거 |
-| **EdgeDetector** | Image2D → Image2D | Sobel / Canny 엣지 검출 |
-| **LineFitHeight** | ZMap → ZMap | 2개 ref 영역으로 직선/평면 기준 잡고 높이 측정 |
-| **PlaneFit** | ZMap → **PlaneZMap** | 여러 ref ROI로 평면 `z=ax+by+c` 피팅. 결과: 평면식·RMSE·기울기각·인라이어수. 평면을 출력에 첨부 |
-| **HeightFromPlane** | **PlaneZMap** → PlaneZMap | 여러 measure ROI에서 Z 추출(Mean/Max/HighTail) → 평면까지 수직거리 측정 + tolerance 합부판정 |
-| **ThicknessMeasure** | PointCloud3D → PointCloud3D | 두께 측정 + 공차 판정 |
+노드는 UI 라벨(`tools.ts`) 기준으로 표기하고, 괄호 안은 내부 `type`(레시피 JSON·`ToolFactory`에서 쓰는 식별자)이다.
 
-**포트 타입**(`tools.ts`의 `PortType`): `ZMap` · `PlaneZMap` · `Image2D` · `PointCloud3D` · `Any`
-연결 규칙: `Any`이거나 타입이 같으면 연결 허용. `PlaneFit→HeightFromPlane`은 `PlaneZMap`으로 강제 매칭.
+| 카테고리 | 노드 (type) | 입력 → 출력 | 기능 |
+|------|------|------------|------|
+| 입력 | **HeightMap Loader** (`HeightMapLoader`) | – → HeightMap | PNG(16/8bit)를 HeightMap으로 로드. `xResMm/yResMm/zResMm` 분해능 지정. file/folder 모드, 파일 캐시 |
+| 입력 | **Image Loader** (`ImageLoader`) | – → Image2D | 일반 이미지 로드 |
+| 필터 | **Exposure Split** (`ExposureMerge`) | HeightMap → HeightMap | 인터리브 노출 분리(`outputStage`로 저/장 선택) |
+| 필터 | **Exposure Merge** (`ExposureMerge2`) | HeightMap → HeightMap | 저/장 2노출 인터리브 Z-map 머지(리플렉션 제거·홀채움). matchTol/reflTol/tolX/tolY/gapK, chunkMode |
+| 필터 | **Exposure Merge (3)** (`ExposureMerge3`) | HeightMap → HeightMap | 저>중>장 3노출 캐스케이드 머지 |
+| 필터 | **Row Stretch** (`RowStretch`) | HeightMap → HeightMap | ROI 밴드별 행 스케일 보정 |
+| 필터 | **Noise Filter** (`NoiseFilter`) | HeightMap → HeightMap | 2D 가우시안/미디언 / 3D 포인트 노이즈 제거 |
+| 필터 | **Gap Fill** (`GapFill`) | HeightMap → HeightMap | 무효(NaN) 구멍 채움(neighbor/IDW 등) |
+| 필터 | **Edge Detector** (`EdgeDetector`) | Image2D → Image2D | Sobel / Canny 엣지 검출 |
+| 정렬 | **Line Finder** (`LineCenter`) | HeightMap → **Point** | HeightMap 이진화 후 ROI 내 라인 중심(x,y)·각도 검출(회전 ROI 지원). 좌표정렬 기준점 생산 |
+| 정렬 | **Align** (`Align`) | HeightMap + **Point** → HeightMap | 검출 기준점을 좌표계 원점으로 설정(하류 ROI가 타겟 추종) |
+| 측정 | **Plane Fit** (`PlaneFit`) | HeightMap → **Plane** | 여러 ref ROI로 평면 `z=ax+by+c` 피팅(LS/RANSAC/SVD). 평면을 출력에 첨부 |
+| 측정 | **Ref Height** (`RefHeight`) | HeightMap → **Plane, Heights** | ref ROI로 기준 평면+평균높이 산출(SOR/tail 옵션) |
+| 측정 | **Height Measure** (`HeightMeasure`) | HeightMap + **Plane** → Heights | measure ROI에서 Z 추출(Mean/Max/HighTail) → 평면까지 수직거리 + tolerance 합부판정 |
+| 측정 | **Thickness Measure** (`ThicknessMeasure`) | PointCloud3D → PointCloud3D | 두께 측정 + 공차 판정 |
+| 변환 | **HeightMap to Cloud** (`HeightMapToCloud`) | HeightMap → PointCloud3D | HeightMap을 포인트클라우드로 변환(`step` 서브샘플) |
+| 변환 | **Exposure Merge (Cloud)** (`ExposureMergeCloud`) | HeightMap → PointCloud3D | 이중노출 머지 결과를 포인트클라우드로 출력(strict 기본값) |
+| 출력 | **CSV Writer** (`CsvWriter`) | Heights → – | 측정 높이값을 CSV로 저장 |
+| 출력 | **Image Saver** (`ImageSaver`) | Any → – | HeightMap/이미지를 PNG/TIFF 등으로 저장(타임스탬프 경로) |
+| 출력 | **Cloud Saver** (`CloudSaver`) | PointCloud3D → – | 포인트클라우드를 PLY/ASC 등으로 저장 |
 
-**평면 전달 방식**: `PlaneFit`이 `VisionData::plane`(`PlaneModel`)에 피팅 결과를 실어 출력 → `HeightFromPlane`이 읽어 수직거리 계산.
+**포트 타입**(`tools.ts`의 `PortType`): `HeightMap` · `Plane` · `Heights` · `Image2D` · `PointCloud3D` · `Point` · `Any`
+연결 규칙: `Any`이거나 타입이 같으면 연결 허용.
+
+**평면 전달 방식**: `PlaneFit`/`RefHeight`가 `VisionData::plane`(`PlaneModel`)에 피팅 결과를 실어 출력(`Plane` 포트) → `HeightMeasure`가 읽어 수직거리 계산.
 수직거리 = `(z − (a·x + b·y + c)) / √(1 + a² + b²)` (부호 있음, mm)
+
+**기준점 전달**: `LineCenter`가 검출한 기준점을 `Point` 포트로 출력 → `Align`이 받아 HeightMap 좌표계 원점을 재설정.
+
+> ⚠️ 참고: `LineFitHeight`(구 노드)는 현재 코드에 없다. `RefHeight`/`HeightMeasure`로 대체됨.
 
 ---
 

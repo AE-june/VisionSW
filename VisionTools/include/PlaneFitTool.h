@@ -1,6 +1,6 @@
 #pragma once
 #include "IAlgorithmTool.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <vector>
 #include <array>
 #include <string>
@@ -11,7 +11,7 @@ namespace vision {
 //  PlaneFitParams
 // ─────────────────────────────────────────────────────────────────────
 struct PlaneFitParams {
-    // ROI in percentage of ZMap dimensions (0.0 ~ 1.0)
+    // ROI in percentage of HeightMap dimensions (0.0 ~ 1.0)
     struct ROI {
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
         bool valid() const { return wPct > 0.f && hPct > 0.f; }
@@ -41,7 +41,7 @@ struct PlaneFitResult {
     int    inlierCount = 0;         // (RANSAC) 인라이어 수, 그 외 = refPointCount
     bool   valid  = false;
     std::string message;
-    // 3D 뷰용: 전체 ZMap을 격자 다운샘플한 포인트클라우드 (x_mm, y_mm, z_mm)
+    // 3D 뷰용: 전체 HeightMap을 격자 다운샘플한 포인트클라우드 (x_mm, y_mm, z_mm)
     std::vector<std::array<double, 3>> cloudPoints;
 };
 
@@ -62,7 +62,7 @@ private:
 
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
 
-    std::vector<Pt3> extractPoints(const ZMap& map,
+    std::vector<Pt3> extractPoints(const HeightMap& map,
                                    const PlaneFitParams::ROI& roi,
                                    int offCol = 0, int offRow = 0) const;
 

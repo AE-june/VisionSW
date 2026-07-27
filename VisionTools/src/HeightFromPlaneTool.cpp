@@ -17,15 +17,15 @@ HeightFromPlaneTool::HeightFromPlaneTool(HeightFromPlaneParams params)
 ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     m_result = {};
 
-    if (!input || !input->hasZMap())
-        return { ToolStatus::Fail, "HeightMeasure: ZMap이 없습니다." };
+    if (!input || !input->hasHeightMap())
+        return { ToolStatus::Fail, "HeightMeasure: HeightMap이 없습니다." };
     if (m_params.measureRois.empty())
         return { ToolStatus::Fail, "HeightMeasure: 측정 ROI가 없습니다." };
 
-    const ZMap&       map   = *input->zmap;
+    const HeightMap&       map   = *input->heightmap;
     // plane 입력이 있으면 평면 기준 수직거리, 없으면 절대 높이(z)
     const PlaneModel* plane = input->hasPlane() ? input->plane.get() : nullptr;
-    // ZMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동.
+    // HeightMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동.
     // ROI 좌표는 원점 기준 상대값(px)이라 검출된 원점에 더해 절대 위치를 만든다.
     // 원점이 0이면 기존과 동일(하위 호환).
     const int offCol = static_cast<int>(std::lround(map.originCol));
@@ -78,7 +78,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
     m_result.allPass = allPassA.load();
 
     // 타입화 출력: 측정된 높이값 배열만 전달 (이미지/plane 미포함).
-    // 높이는 입력 zmap을 입력 plane 기준으로 측정 — 결과창 이미지는 엔진이 입력 zmap으로 폴백 표시.
+    // 높이는 입력 heightmap을 입력 plane 기준으로 측정 — 결과창 이미지는 엔진이 입력 heightmap으로 폴백 표시.
     auto out = std::make_shared<VisionData>();
     out->heights = std::make_shared<std::vector<double>>();
     out->heights->reserve(m_result.measures.size());
@@ -91,7 +91,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
 //  extractPoints — percentage ROI → (x_mm, y_mm, z_mm)
 // ─────────────────────────────────────────────────────────────────────
 std::vector<HeightFromPlaneTool::Pt3>
-HeightFromPlaneTool::extractPoints(const ZMap& map,
+HeightFromPlaneTool::extractPoints(const HeightMap& map,
                                    const HeightFromPlaneParams::ROI& roi,
                                    int offCol, int offRow,
                                    const std::vector<MaskPx>& masks) const {
@@ -133,7 +133,7 @@ HeightFromPlaneTool::extractPoints(const ZMap& map,
 //   픽셀 루프는 정수 비교/타원 판정만 수행하도록 한다. (판정 규칙은 기존과 동일)
 // ─────────────────────────────────────────────────────────────────────
 std::vector<HeightFromPlaneTool::MaskPx>
-HeightFromPlaneTool::resolveMasks(const ZMap& map, int offCol, int offRow) const {
+HeightFromPlaneTool::resolveMasks(const HeightMap& map, int offCol, int offRow) const {
     std::vector<MaskPx> out;
     out.reserve(m_params.maskRois.size());
     for (const auto& mk : m_params.maskRois) {

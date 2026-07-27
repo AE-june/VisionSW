@@ -153,7 +153,7 @@ interface Props {
   /** 하단 요약/힌트 영역 */
   footer?: ReactNode
   placeholder?: ReactNode
-  /** ZMap 실제 z 범위(raw count) — 컬러맵 range를 실제값 단위로 표시 */
+  /** HeightMap 실제 z 범위(raw count) — 컬러맵 range를 실제값 단위로 표시 */
   zMin?: number
   zMax?: number
   /** 이미지 원본 픽셀 크기 콜백 (좌표 입력용) */
@@ -380,7 +380,7 @@ export default function ImageViewer({
   // 리셋 = 전체보기(fit) (여백으로 가운데 정렬됨)
   const resetView = () => applyZoom(fitZoom(boxRef.current, imgPxRef.current))
 
-  // ZMap 실제 z 범위가 도착하면 수동 range 초기값을 그 범위로 맞춤.
+  // HeightMap 실제 z 범위가 도착하면 수동 range 초기값을 그 범위로 맞춤.
   // 단, 세션에 저장된 수동 범위를 복원한 경우 첫 실행은 건너뛰어 사용자 설정을 덮어쓰지 않는다.
   const skipRangeInit = useRef(restored.rangeLo !== undefined)
   useEffect(() => {

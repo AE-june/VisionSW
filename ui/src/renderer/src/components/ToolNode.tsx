@@ -63,7 +63,7 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
     )
   }
 
-  // Image / ZMap preview (로더/필터)
+  // Image / HeightMap preview (로더/필터)
   if (result.preview) {
     return (
       <div className="tool-node-result">

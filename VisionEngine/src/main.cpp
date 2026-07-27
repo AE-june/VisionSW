@@ -1,5 +1,5 @@
 #include "ToolFactory.h"
-#include "ZMapCache.h"
+#include "HeightMapCache.h"
 #include "JsonBridge.h"
 #include "ImageEncoder.h"
 #include "Logger.h"
@@ -99,8 +99,8 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     const bool noPreview = msg.value("noPreview", false);
     // 개별 노드 실행 시 이 노드는 캐시 무시하고 항상 재실행 (상류만 캐시 재사용)
     const std::string forceNode = msg.value("forceNode", std::string());
-    // 배치(폴더검사) 모드 — 이번 실행에 쓴 ZMapLoader 원본 파일을 끝나고 캐시에서 즉시 비움
-    // (여러 이미지를 순회하는 워커 프로세스가 g_zmapFileCache를 무한정 쌓아두지 않도록)
+    // 배치(폴더검사) 모드 — 이번 실행에 쓴 HeightMapLoader 원본 파일을 끝나고 캐시에서 즉시 비움
+    // (여러 이미지를 순회하는 워커 프로세스가 g_heightmapFileCache를 무한정 쌓아두지 않도록)
     const bool batchMode = msg.value("batch", false);
     std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
     // Parse nodes
@@ -110,16 +110,16 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     };
     std::vector<NodeSpec> nodeSpecs;
     std::unordered_map<std::string, int> nodeIdx;
-    std::vector<std::string> zmapPathsUsed;
+    std::vector<std::string> heightmapPathsUsed;
 
     for (const auto& n : msg.at("nodes")) {
         NodeSpec ns;
         ns.id     = n.at("id").get<std::string>();
         ns.type   = n.at("type").get<std::string>();
         ns.params = n.value("params", json::object());
-        if (ns.type == "ZMapLoader") {
+        if (ns.type == "HeightMapLoader") {
             auto p = ns.params.value("path", std::string());
-            if (!p.empty()) zmapPathsUsed.push_back(p);
+            if (!p.empty()) heightmapPathsUsed.push_back(p);
         }
         nodeIdx[ns.id] = static_cast<int>(nodeSpecs.size());
         nodeSpecs.push_back(std::move(ns));
@@ -195,7 +195,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         }
 
         // Get input data — 여러 입력 엣지의 출력을 하나로 병합
-        // (예: HeightFromPlane은 ZMap 소스 + Plane 소스를 함께 받음)
+        // (예: HeightFromPlane은 HeightMap 소스 + Plane 소스를 함께 받음)
         VisionDataPtr inputData = nullptr;
         if (inputsFrom.count(nodeId)) {
             auto merged = std::make_shared<VisionData>();
@@ -205,7 +205,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 if (it == outputs.end() || !it->second) continue;
                 const auto& o = it->second;
                 any = true;
-                if (o->zmap    && !merged->zmap)    merged->zmap    = o->zmap;
+                if (o->heightmap    && !merged->heightmap)    merged->heightmap    = o->heightmap;
                 if (o->image   && !merged->image)   merged->image   = o->image;
                 if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
                 if (o->plane   && !merged->plane)   merged->plane   = o->plane;
@@ -236,10 +236,10 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         bool ok = (result.status == ToolStatus::Ok);
         if (!ok) pipelinePass = false;
 
-        // 표시용 zmap: 출력에 zmap 있으면 그걸, 없으면(타입화 출력) 입력 zmap으로 폴백.
+        // 표시용 heightmap: 출력에 heightmap 있으면 그걸, 없으면(타입화 출력) 입력 heightmap으로 폴백.
         // → 분석 노드(PlaneFit/HeightMeasure 등)도 자기가 다룬 '입력' 이미지를 결과창에 표시.
-        const ZMap* dispZ = (result.output && result.output->hasZMap()) ? result.output->zmap.get()
-                          : (inputData && inputData->hasZMap()) ? inputData->zmap.get() : nullptr;
+        const HeightMap* dispZ = (result.output && result.output->hasHeightMap()) ? result.output->heightmap.get()
+                          : (inputData && inputData->hasHeightMap()) ? inputData->heightmap.get() : nullptr;
 
         // Build per-tool result
         json jr;
@@ -250,7 +250,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         jr["msg"]       = result.message;
         jr["elapsedMs"] = elapsedMs;
 
-        // 모든 노드: 출력(표시) ZMap의 치수+좌표원점을 함께 보고 → 하류 ROI 에디터가
+        // 모든 노드: 출력(표시) HeightMap의 치수+좌표원점을 함께 보고 → 하류 ROI 에디터가
         //  '전파된 원점' 기준으로 ROI를 상대저장하게 한다(중간에 머지/필터가 껴도 원점 유지).
         //  (예전엔 Align 결과에만 offCol/offRow가 있어, 중간 노드가 끼면 UI 원점이 0이 됐음)
         if (dispZ) {
@@ -287,7 +287,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["rejectedCount"] = r.rejectedCount;
             }
         }
-        if ((ns.type == "ZMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
+        if ((ns.type == "HeightMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
             // 3D 미리보기용 서브샘플(최대 ~50k점) — 저장 파일은 전체 해상도(영향 없음)
             const auto& cpts = result.output->cloud->points;
             const size_t cap = 50000;
@@ -364,21 +364,21 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             }
         }
 
-        // 프리뷰(base64 PNG). 출력에 이미지 없으면 입력 zmap으로 폴백(dispZ). noPreview면 생략(배치 가속).
+        // 프리뷰(base64 PNG). 출력에 이미지 없으면 입력 heightmap으로 폴백(dispZ). noPreview면 생략(배치 가속).
         if (!noPreview) {
             if (result.output && result.output->hasImage())
                 jr["preview"] = imageToBase64(*result.output->image);
             else if (dispZ) {
-                // zmapToBase64가 정규화하며 구한 z범위를 그대로 받음 (중복 스캔 제거)
+                // heightmapToBase64가 정규화하며 구한 z범위를 그대로 받음 (중복 스캔 제거)
                 float zMin = 0, zMax = 0; bool hasRange = false;
-                jr["preview"] = zmapToBase64(*dispZ, &zMin, &zMax, &hasRange);
+                jr["preview"] = heightmapToBase64(*dispZ, &zMin, &zMax, &hasRange);
                 if (hasRange) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
                 jr["xResMm"] = dispZ->xResMm;
                 jr["yResMm"] = dispZ->yResMm;
             }
         }
 
-        // 단계별 미리보기(선택) — 결과창 드롭다운용. 각 단계 ZMap을 개별 인코딩.
+        // 단계별 미리보기(선택) — 결과창 드롭다운용. 각 단계 HeightMap을 개별 인코딩.
         if (result.output && result.output->stages && !noPreview) {
             json stages = json::array();
             for (const auto& st : *result.output->stages) {
@@ -386,7 +386,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 float zMin = 0, zMax = 0; bool hasRange = false;
                 json s;
                 s["name"]    = st.first;
-                s["preview"] = zmapToBase64(*st.second, &zMin, &zMax, &hasRange);
+                s["preview"] = heightmapToBase64(*st.second, &zMin, &zMax, &hasRange);
                 if (hasRange) { s["zMin"] = zMin; s["zMax"] = zMax; }
                 s["xResMm"]  = st.second->xResMm;
                 s["yResMm"]  = st.second->yResMm;
@@ -399,9 +399,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         emit(jr.dump());
     }
 
-    if (batchMode && !zmapPathsUsed.empty()) {
-        std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-        for (const auto& p : zmapPathsUsed) g_zmapFileCache.erase(p);
+    if (batchMode && !heightmapPathsUsed.empty()) {
+        std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+        for (const auto& p : heightmapPathsUsed) g_heightmapFileCache.erase(p);
     }
 
     const double totalMs =
@@ -420,7 +420,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
 }
 
 // ── [검증용] 반복성 분석 헤드리스 러너 (feat/repeatability 브랜치) ──────────────
-//   레시피를 폴더의 모든 ZMap에 적용해 HeightMeasure 영역별 높이/PlaneFit 파라미터를
+//   레시피를 폴더의 모든 HeightMap에 적용해 HeightMeasure 영역별 높이/PlaneFit 파라미터를
 //   수집하고, 영역별 반복성(σ, range)을 산출한다.
 static double vstd(const std::vector<double>& v, double& mean) {
     if (v.empty()) { mean = 0; return 0; }
@@ -452,7 +452,7 @@ static int repeatAnalyze(const std::string& recipePath, const std::string& folde
         json msg = recipe;
         msg["cmd"] = "run"; msg["noPreview"] = true; msg["useCache"] = false; msg["batch"] = true;
         for (auto& n : msg["nodes"])
-            if (n.value("type", "") == "ZMapLoader") { n["params"]["path"] = files[fi]; n["params"]["mode"] = "file"; }
+            if (n.value("type", "") == "HeightMapLoader") { n["params"]["path"] = files[fi]; n["params"]["mode"] = "file"; }
         json done = runPipeline(msg, nullptr);
 
         std::vector<double> d, np;
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
                 }
                 if (cmd == "prefetch") {
                     // 폴더검사 워커풀용 — 지정한 파일 1장을 백그라운드 스레드에서 미리 로드해
-                    // g_zmapFileCache에 채워둠. 현재 run 처리 중에도 non-blocking으로 동작하도록
+                    // g_heightmapFileCache에 채워둠. 현재 run 처리 중에도 non-blocking으로 동작하도록
                     // 커넥션 핸들러를 바로 리턴하고 detach된 스레드가 실제 로딩을 담당.
                     std::string path = msg.value("path", "");
                     if (!path.empty()) {
@@ -565,13 +565,13 @@ int main(int argc, char** argv) {
                         float zRes = msg.value("zResMm", 0.001f);
                         std::thread([path, xRes, yRes, zRes]() {
                             {
-                                std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-                                if (g_zmapFileCache.count(path)) return;   // 이미 있음
+                                std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+                                if (g_heightmapFileCache.count(path)) return;   // 이미 있음
                             }
-                            auto zmap = vision::loadZMapFromFile(path, xRes, yRes, zRes);
-                            if (!zmap) return;
-                            std::lock_guard<std::mutex> lk(g_zmapFileCacheMtx);
-                            vision::zmapCachePut(path, zmap);
+                            auto heightmap = vision::loadHeightMapFromFile(path, xRes, yRes, zRes);
+                            if (!heightmap) return;
+                            std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+                            vision::heightmapCachePut(path, heightmap);
                         }).detach();
                     }
                     return;

@@ -1,4 +1,4 @@
-export type PortType = 'ZMap' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Point' | 'Any'
+export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Point' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -12,7 +12,8 @@ export interface ToolDef {
 }
 
 export const PORT_COLORS: Record<PortType, string> = {
-  ZMap:          '#00bcd4',
+  HeightMap:          '#00bcd4',
+  Region:        '#66bb6a',
   Plane:         '#26a69a',
   Heights:       '#ffc107',
   Image2D:       '#ff9800',
@@ -23,8 +24,8 @@ export const PORT_COLORS: Record<PortType, string> = {
 
 export const TOOL_DEFS: ToolDef[] = [
   {
-    type: 'ZMapLoader', label: 'ZMap Loader', category: '입력',
-    inputs: [], outputs: ['ZMap'],
+    type: 'HeightMapLoader', label: 'HeightMap Loader', category: '입력',
+    inputs: [], outputs: ['HeightMap'],
     defaultParams: { mode: 'file', path: '', folder: '', index: 0, xResMm: 1.0, yResMm: 1.0, zResMm: 0.001 },
   },
   {
@@ -34,25 +35,25 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'ExposureMerge', label: 'Exposure Split', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
-    defaultParams: { outputStage: 0 },
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    defaultParams: { splitCount: 2, outputStage: 0 },
   },
   {
     type: 'RowStretch', label: 'Row Stretch', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: { rois: [] },
   },
   {
     type: 'ExposureMerge2', label: 'Exposure Merge', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: {
-      matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
+      matchTol: 20, reflTol: -1, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
       chunkMode: false, chunkRows: 1000, overlapRows: 320,
     },
   },
   {
     type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: {
       matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
       removeReflection: true,
@@ -60,17 +61,17 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'LineCenter', label: 'Line Finder', category: '정렬',
-    inputs: ['ZMap'], outputs: ['Point'],
+    inputs: ['HeightMap'], outputs: ['Point'],
     defaultParams: { rois: [], threshold: 1, xRoi: 0, yRoi: 0 },
   },
   {
     type: 'NoiseFilter', label: 'Noise Filter', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: { rois: [], filterType: 'median', kernelSizeX: 3, kernelSizeY: 3, stdRatio: 2.0, sigmaRangeMm: 0.02, radius: 1.0, minNeighbors: 5 },
   },
   {
     type: 'GapFill', label: 'Gap Fill', category: '필터',
-    inputs: ['ZMap'], outputs: ['ZMap'],
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, edgeSigma: 30, outputStage: 0 },
   },
   {
@@ -80,7 +81,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'PlaneFit', label: 'Plane Fit', category: '측정',
-    inputs: ['ZMap'], outputs: ['Plane'],
+    inputs: ['HeightMap'], outputs: ['Plane'],
     defaultParams: {
       rois: [],
       algorithm: 'LeastSquares',
@@ -91,7 +92,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'RefHeight', label: 'Ref Height', category: '측정',
-    inputs: ['ZMap'], outputs: ['Plane', 'Heights'],
+    inputs: ['HeightMap'], outputs: ['Plane', 'Heights'],
     outputLabels: ['Plane', 'Avg'],
     defaultParams: {
       rois: [],
@@ -103,7 +104,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'HeightMeasure', label: 'Height Measure', category: '측정',
-    inputs: ['ZMap', 'Plane'], outputs: ['Heights'],
+    inputs: ['HeightMap', 'Plane'], outputs: ['Heights'],
     defaultParams: {
       rois: [],
       aggregation: 'Mean',
@@ -124,7 +125,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'Align', label: 'Align', category: '정렬',
-    inputs: ['ZMap', 'Point'], outputs: ['ZMap'],
+    inputs: ['HeightMap', 'Point'], outputs: ['HeightMap'],
     defaultParams: {},
   },
   {
@@ -138,13 +139,13 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { folder: '', filename: '', format: 'png' },
   },
   {
-    type: 'ZMapToCloud', label: 'ZMap to Cloud', category: '변환',
-    inputs: ['ZMap'], outputs: ['PointCloud3D'],
+    type: 'HeightMapToCloud', label: 'HeightMap to Cloud', category: '변환',
+    inputs: ['HeightMap'], outputs: ['PointCloud3D'],
     defaultParams: { step: 1 },
   },
   {
     type: 'ExposureMergeCloud', label: 'Exposure Merge (Cloud)', category: '변환',
-    inputs: ['ZMap'], outputs: ['PointCloud3D'],
+    inputs: ['HeightMap'], outputs: ['PointCloud3D'],
     defaultParams: { matchTol: 20, tolX: 5, tolY: 30, gapK: 0 },
   },
   {

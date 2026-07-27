@@ -40,7 +40,7 @@ ToolResult CsvWriterTool::execute(VisionDataPtr input) {
 
     VISION_LOG_INFO("CsvWriter: {}개 값을 한 행으로 추가 → {}", h.size(), m_params.path);
 
-    // 타입화 출력: 싱크. 높이값만 통과(체인용), 이미지/zmap 미포함 → 결과창에 이미지 안 뜸.
+    // 타입화 출력: 싱크. 높이값만 통과(체인용), 이미지/heightmap 미포함 → 결과창에 이미지 안 뜸.
     auto out = std::make_shared<VisionData>();
     out->heights  = input->heights;
     out->sourceId = input->sourceId;

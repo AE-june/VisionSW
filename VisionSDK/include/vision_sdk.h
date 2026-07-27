@@ -43,7 +43,7 @@ typedef struct {
     float originCol;
     float originRow;
     float* data;        /* 길이 width*height */
-} VsdkZMap;
+} VsdkHeightMap;
 
 /* 3D 포인트클라우드. xyz = count*3 float (x,y,z mm 반복). */
 typedef struct {
@@ -64,10 +64,10 @@ typedef struct {
 } VsdkHeights;
 
 /* 노드 실행 결과. 노드가 생성한 페이로드 필드만 채워짐(나머지는 0/NULL).
- * zmap.data / cloud.xyz / heights.values 가 NULL 이 아니면 그 페이로드가 유효. */
+ * heightmap.data / cloud.xyz / heights.values 가 NULL 이 아니면 그 페이로드가 유효. */
 typedef struct {
     int         status;      /* VSDK_OK 등 */
-    VsdkZMap    zmap;
+    VsdkHeightMap    heightmap;
     VsdkCloud   cloud;
     VsdkPlane   plane;
     VsdkHeights heights;
@@ -83,26 +83,26 @@ VSDK_API void vsdk_free_result(VsdkResult* r);
 /* ── 제네릭: 임의 노드를 타입 문자열 + JSON 파라미터로 실행 ──────────────────
  *  type      : 노드 타입 (예 "NoiseFilter","ExposureMerge2","PlaneFit"...).
  *  paramsJson: 해당 노드 파라미터 JSON (없으면 NULL 또는 "{}").
- *  inZmap    : 입력 ZMap (로더 노드면 NULL 가능).
+ *  inHeightmap    : 입력 HeightMap (로더 노드면 NULL 가능).
  *  inPlane   : 입력 평면 (HeightMeasure처럼 평면 입력이 필요한 노드용, 아니면 NULL).
  *  out       : 결과. 반환값 = status. */
 VSDK_API int vsdk_run(const char* type, const char* paramsJson,
-                      const VsdkZMap* inZmap, const VsdkPlane* inPlane,
+                      const VsdkHeightMap* inHeightmap, const VsdkPlane* inPlane,
                       VsdkResult* out);
 
 /* ── 노드별 전용 함수 (각 노드를 개별 함수로 접근) ─────────────────────────── */
-VSDK_API int vsdk_zmap_load(const char* path, float xResMm, float yResMm, float zResMm, VsdkResult* out);
-VSDK_API int vsdk_exposure_split(const VsdkZMap* in, const char* paramsJson, VsdkResult* out);   /* ExposureMerge */
-VSDK_API int vsdk_exposure_merge(const VsdkZMap* in, const char* paramsJson, VsdkResult* out);   /* ExposureMerge2 */
-VSDK_API int vsdk_noise_filter (const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_gap_fill     (const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_edge_detector(const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_align        (const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_plane_fit    (const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_zmap_to_cloud(const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-VSDK_API int vsdk_thickness    (const VsdkZMap* in, const char* paramsJson, VsdkResult* out);
-/* HeightMeasure: ZMap + (선택)평면 입력 → 영역별 높이. */
-VSDK_API int vsdk_height_measure(const VsdkZMap* in, const VsdkPlane* plane, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_heightmap_load(const char* path, float xResMm, float yResMm, float zResMm, VsdkResult* out);
+VSDK_API int vsdk_exposure_split(const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);   /* ExposureMerge */
+VSDK_API int vsdk_exposure_merge(const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);   /* ExposureMerge2 */
+VSDK_API int vsdk_noise_filter (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_gap_fill     (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_edge_detector(const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_align        (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_plane_fit    (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_heightmap_to_cloud(const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+VSDK_API int vsdk_thickness    (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
+/* HeightMeasure: HeightMap + (선택)평면 입력 → 영역별 높이. */
+VSDK_API int vsdk_height_measure(const VsdkHeightMap* in, const VsdkPlane* plane, const char* paramsJson, VsdkResult* out);
 
 /* 조직화된 point cloud 이중노출 머지 (per-point X 보존).
  *  xyz = numProfiles*width 개 점(x,y,z 3연속 float, row-major). 짝수 프로파일=저노출, 홀수=고노출.

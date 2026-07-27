@@ -82,8 +82,8 @@ function PathField({ label, value, onChange, toolType }: {
   const handleBrowse = async () => {
     const api = (window as Window & { electronAPI?: { openFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
     if (!api) return
-    const filters = (toolType === 'ZMapLoader' || toolType === 'ExposureMerge')
-      ? [{ name: 'ZMap (PNG)', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
+    const filters = (toolType === 'HeightMapLoader' || toolType === 'ExposureMerge')
+      ? [{ name: 'HeightMap (PNG)', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
       : [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tiff'] }, { name: 'All Files', extensions: ['*'] }]
     const path = await api.openFile(filters)
     if (path) onChange(path)
@@ -108,10 +108,10 @@ function PlaneFitParams({ params, onChange }: { params: Record<string, unknown>;
   return <>
     <div className="param-section">기준면 ROI</div>
     <RoiField label="Reference" value={roiRef} onChange={v => set('roiRef', v)}
-      tooltip="기준 평면을 피팅할 영역. ZMap 전체 크기 대비 비율(0~1). 기준 표면(유리 등)이 있는 영역을 설정" />
+      tooltip="기준 평면을 피팅할 영역. HeightMap 전체 크기 대비 비율(0~1). 기준 표면(유리 등)이 있는 영역을 설정" />
     <div className="param-section">측정 ROI</div>
     <RoiField label="Measure"   value={roiM}   onChange={v => set('roiMeasure', v)}
-      tooltip="평면 기준으로 높이를 측정할 영역. ZMap 비율(0~1). 기준면 ROI와 겹쳐도 됨" />
+      tooltip="평면 기준으로 높이를 측정할 영역. HeightMap 비율(0~1). 기준면 ROI와 겹쳐도 됨" />
   </>
 }
 
@@ -141,7 +141,7 @@ export function NoiseFilterParams({ params, onChange }: { params: Record<string,
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const ft = (params.filterType as string) ?? 'median'
   return <>
-    <div className="param-section">ZMap 필터</div>
+    <div className="param-section">HeightMap 필터</div>
     <SelectField label="종류" value={ft}
       options={['mean', 'median', 'gaussian', 'sor', 'bilateral']} onChange={v => set('filterType', v)}
       tooltip="mean=박스 평균, median=중앙값(점 노이즈 제거), gaussian=거리 가중 평균, sor=이상치 제거, bilateral=엣지 보존 평활화" />
@@ -190,8 +190,8 @@ function LoaderParams({ params, onChange, toolType }: { params: Record<string, u
   return <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType={toolType} />
 }
 
-// ZMapLoader: 단일 파일 / 폴더(연속검사) 모드 — 이미지 소스를 노드가 단독 소유
-function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+// HeightMapLoader: 단일 파일 / 폴더(연속검사) 모드 — 이미지 소스를 노드가 단독 소유
+function HeightMapLoaderParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const mode = (params.mode as string) ?? 'file'
   const folder = (params.folder as string) ?? ''
@@ -240,7 +240,7 @@ function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown
       </select>
     </div>
     {mode === 'file' ? (
-      <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType="ZMapLoader" />
+      <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType="HeightMapLoader" />
     ) : <>
       <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
         <span className="param-label">폴더</span>
@@ -270,25 +270,42 @@ function ZMapLoaderParams({ params, onChange }: { params: Record<string, unknown
   </>
 }
 
-// ExposureSplit (이중노출 분리): 인터리브 홀짝 → 저노출(행확장)/장노출 분리
+// ExposureSplit (다중노출 분리): 인터리브 → 노출별 행 분리 (행확장 없음)
 function ExposureMergeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const splitCount = (params.splitCount as number) ?? 2
+  const labels = splitCount === 3 ? ['1. 저노출', '2. 중노출', '3. 장노출'] : ['1. 저노출', '2. 장노출']
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 인터리브 Z PNG를 연결하세요. 홀짝 행을 저노출/장노출로 분리합니다. 저노출은 상/하부 구간을 8배 행확장, 장노출은 2배 복원합니다.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 인터리브 Z PNG를 연결하세요. 인터리브된 노출을 행별로 분리합니다(행확장 없음). 머지는 Exposure Merge 노드가 담당합니다.</div>
+    <div className="param-section">분리</div>
+    <div className="param-row">
+      <label className="param-label">분할 수</label>
+      <select
+        className="param-select"
+        value={splitCount}
+        onChange={e => {
+          const sc = Number(e.target.value)
+          const os = Math.min((params.outputStage as number ?? 0), sc - 1)
+          onChange({ ...params, splitCount: sc, outputStage: os })
+        }}
+      >
+        <option value={2}>2행 (저/장)</option>
+        <option value={3}>3행 (저/중/장)</option>
+      </select>
+    </div>
     <div className="param-section">출력</div>
     <div className="param-row">
       <label className="param-label">저장 출력</label>
       <select
         className="param-select"
-        value={Math.min((params.outputStage as number ?? 0), 1)}
+        value={Math.min((params.outputStage as number ?? 0), splitCount - 1)}
         onChange={e => set('outputStage', Number(e.target.value))}
       >
-        <option value={0}>1. 저노출(행확장)</option>
-        <option value={1}>2. 장노출</option>
+        {labels.map((l, i) => <option key={i} value={i}>{l}</option>)}
       </select>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
-      결과창 드롭다운에서 저노출/장노출을 미리볼 수 있습니다.
+      결과창 드롭다운에서 각 노출을 미리볼 수 있습니다.
     </div>
   </>
 }
@@ -335,10 +352,14 @@ function GapFillParams({ params, onChange }: { params: Record<string, unknown>; 
 function ExposureMerge2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 인터리브 Z PNG를 연결하세요. 겹침은 저노출 우선, fill 리플렉션은 연속성으로 제거합니다.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 인터리브 Z PNG를 연결하세요. 겹침은 저노출 우선, fill 리플렉션은 연속성으로 제거합니다.</div>
     <div className="param-section">머지 / 연속성 필터</div>
     <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
-      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 '겹침 일치'로 판정. 오프셋 추정과 연속성 씨앗에 사용. 단위: raw count" />
+      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 '겹침 일치'로 판정. 오프셋 추정에 사용(리플 씨앗 허용 미설정 시 씨앗에도 사용). 단위: raw count" />
+    <NumField label="리플 씨앗 허용 (cnt)"
+      value={(params.reflTol as number ?? -1) >= 0 ? (params.reflTol as number) : (params.matchTol as number ?? 20)}
+      step={5} onChange={v => set('reflTol', v)}
+      tooltip="연속성 씨앗 판정 허용치. 기본은 '일치 허용'과 동일값을 사용(-1). 따로 키우면 씨앗↑→고노출 fill 더 유지(덜 제거), 줄이면 더 제거. 오프셋(일치 허용)과 분리 조절용. 단위: raw count" />
     <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
       tooltip="연속성 확장 시 X방향 이웃과의 Z 허용 차이. X 피치(~6µm)가 작으므로 작게. 단위: count/px" />
     <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
@@ -365,7 +386,7 @@ function ExposureMerge3Params({ params, onChange }: { params: Record<string, unk
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const removeRefl = params.removeReflection as boolean ?? true
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>ZMapLoader에서 저/중/장 3노출 인터리브 Z PNG(행 순서 저·중·장 반복)를 연결하세요. 우선순위 저&gt;중&gt;장.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 저/중/장 3노출 인터리브 Z PNG(행 순서 저·중·장 반복)를 연결하세요. 우선순위 저&gt;중&gt;장.</div>
     <div className="param-section">머지</div>
     <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
       tooltip="두 노출이 모두 유효하고 |차이| ≤ 이 값이면 겹침 일치로 보고 오프셋(offset) 추정에 사용. 단위: raw count" />
@@ -388,7 +409,7 @@ function ExposureMerge3Params({ params, onChange }: { params: Record<string, unk
   </>
 }
 
-// ImageSaver: 입력(ZMap/이미지)을 저장. 폴더(필수)+파일명(선택,비우면 소스명)+포맷.
+// ImageSaver: 입력(HeightMap/이미지)을 저장. 폴더(필수)+파일명(선택,비우면 소스명)+포맷.
 function ImageSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const folder = params.folder as string ?? ''
@@ -418,22 +439,22 @@ function ImageSaverParams({ params, onChange }: { params: Record<string, unknown
   </>
 }
 
-// ZMapToCloud: ZMap → PointCloud3D 변환 (서브샘플 step)
-function ZMapToCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+// HeightMapToCloud: HeightMap → PointCloud3D 변환 (서브샘플 step)
+function HeightMapToCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>ZMap의 유효 픽셀을 (x,y,z)mm 3D 점으로 변환합니다. 무효(NaN) 픽셀은 제외됩니다.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>HeightMap의 유효 픽셀을 (x,y,z)mm 3D 점으로 변환합니다. 무효(NaN) 픽셀은 제외됩니다.</div>
     <div className="param-section">서브샘플</div>
     <NumField label="Step (px)" value={params.step as number ?? 1} step={1} onChange={v => set('step', v)}
-      tooltip="N픽셀마다 1점 추출. 1=모든 픽셀(대용량). 대형 ZMap은 2~4로 줄여 파일 크기·속도 개선" />
+      tooltip="N픽셀마다 1점 추출. 1=모든 픽셀(대용량). 대형 HeightMap은 2~4로 줄여 파일 크기·속도 개선" />
   </>
 }
 
-// ExposureMergeCloud: 인터리브 ZMap → 이중노출 머지 → PointCloud3D (X는 균일, col×xRes)
+// ExposureMergeCloud: 인터리브 HeightMap → 이중노출 머지 → PointCloud3D (X는 균일, col×xRes)
 function ExposureMergeCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 ZMap(짝=저/홀=고)을 이중노출 머지 후 3D 점으로 출력. VisionSW는 균일 X(col×xRes) — per-point 보정 X는 SDK 경로 전용.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 HeightMap(짝=저/홀=고)을 이중노출 머지 후 3D 점으로 출력. VisionSW는 균일 X(col×xRes) — per-point 보정 X는 SDK 경로 전용.</div>
     <div className="param-section">머지 / 연속성 필터</div>
     <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
       tooltip="저·장노출 |차이| ≤ 이 값이면 겹침 일치. 오프셋·씨앗에 사용" />
@@ -488,7 +509,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
-        {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
@@ -496,10 +517,10 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
-        {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
-        {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
+        {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     )
@@ -515,7 +536,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
         {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
-        {toolType === 'ZMapLoader' && <ZMapLoaderParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
@@ -523,10 +544,10 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
-        {toolType === 'ZMapToCloud'      && <ZMapToCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
-        {toolType === 'Align'            && <div className="param-empty">입력: ZMap + Point (기준점). 파라미터 없음</div>}
+        {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     </div>

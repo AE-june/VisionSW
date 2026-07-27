@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ZMap.h"
+#include "HeightMap.h"
+#include "Region.h"
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -86,19 +87,21 @@ struct OriginCoord {
 struct VisionData {
     std::shared_ptr<Image2D>      image;
     std::shared_ptr<PointCloud3D> cloud;
-    std::shared_ptr<ZMap>         zmap;
+    std::shared_ptr<HeightMap>         heightmap;
+    std::shared_ptr<Region>       region;       // 픽셀 집합/마스크 (B2, 1급 iconic)
     std::shared_ptr<PlaneModel>   plane;        // fitted plane (PlaneFit → HeightMeasure)
     std::shared_ptr<std::vector<double>> heights; // 측정된 높이값 배열 (HeightMeasure 출력)
     std::shared_ptr<std::vector<RefPoint>> points; // 검출된 기준점들 (LineCenter)
     std::shared_ptr<OriginCoord>  origin;        // 선택된 출력 좌표 X/Y (LineCenter → 좌표정렬)
-    // 단계별 미리보기(선택) — (이름, ZMap) 목록. 결과창 드롭다운으로 중간단계 조회용.
-    std::shared_ptr<std::vector<std::pair<std::string, ZMapPtr>>> stages;
+    // 단계별 미리보기(선택) — (이름, HeightMap) 목록. 결과창 드롭다운으로 중간단계 조회용.
+    std::shared_ptr<std::vector<std::pair<std::string, HeightMapPtr>>> stages;
     std::string                   sourceId;     // sensor / file origin
     int64_t                       timestampUs = 0;
 
     bool hasImage()   const { return image && !image->empty(); }
     bool hasCloud()   const { return cloud && !cloud->empty(); }
-    bool hasZMap()    const { return zmap  && !zmap->empty(); }
+    bool hasHeightMap()    const { return heightmap  && !heightmap->empty(); }
+    bool hasRegion()  const { return region && !region->empty(); }
     bool hasPlane()   const { return plane && plane->valid; }
     bool hasHeights() const { return heights && !heights->empty(); }
     bool hasPoints()  const { return points && !points->empty(); }
