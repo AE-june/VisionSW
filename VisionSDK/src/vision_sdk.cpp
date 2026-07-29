@@ -40,7 +40,7 @@ static VisionDataPtr makeInput(const VsdkHeightMap* z, const VsdkPlane* p) {
         d->heightmap = zm;
     }
     if (p && p->valid)
-        d->plane = std::make_shared<PlaneModel>(PlaneModel{ p->a, p->b, p->c, true });
+        d->setPlane(std::make_shared<PlaneModel>(PlaneModel{ p->a, p->b, p->c, true }));
     return d;
 }
 
@@ -68,9 +68,10 @@ static void marshalOut(const VisionDataPtr& o, VsdkResult* r) {
                 r->cloud.xyz[i*3+2] = c.points[i].z;
             }
     }
-    if (o->plane) {
-        r->plane.a = o->plane->a; r->plane.b = o->plane->b; r->plane.c = o->plane->c;
-        r->plane.valid = o->plane->valid ? 1 : 0;
+    if (o->plane0()) {
+        const auto& pl = *o->plane0();
+        r->plane.a = pl.a; r->plane.b = pl.b; r->plane.c = pl.c;
+        r->plane.valid = pl.valid ? 1 : 0;
     }
     if (o->heights) {
         const int n = (int)o->heights->size();

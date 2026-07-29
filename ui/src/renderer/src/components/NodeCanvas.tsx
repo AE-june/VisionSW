@@ -11,7 +11,8 @@ import type { Node, Edge, OnNodesChange, OnEdgesChange, Connection, NodeMouseHan
 import '@xyflow/react/dist/style.css'
 import ToolNode from './ToolNode'
 import { TOOL_DEF_MAP } from '../types/tools'
-import type { PortType } from '../types/tools'
+import type { PortDecl } from '../types/tools'
+import { portType } from '../types/tools'
 
 const nodeTypes = { toolNode: ToolNode }
 
@@ -28,8 +29,12 @@ interface Props {
   onEdgeMouseLeave?: (event: React.MouseEvent, edge: Edge) => void
 }
 
-function isCompatible(a: PortType, b: PortType) {
-  return a === 'Any' || b === 'Any' || a === b
+// T0-2 P3: 타입 일치(또는 Any)면 연결 허용. 스칼라↔배열 4조합 전부 허용:
+//   스칼라→스칼라, 배열→배열, 스칼라→배열(원소1 승격), 배열→스칼라(브로드캐스트).
+//   즉 isArray 플래그는 연결을 막지 않고 타입만 본다.
+function isCompatible(a: PortDecl, b: PortDecl) {
+  const ta = portType(a), tb = portType(b)
+  return ta === 'Any' || tb === 'Any' || ta === tb
 }
 
 function Canvas({ nodes, edges, onNodesChange, onEdgesChange, onConnect, onAddNode, onNodeClick, onPaneClick, onEdgeMouseEnter, onEdgeMouseLeave }: Props) {

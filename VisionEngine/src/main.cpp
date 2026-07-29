@@ -53,7 +53,32 @@ static void startParentWatchdog(unsigned long parentPid) {
 
 // ── Topological sort (Kahn's algorithm) ─────────────────────────────────
 
-struct Edge { std::string source, target; };
+struct Edge {
+    std::string source, target;
+    int sourcePort = 0;   // sourceHandle "output-N"의 N (없으면 0)
+    int targetPort = 0;   // targetHandle "input-N"의 N (없으면 0)
+};
+
+// "output-3" / "input-2" 같은 핸들 문자열에서 마지막 '-' 뒤 정수를 뽑는다.
+// 형식이 안 맞으면 0으로 폴백 → 기존 동작 보존.
+static int parsePortHandle(const std::string& handle) {
+    auto pos = handle.rfind('-');
+    if (pos == std::string::npos || pos + 1 >= handle.size()) return 0;
+    int v = 0;
+    for (std::size_t i = pos + 1; i < handle.size(); ++i) {
+        char ch = handle[i];
+        if (ch < '0' || ch > '9') return 0;
+        v = v * 10 + (ch - '0');
+    }
+    return v;
+}
+
+// 입력 엣지 참조 — 출처 노드 + 포트 인덱스
+struct InputRef {
+    std::string source;
+    int srcPort = 0;
+    int dstPort = 0;
+};
 
 static std::vector<std::string> topoSort(
     const std::vector<std::string>& nodeIds,
@@ -134,10 +159,14 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     std::vector<Edge> edges;
     if (msg.contains("edges")) {
         for (const auto& e : msg.at("edges")) {
-            edges.push_back({
-                e.at("source").get<std::string>(),
-                e.at("target").get<std::string>()
-            });
+            Edge ed;
+            ed.source = e.at("source").get<std::string>();
+            ed.target = e.at("target").get<std::string>();
+            // UI가 sourceHandle="output-N", targetHandle="input-N" 형식을 보낸다.
+            // 없거나 형식이 안 맞으면 0 폴백 → 기존 병합과 동일.
+            ed.sourcePort = parsePortHandle(e.value("sourceHandle", std::string()));
+            ed.targetPort = parsePortHandle(e.value("targetHandle", std::string()));
+            edges.push_back(std::move(ed));
         }
     }
 
@@ -147,8 +176,10 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     auto order = topoSort(ids, edges);
 
     // Which nodes' outputs feed each node (다중 입력 지원)
-    std::unordered_map<std::string, std::vector<std::string>> inputsFrom;
-    for (const auto& e : edges) inputsFrom[e.target].push_back(e.source);
+    // 포트 정보 포함 — 파싱 순서(=엣지 순서) 보존 (제약 C-2: "먼저 온 것이 이김")
+    std::unordered_map<std::string, std::vector<InputRef>> inputsFrom;
+    for (const auto& e : edges)
+        inputsFrom[e.target].push_back(InputRef{e.source, e.sourcePort, e.targetPort});
 
     // Node outputs (이번 실행 범위) + 재실행 여부(dirty) 추적
     std::unordered_map<std::string, VisionDataPtr> outputs;
@@ -169,8 +200,8 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         const std::size_t ph = std::hash<std::string>{}(ns.params.dump());
         bool upstreamDirty = false;
         if (inputsFrom.count(nodeId))
-            for (const auto& src : inputsFrom.at(nodeId))
-                if (dirty.count(src) && dirty[src]) { upstreamDirty = true; break; }
+            for (const auto& in : inputsFrom.at(nodeId))
+                if (dirty.count(in.source) && dirty[in.source]) { upstreamDirty = true; break; }
 
         if (useCache && !upstreamDirty && nodeId != forceNode) {
             auto cit = g_nodeCache.find(nodeId);
@@ -209,15 +240,27 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             auto merged = std::make_shared<VisionData>();
             merged->frames = runFrames;   // 실행 레지스트리 공유 (슬롯 병합 대상 아님)
             bool any = false;
-            for (const auto& src : inputsFrom.at(nodeId)) {
+
+            // T0-2 P2: 병합을 포트 인덱스 기준으로 전환.
+            //   입력을 (targetPort 오름차순, 그 안에서 엣지 파싱 순서) 로 stable-sort 한 뒤 병합.
+            //   같은 targetPort의 heights/points는 concat, 그 외 타입은 첫 번째 우선(기존 동작 명시 보존).
+            //   타입 슬롯 라우팅이라 RegionMeasure(Region,HeightMap) vs ReduceDomain(HeightMap,Region)
+            //   처럼 선언 순서가 반대여도 순서 무관하게 올바른 슬롯에 들어간다.
+            std::vector<InputRef> ordered = inputsFrom.at(nodeId);
+            std::stable_sort(ordered.begin(), ordered.end(),
+                             [](const InputRef& a, const InputRef& b){ return a.dstPort < b.dstPort; });
+
+            for (const auto& in : ordered) {
+                const auto& src = in.source;
+                VISION_LOG_INFO("[pipeline] edge {}:{} -> {}:{}", src, in.srcPort, nodeId, in.dstPort);
                 auto it = outputs.find(src);
                 if (it == outputs.end() || !it->second) continue;
                 const auto& o = it->second;
                 any = true;
                 if (o->heightmap    && !merged->heightmap)    merged->heightmap    = o->heightmap;
                 if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
-                if (o->region  && !merged->region)  merged->region  = o->region;
-                if (o->plane   && !merged->plane)   merged->plane   = o->plane;
+                if (!o->regions.empty() && merged->regions.empty()) merged->regions = o->regions;
+                if (!o->planes.empty()  && merged->planes.empty())  merged->planes  = o->planes;
                 if (o->heights) {   // 여러 입력(예: RefHeight 평균값 + HeightMeasure 측정값들)을 한 행으로 이어붙임
                     if (!merged->heights) merged->heights = std::make_shared<std::vector<double>>();
                     merged->heights->insert(merged->heights->end(), o->heights->begin(), o->heights->end());
@@ -232,6 +275,24 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             if (any) inputData = merged;
         }
 
+        // T0-1 P2: 소비자 프레임 불일치 검사 (Phase 2는 경고만 — ToolStatus 불변).
+        //   양쪽 중 하나가 "" (미지정)이면 생략. 헤드리스에서도 보이도록 로그로.
+        if (inputData && inputData->heightmap && !inputData->heightmap->frameId.empty()) {
+            const std::string& hf = inputData->heightmap->frameId;
+            const auto& rgn0 = inputData->region0();
+            const auto& pln0 = inputData->plane0();
+            if (rgn0 && !rgn0->frameId.empty() && rgn0->frameId != hf)
+                VISION_LOG_WARN("[frame] {} [{}]: Region frame '{}' != HeightMap frame '{}'",
+                                ns.type, nodeId, rgn0->frameId, hf);
+            if (pln0 && !pln0->frameId.empty() && pln0->frameId != hf)
+                VISION_LOG_WARN("[frame] {} [{}]: Plane frame '{}' != HeightMap frame '{}'",
+                                ns.type, nodeId, pln0->frameId, hf);
+        }
+
+        // T0-2 P3: 브로드캐스트 실행 루프는 배열 생산 노드(T2-1 ConnectedComponents)가
+        //   생기는 시점에 여기 연결한다. 규칙은 computeBroadcast()(Core/include/Broadcast.h)에
+        //   순수 함수로 있고 단위 테스트로 고정돼 있다. 현재는 배열 입력을 내는 노드가 없어
+        //   N=1 — 아래 단일 실행과 동일하다(동작 변화 0).
         auto tExec0 = std::chrono::steady_clock::now();
         auto result = tool->execute(inputData);
         auto tExec1 = std::chrono::steady_clock::now();
@@ -240,6 +301,28 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         if (result.output) {
             outputs[nodeId] = result.output;
             g_nodeCache[nodeId] = { result.output, ph };   // 캐시 갱신
+
+            // T0-1 P2: 프레임 부여·전파 (중앙집중 — execute 시그니처 불변).
+            //   frameId는 순수 메타데이터(어떤 툴도 아직 읽지 않음) → 측정값 bit-identical.
+            //   definedFrames에 기록해 캐시 적중 시 레지스트리 복원(§3.4)과 정합.
+            auto& out = *result.output;
+            if (ns.type == "HeightMapLoader" && out.heightmap) {
+                // 소스 로더: 결정론적 프레임 정의 + 부여. parent=world, identity.
+                const std::string fid = "hm:" + nodeId;
+                out.heightmap->frameId = fid;
+                const Frame f{fid, frames::kWorld, Transform2D::identity()};
+                runFrames->define(f);
+                out.definedFrames.push_back(f);
+            } else if (inputData && inputData->heightmap && !inputData->heightmap->frameId.empty()) {
+                // 전파: 입력 HeightMap의 frameId를 출력 iconic/geometry에 복사(비어있을 때만).
+                //   격자를 안 바꾸는 필터/생산자는 같은 프레임을 물려받는다.
+                //   (halfRes 등 분해능 변경 경로는 P3에서 새 프레임 정의 — 현재 레시피엔 없음)
+                const std::string& inFid = inputData->heightmap->frameId;
+                if (out.heightmap && out.heightmap->frameId.empty()) out.heightmap->frameId = inFid;
+                for (auto& rp : out.regions) if (rp && rp->frameId.empty()) rp->frameId = inFid;
+                for (auto& pp : out.planes)  if (pp && pp->frameId.empty()) pp->frameId = inFid;
+                if (out.cloud     && out.cloud->frameId.empty())      out.cloud->frameId     = inFid;
+            }
         }
 
         bool ok = (result.status == ToolStatus::Ok);
@@ -370,7 +453,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         if (!noPreview) {
             if (result.output && result.output->hasRegion()) {
                 // Region(마스크) 프리뷰 — 입력 heightmap 폴백보다 우선(Threshold/CreateROI 출력)
-                const auto& rgn = *result.output->region;
+                const auto& rgn = *result.output->region0();
                 jr["preview"] = regionToBase64(rgn);
                 jr["zMin"] = 0.f; jr["zMax"] = 255.f;
                 jr["imgW"] = rgn.width; jr["imgH"] = rgn.height;

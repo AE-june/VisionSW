@@ -24,7 +24,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
 
     const HeightMap&       map   = *input->heightmap;
     // plane 입력이 있으면 평면 기준 수직거리, 없으면 절대 높이(z)
-    const PlaneModel* plane = input->hasPlane() ? input->plane.get() : nullptr;
+    const PlaneModel* plane = input->hasPlane() ? input->plane0().get() : nullptr;
     // HeightMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동.
     // ROI 좌표는 원점 기준 상대값(px)이라 검출된 원점에 더해 절대 위치를 만든다.
     // 원점이 0이면 기존과 동일(하위 호환).

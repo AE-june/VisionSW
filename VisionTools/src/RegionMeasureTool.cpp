@@ -8,7 +8,7 @@ ToolResult RegionMeasureTool::execute(VisionDataPtr input) {
     if (!input || !input->hasRegion())
         return { ToolStatus::Fail, "RegionMeasure: Region이 없습니다." };
 
-    const Region& rg = *input->region;
+    const Region& rg = *input->region0();
     const HeightMap* map = input->hasHeightMap() ? input->heightmap.get() : nullptr;
 
     double sumC = 0, sumR = 0, sumZ = 0;

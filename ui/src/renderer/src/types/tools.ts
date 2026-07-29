@@ -1,11 +1,19 @@
 export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Heights' | 'PointCloud3D' | 'Point' | 'Any'
 
+// T0-2 P3: 포트 다중성. isArray=true면 배열 포트(엔진이 원소별 브로드캐스트).
+// 기존 노드 정의는 PortType 문자열 그대로 두고, 배열 포트만 { type, isArray } 로 적는다.
+export interface PortSpec { type: PortType; isArray?: boolean }
+export type PortDecl = PortType | PortSpec
+
+export function portType(p: PortDecl): PortType { return typeof p === 'string' ? p : p.type }
+export function portIsArray(p: PortDecl): boolean { return typeof p === 'string' ? false : (p.isArray ?? false) }
+
 export interface ToolDef {
   type: string
   label: string
   category: string
-  inputs: PortType[]
-  outputs: PortType[]
+  inputs: PortDecl[]
+  outputs: PortDecl[]
   inputLabels?: string[]    // 포트 표시 라벨 (없으면 타입명)
   outputLabels?: string[]
   defaultParams: Record<string, unknown>
@@ -149,3 +157,32 @@ export const TOOL_DEFS: ToolDef[] = [
 export const TOOL_DEF_MAP: Record<string, ToolDef> = Object.fromEntries(
   TOOL_DEFS.map(d => [d.type, d])
 )
+
+// ─────────────────────────────────────────────────────────────────
+//  T0-2 P4 — 축약(reduction) 노드 인터페이스 정의만. (설계 §4.6)
+//  구현은 후속(T2-1/T2-2). TOOL_DEFS에 등록하지 않는다 → 아직 드롭/실행 불가.
+//  배열 입력을 받아 축약하는 노드들의 포트/파라미터 계약을 여기 못박아 둔다.
+//    Collect — 브로드캐스트 결과(배열)를 단일 배열로 모음 (identity gather)
+//    Filter  — 조건(predicate)으로 배열 원소를 걸러 부분 배열 출력
+//    Select  — 인덱스로 배열에서 원소 하나(스칼라)를 뽑음
+// ─────────────────────────────────────────────────────────────────
+export const PLANNED_REDUCTION_NODES: ToolDef[] = [
+  {
+    type: 'Collect', label: 'Collect', category: '축약',
+    inputs: [{ type: 'Any', isArray: true }], outputs: [{ type: 'Any', isArray: true }],
+    defaultParams: {},
+  },
+  {
+    type: 'Filter', label: 'Filter', category: '축약',
+    inputs: [{ type: 'Any', isArray: true }], outputs: [{ type: 'Any', isArray: true }],
+    inputLabels: ['items'],
+    // metric: 걸러낼 기준 필드, min/max: 통과 범위(mm 등)
+    defaultParams: { metric: '', min: 0, max: 0 },
+  },
+  {
+    type: 'Select', label: 'Select', category: '축약',
+    inputs: [{ type: 'Any', isArray: true }], outputs: [{ type: 'Any', isArray: false }],
+    inputLabels: ['items'],
+    defaultParams: { index: 0 },
+  },
+]

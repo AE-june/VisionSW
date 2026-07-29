@@ -4,6 +4,7 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(CoreTests
     Core/PipelineTest.cpp
     Core/FrameTest.cpp
+    Core/BroadcastTest.cpp
 )
 target_link_libraries(CoreTests PRIVATE
     Core

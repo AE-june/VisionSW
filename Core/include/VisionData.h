@@ -77,8 +77,10 @@ struct OriginCoord {
 struct VisionData {
     std::shared_ptr<PointCloud3D> cloud;
     std::shared_ptr<HeightMap>         heightmap;
-    std::shared_ptr<Region>       region;       // 픽셀 집합/마스크 (B2, 1급 iconic)
-    std::shared_ptr<PlaneModel>   plane;        // fitted plane (PlaneFit → HeightMeasure)
+    // T0-2 P3: 슬롯 다중화. 스칼라 = size 1. 배열 생산자(T2-1 ConnectedComponents)를 위한 토대.
+    //   기존 단일 슬롯 코드는 region0()/setRegion() 호환 접근자로 그대로 동작.
+    std::vector<std::shared_ptr<Region>>     regions;   // 픽셀 집합/마스크 (B2, 1급 iconic)
+    std::vector<std::shared_ptr<PlaneModel>> planes;    // fitted plane (PlaneFit → HeightMeasure)
     std::shared_ptr<std::vector<double>> heights; // 측정된 높이값 배열 (HeightMeasure 출력)
     std::shared_ptr<std::vector<RefPoint>> points; // 검출된 기준점들 (LineCenter)
     std::shared_ptr<OriginCoord>  origin;        // 선택된 출력 좌표 X/Y (LineCenter → 좌표정렬)
@@ -91,10 +93,22 @@ struct VisionData {
     // 이 노드가 정의한 프레임 목록 (캐시 적중 시 레지스트리 복원용)
     std::vector<Frame>             definedFrames;
 
+    // ── 호환 접근자 — 첫 원소(스칼라 관례) 또는 널 ──────────────────────────
+    const std::shared_ptr<Region>& region0() const {
+        static const std::shared_ptr<Region> kNull;
+        return regions.empty() ? kNull : regions.front();
+    }
+    void setRegion(std::shared_ptr<Region> r) { regions.clear(); if (r) regions.push_back(std::move(r)); }
+    const std::shared_ptr<PlaneModel>& plane0() const {
+        static const std::shared_ptr<PlaneModel> kNull;
+        return planes.empty() ? kNull : planes.front();
+    }
+    void setPlane(std::shared_ptr<PlaneModel> p) { planes.clear(); if (p) planes.push_back(std::move(p)); }
+
     bool hasCloud()   const { return cloud && !cloud->empty(); }
     bool hasHeightMap()    const { return heightmap  && !heightmap->empty(); }
-    bool hasRegion()  const { return region && !region->empty(); }
-    bool hasPlane()   const { return plane && plane->valid; }
+    bool hasRegion()  const { return !regions.empty() && regions.front() && !regions.front()->empty(); }
+    bool hasPlane()   const { return !planes.empty() && planes.front() && planes.front()->valid; }
     bool hasHeights() const { return heights && !heights->empty(); }
     bool hasPoints()  const { return points && !points->empty(); }
     bool hasOrigin()  const { return origin && (origin->hasX || origin->hasY); }

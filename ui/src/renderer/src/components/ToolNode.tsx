@@ -1,7 +1,7 @@
 import { useState, useContext } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import { TOOL_DEF_MAP, PORT_COLORS } from '../types/tools'
+import { TOOL_DEF_MAP, PORT_COLORS, portType, portIsArray } from '../types/tools'
 import { HoveredEdgeContext } from './hoveredEdge'
 
 interface HeightMeasure {
@@ -140,8 +140,12 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
       {/* 포트 행 — 핸들과 라벨을 같은 행에 두어 높이를 맞춤 */}
       <div className="tool-node-ports">
         {Array.from({ length: portRows }).map((_, i) => {
-          const inT = def.inputs[i]
-          const outT = def.outputs[i]
+          const inD = def.inputs[i]
+          const outD = def.outputs[i]
+          const inT = inD !== undefined ? portType(inD) : undefined
+          const outT = outD !== undefined ? portType(outD) : undefined
+          const inArr = inD !== undefined && portIsArray(inD)
+          const outArr = outD !== undefined && portIsArray(outD)
           return (
             <div className="port-row" key={i}>
               {inT !== undefined && (
@@ -160,7 +164,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
                     style={{ color: PORT_COLORS[inT] }}
                     onMouseEnter={() => setHoveredPort(`input-${i}`)}
                     onMouseLeave={() => setHoveredPort(null)}
-                  >{def.inputLabels?.[i] ?? inT}</span>
+                  >{(def.inputLabels?.[i] ?? inT) + (inArr ? '[]' : '')}</span>
                 )}
               </span>
               <span className="port-slot right">
@@ -170,7 +174,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
                     style={{ color: PORT_COLORS[outT] }}
                     onMouseEnter={() => setHoveredPort(`output-${i}`)}
                     onMouseLeave={() => setHoveredPort(null)}
-                  >{def.outputLabels?.[i] ?? outT}</span>
+                  >{(def.outputLabels?.[i] ?? outT) + (outArr ? '[]' : '')}</span>
                 )}
               </span>
               {outT !== undefined && (

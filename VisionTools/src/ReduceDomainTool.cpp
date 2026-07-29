@@ -11,7 +11,7 @@ ToolResult ReduceDomainTool::execute(VisionDataPtr input) {
         return { ToolStatus::Fail, "ReduceDomain: Region 입력이 없습니다." };
 
     const HeightMap& map = *input->heightmap;
-    const Region&    rg  = *input->region;
+    const Region&    rg  = *input->region0();
     if (rg.width != map.width || rg.height != map.height)
         return { ToolStatus::Fail, "ReduceDomain: Region 크기가 HeightMap과 다릅니다." };
 

@@ -721,3 +721,22 @@ diff baseline.csv after.csv
 3. **`frameId == ""` 허용을 영구 유지할지.** Phase 4에서 결정.
 4. **프레임 id 명명 규칙 확정.** 초안: `world` / `hm:<nodeId>` / `fx:<nodeId>` / `obj:<nodeId>:<i>`.
 5. **`Image2D`의 프레임 취급.** B1 통합(T0-3)과 함께 결정하는 게 맞을 수 있다.
+
+---
+
+## 10. 구현 결정 로그 (2026-07-30)
+
+구현 중 내린 결정. 이후 Phase가 근거로 삼을 것.
+
+### 완료 Phase (전부 CSV diff 0 검증 — `_reg_merged.json` × `top_100_zmap/merge_test` 100장)
+
+- **T0-2 P1 (Edge 포트 핸들).** `struct Edge`에 `sourcePort`/`targetPort`, `parsePortHandle()`가 `"output-N"`/`"input-N"`의 N을 파싱(폴백 0). `inputsFrom`을 `InputRef{source,srcPort,dstPort}`로 확장. 병합 로직 불변. 디버그 로그로 엣지 포트 출력.
+- **T0-1 P2 (프레임 부여+경고).** **중앙집중 방식 채택** — 설계는 툴별 부여를 제안했으나, `execute(VisionDataPtr)` 시그니처 불변 원칙(§7-1) 하에 10개 툴 파일을 건드리는 대신 `runPipeline` 한 곳에서 처리. HeightMapLoader 출력에 `"hm:"+nodeId` 프레임 정의·`definedFrames` 기록, 그 외 노드는 입력 HeightMap의 `frameId`를 출력 iconic/geometry에 전파(비어있을 때만). 소비자 불일치는 `VISION_LOG_WARN`(헤드리스에서도 보임). frameId는 순수 메타데이터라 측정값 bit-identical. **근거:** 단일 지점 = 회귀 추적 쉽고 캐시 상호작용(§3.4)을 한 곳에서 보장. AlignTool이 P3에서 자기 프레임을 명시 지정하면 "비어있을 때만" 규칙이 이를 덮어쓰지 않음 — P3와 호환.
+- **T0-2 P2 (포트 기반 병합).** 입력을 `(dstPort 오름차순, 엣지순)` stable-sort 후 병합. heights/points concat·그 외 첫우선 명시 보존. 타입 슬롯 라우팅이라 RegionMeasure(Region,HeightMap) vs ReduceDomain(HeightMap,Region) 순서 반대여도 무관.
+- **T0-2 P3 (슬롯 다중화+브로드캐스트).** `VisionData::region`/`plane` → `regions`/`planes` 벡터 + `region0()`/`setRegion()`/`plane0()`/`setPlane()` 호환 접근자. 호출처 전수 수정(VisionTools 6, main.cpp, vision_sdk.cpp). 브로드캐스트 규칙(§4.4)은 `Core/include/Broadcast.h`의 순수 함수 `computeBroadcast()` + 단위 테스트 7종으로 고정. UI: `PortSpec`/`PortDecl` + `portType()`/`portIsArray()`, NodeCanvas `isCompatible`가 스칼라↔배열 4조합 허용, ToolNode가 배열 포트에 `[]` 표시.
+- **T0-2 P4 (축약 노드).** `PLANNED_REDUCTION_NODES`(Collect/Filter/Select) 인터페이스만 정의. TOOL_DEFS 미등록(실행 불가). 구현은 T2-1/T2-2.
+
+### 미결선(P3 보류로 이월)
+
+- **브로드캐스트 실행 루프 미배선.** 배열을 내는 노드(T2-1 ConnectedComponents)가 없어 현재 N=1 경로만 존재. 실행 루프는 규칙 함수·부착 지점 주석(`main.cpp` tool->execute 직전)을 남겨 T2-1과 함께 연결. 합성 3-Region end-to-end 테스트도 그때.
+- **T0-1 P3/P4 보류(사용자 결정).** Align 회전+프레임 전환은 `originCol/originRow`를 소비하는 5개 툴의 ROI 배치 의미를 바꾸는 정밀-경로 변경 → 합성 회전 검증셋 갖춘 전용 세션에서. §9-1(RefPoint px/mm), §9-4(회전각 입력원) 그때 확정.

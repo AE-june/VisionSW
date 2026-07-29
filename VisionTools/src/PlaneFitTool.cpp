@@ -88,7 +88,7 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     // 타입화 출력: plane(a,b,c)만 하류로 전달. 이미지/heightmap은 넘기지 않음
     // (plane 엣지는 plane 정보만). 이 노드 결과창 이미지는 엔진이 입력 heightmap으로 폴백해 표시.
     auto out = std::make_shared<VisionData>();
-    out->plane = std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true });
+    out->setPlane(std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true }));
     out->sourceId = input->sourceId;
     return { ToolStatus::Ok, "", out };
 }

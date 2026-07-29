@@ -86,7 +86,7 @@ ToolResult CreateRoiTool::execute(VisionDataPtr input) {
     }
 
     auto out = std::make_shared<VisionData>();
-    out->region   = rg;
+    out->setRegion(rg);
     out->sourceId = input->sourceId;
     return { ToolStatus::Ok, "", out };
 }
