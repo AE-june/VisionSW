@@ -1,5 +1,4 @@
 #include "JsonBridge.h"
-#include "ThicknessMeasure.h"
 
 namespace vision {
 
@@ -9,12 +8,6 @@ nlohmann::json toolResultToJson(const std::string& toolName, const ToolResult& r
     j["tool"]  = toolName;
     j["ok"]    = (result.status == ToolStatus::Ok);
     j["msg"]   = result.message;
-
-    // Extract measurement values from well-known tool types
-    if (toolName == "ThicknessMeasure") {
-        // Same — caller may set extra fields.
-    }
-
     return j;
 }
 

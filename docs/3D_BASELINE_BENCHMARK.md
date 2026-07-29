@@ -39,67 +39,127 @@
 ## 2. Table-stakes 목록 (2개 이상 제품이 공통으로 가진 것)
 
 교차 검증된 공통 기능. **이게 "기본 기능"의 정의다.**
+각 표 아래에 **항목별 설명**(무슨 일을 하는가 / 왜 기본기인가 / 없으면 뭐가 막히는가)을 붙였다.
 
 ### A. 데이터 변환·정규화
-| 기능 | Aurora | eVision | Gocator |
-|---|---|---|---|
-| 점군 ⇄ 높이맵 변환 (참조평면·분해능·원점 명시 제어) | `MakeSurfaceFromImage`, `CreatePoint3DGridFromImage`, `ArrangePoint3DGrid` | `EPointCloudToZMapConverter` (`SetReferencePlane`/`SetOrigin`/`SetMapXYResolution`/`SetMapZResolution`) | Surface 생성 (uniform spacing) |
-| 무효 픽셀 채우기 (hole/gap fill) | `ReplaceInvalidSurfacePoints` | `EnableFillMode`/`SetFillMode` | Gap Filling, Max Void Width |
-| 유효 영역 마스크 | `SurfaceValidPointsRegion`, `Point3DGridValidPointsRegion` | — | Preserve Invalid |
-| 리샘플 / 다운샘플 | `ResampleSurface`, `ReduceSurface`, `VoxelizePoint3DGrid` | `EGridDecimator`, `ERandomDecimator` | Decimation |
-| 노이즈 제거 (이웃 통계 기준) | `SmoothSurface_Gauss/Mean`, `RemoveOutliersFromPoint3DGrid` | `EPointCloudFilter`, `EFilters::RemoveNoise` (mean+k·σ) | Surface Filter, Smoothing, Vibration Correction |
+| # | 기능 | Aurora | eVision | Gocator | InsWorks |
+|---|---|---|---|---|---|
+| A1 | 점군 ⇄ 높이맵 변환 (참조평면·분해능·원점 명시 제어) | `MakeSurfaceFromImage`, `CreatePoint3DGridFromImage`, `ArrangePoint3DGrid` | `EPointCloudToZMapConverter` (`SetReferencePlane`/`SetOrigin`/`SetMapXYResolution`/`SetMapZResolution`) | Surface 생성 (uniform spacing) | 점군·Range 이미지 양방향 (제어 파라미터 미확인) |
+| A2 | 무효 픽셀 채우기 (hole/gap fill) | `ReplaceInvalidSurfacePoints` | `EnableFillMode`/`SetFillMode` | Gap Filling, Max Void Width | 3D 결손 픽셀 채우기 툴 |
+| A3 | 유효 영역 마스크 | `SurfaceValidPointsRegion`, `Point3DGridValidPointsRegion` | — | Preserve Invalid | 미확인 |
+| A4 | 리샘플 / 다운샘플 | `ResampleSurface`, `ReduceSurface`, `VoxelizePoint3DGrid` | `EGridDecimator`, `ERandomDecimator` | Decimation | 미확인 |
+| A5 | 노이즈 제거 (이웃 통계 기준) | `SmoothSurface_Gauss/Mean`, `RemoveOutliersFromPoint3DGrid` | `EPointCloudFilter`, `EFilters::RemoveNoise` (mean+k·σ) | Surface Filter, Smoothing, Vibration Correction | 3D 필터 툴 (Range 이미지 노이즈 제거) |
+
+**항목 설명**
+
+- **A1 점군 ⇄ 높이맵 변환** — 불규칙한 점 집합을 균일 격자에 정사영해 이미지처럼 다룰 수 있게 만든다. 핵심은 변환 자체가 아니라 **참조평면·원점·XY/Z 분해능을 명시적으로 지정할 수 있는가**다. 자동 선택에 맡기면 스캔마다 격자가 미세하게 달라져 같은 파트가 다른 픽셀에 떨어지고, 측정 재현성이 무너진다. eVision이 이 파라미터를 전부 개별 setter로 노출하는 게 이 이유다.
+- **A2 무효 픽셀 채우기** — 레이저가 못 본 픽셀(오클루전·흡수·과다반사)을 이웃값으로 추정해 메운다. 다운스트림 필터·피팅이 NaN에서 깨지는 것을 막는 실무적 목적이 크다. 다만 **채운 값은 측정 대상이 아니라는 구분이 유지돼야** 한다 — `repeatability_findings.md`의 "고노출 fill 스파이크가 HighTail 측정을 ±0.1mm 요동시킨 사례"가 정확히 이 구분이 깨졌을 때 벌어지는 일이다.
+- **A3 유효 영역 마스크** — 어느 픽셀이 실측이고 어느 픽셀이 무효/보간인지를 Region으로 내보낸다. 평균·σ 같은 통계를 무효 픽셀 오염 없이 내기 위한 전제이고, A2와 짝으로 동작한다.
+- **A4 리샘플 / 다운샘플** — 격자 분해능을 바꿔 계산량을 줄이거나, 분해능이 다른 데이터를 같은 격자에 맞춘다. 측정 경로에서는 분해능 하락이 곧 정밀도 하락이므로 프리뷰·초기 정렬 단계용으로 쓰는 게 보통이다.
+- **A5 노이즈 제거** — 이웃 통계(평균거리 또는 국소 σ)를 기준으로 이상점을 제거하거나 평활한다. 3사가 공통으로 임계를 **mean + k·σ** 형태로 잡는다는 게 눈에 띄는 수렴점이다. 실무에서 결과를 좌우하는 건 필터 종류보다 **경계 처리와 무효 픽셀 취급**이다 (커밋 `63a8641`·`71b8320`이 이 문제).
 
 ### B. 표면 공간 변환 (높이맵 자체를 조작)
-| 기능 | Aurora | eVision | Gocator |
-|---|---|---|---|
-| **레벨링/평탄화** (피팅 평면 기준으로 높이맵 펴기) | `FlattenSurface`, `FlattenSurface_WithScalePreserving`, `SurfaceToPlaneDistanceImage` | ZMap Leveling | Tilt Correction (툴별 X/Y Angle) |
-| 크롭 (박스 / Region / 평면 근접 / 이웃 근접) | `CropSurface`, `CropSurfaceToBox3D`, `CropSurfaceToRegion`, `CropSurfaceByPlaneProximity`, `CropSurfaceByNeighborsProximity` | `ESimpleCropper`, `ERectangularCropper`, `ESphericalCropper`, `EPlaneCropper` | Regions |
-| 두 표면 차분 / 결합 | `SubtractSurfaces`, `JoinSurfaces`, `SplitSurfaceByPlane` | — | Surface Stitch |
-| 강체 변환 (회전·이동) | `TransformPoint3DGrid`, `RotatePoint3DGrid`, `AlignPoint3DGridToPlane` | `E3DTransformMatrix`, `EAffineTransformer` | Surface Transform |
-| 표면 법선 | `SurfaceNormalsImage` | Normals and Curvatures | — |
-| 높이맵 3D 모폴로지 | `DilateSurfacePoints`/`Erode`/`Open`/`Close` | (2D 모폴로지 재사용) | — |
+| # | 기능 | Aurora | eVision | Gocator | InsWorks |
+|---|---|---|---|---|---|
+| B1 | **레벨링/평탄화** (피팅 평면 기준으로 높이맵 펴기) | `FlattenSurface`, `FlattenSurface_WithScalePreserving`, `SurfaceToPlaneDistanceImage` | ZMap Leveling | Tilt Correction (툴별 X/Y Angle) | `DiffReferBasePlane` |
+| B2 | 크롭 (박스 / Region / 평면 근접 / 이웃 근접) | `CropSurface`, `CropSurfaceToBox3D`, `CropSurfaceToRegion`, `CropSurfaceByPlaneProximity`, `CropSurfaceByNeighborsProximity` | `ESimpleCropper`, `ERectangularCropper`, `ESphericalCropper`, `EPlaneCropper` | Regions | 미확인 |
+| B3 | 두 표면 차분 / 결합 | `SubtractSurfaces`, `JoinSurfaces`, `SplitSurfaceByPlane` | — | Surface Stitch | 3D 점군 스티칭 툴 (결합) |
+| B4 | 강체 변환 (회전·이동) | `TransformPoint3DGrid`, `RotatePoint3DGrid`, `AlignPoint3DGridToPlane` | `E3DTransformMatrix`, `EAffineTransformer` | Surface Transform | `Fixture` (좌표계 방식) |
+| B5 | 표면 법선 | `SurfaceNormalsImage` | Normals and Curvatures | — | 미확인 |
+| B6 | 높이맵 3D 모폴로지 | `DilateSurfacePoints`/`Erode`/`Open`/`Close` | (2D 모폴로지 재사용) | — | 미확인 |
+
+**항목 설명**
+
+- **B1 레벨링/평탄화** — 피팅한 기준 평면을 높이맵에서 빼서 기울기를 제거한다. 출력이 **"평면 대비 부호 있는 거리맵"**이 되므로 이후 모든 임계값·결함검출이 절대 Z가 아니라 상대 높이로 동작한다. 파트가 매번 조금씩 다르게 기울어 놓이는 실제 환경에서는 이게 없으면 임계값을 스캔마다 다시 잡아야 한다. Gocator가 Hole/Stud/Opening 툴마다 Tilt Correction을 두고 *"Surface Plane 툴의 X/Y Angle 출력을 복사해 넣으라"*고 문서에 적어둔 게 이 항목의 중요성을 보여준다.
+- **B2 크롭** — 관심 영역만 남긴다. 박스·Region 같은 좌표 기반뿐 아니라 **기하 조건 크롭**(평면에서 ±d 이내만, 이웃점이 없는 고립점 제거)이 공통으로 있다는 점이 핵심이다. 계산량과 오검을 동시에 줄인다.
+- **B3 두 표면 차분 / 결합** — 같은 격자의 두 장을 빼서 변화량(마모·도포량·변형)을 낸다. **골든 비교(F4)의 최소 형태**이기도 하다. 결합은 멀티센서·멀티스캔 병합용.
+- **B4 강체 변환** — 회전·이동 행렬을 적용해 정렬 결과를 실제로 반영한다. 단 격자 재샘플링이 들어가 **원본 값이 보간으로 바뀐다**. 그래서 측정 경로에서는 데이터를 그대로 두고 좌표계만 옮기는 Fixture(F3)가 더 낫고, 실제로 InsWorks·Gocator가 그 방향이다.
+- **B5 표면 법선** — 픽셀별 표면 방향 벡터. 곡면 위 결함 검출, 곡률 계산, 조명 시뮬레이션의 입력이 된다. 평면 위주 검사에서는 우선순위가 낮다.
+- **B6 높이맵 3D 모폴로지** — dilate/erode/open/close를 높이값에 적용한다. 작은 돌기·구멍 제거에 쓰지만, 더 중요한 용도는 **배경 추정**이다 (open한 결과를 배경으로 보고 원본에서 빼면 top-hat = 배경 기복과 무관하게 국소 돌출만 남는다). E3의 로컬 base plane과 목적이 겹치는 저비용 대안.
 
 ### C. 기하 피팅 & 메트롤로지
-| 기능 | Aurora | eVision | HALCON | Gocator |
-|---|---|---|---|---|
-| 평면 피팅 (LS + robust/RANSAC) | `FitPlaneToSurface`, `_M` | `EPlaneFitter`(LS), `EPlaneFinder`(RANSAC) | `fit_primitives_object_model_3d` | Surface Plane |
-| 선 / 세그먼트 피팅 (3D) | `FitLineToPoints3D`(`_M`/`_RANSAC`/`_LTE`), `FitSegmentToPoints3D` | — | — | Profile Line, Feature Create Line |
-| 원 피팅 (3D) | `FitCircleToPoints3D`, `FitCircleToSurfaceHole` | — | — | Profile Circle, Surface Hole |
-| 구 / 실린더 | — (Aurora 부재) | `ESphereFitter` | cylinder·sphere·plane | Surface Sphere, Ball Bar |
-| 거리 / 각도 / 교점 연산 | `Geometry3D` 4개 그룹 (Distance/Angle/Intersection/Construction) | `E3DPlane.DistanceTo` | `intersect_plane_object_model_3d` | Feature Dimension, Feature Intersect |
-| 전역 특징 (면적/체적/평탄도/BBox/무게중심) | `SurfaceArea`, `SurfaceVolume_Single/Double`, `SurfaceFlatness`, `SurfaceBoundingBox`, `SurfaceMassCenter` | Easy3DObject Area/Volume | `area_`/`volume_`/`smallest_bounding_box_object_model_3d` | Surface Volume, Flatness, Bounding Box |
+| # | 기능 | Aurora | eVision | HALCON | Gocator | InsWorks |
+|---|---|---|---|---|---|---|
+| C1 | 평면 피팅 (LS + robust/RANSAC) | `FitPlaneToSurface`, `_M` | `EPlaneFitter`(LS), `EPlaneFinder`(RANSAC) | `fit_primitives_object_model_3d` | Surface Plane | `BasePlane` (결함검출 툴 내) |
+| C2 | 선 / 세그먼트 피팅 (3D) | `FitLineToPoints3D`(`_M`/`_RANSAC`/`_LTE`), `FitSegmentToPoints3D` | — | — | Profile Line, Feature Create Line | `CreateLineParallel`, `CreateLineBisectPoints` (2D) |
+| C3 | 원 피팅 (3D) | `FitCircleToPoints3D`, `FitCircleToSurfaceHole` | — | — | Profile Circle, Surface Hole | `FindCircle`, `CreateCircle` (2D) |
+| C4 | 구 / 실린더 | — (Aurora 부재) | `ESphereFitter` | cylinder·sphere·plane | Surface Sphere, Ball Bar | `CreateSphere`, `CreateCylinder` |
+| C5 | 거리 / 각도 / 교점 연산 | `Geometry3D` 4개 그룹 (Distance/Angle/Intersection/Construction) | `E3DPlane.DistanceTo` | `intersect_plane_object_model_3d` | Feature Dimension, Feature Intersect | `Distance*`·`Angle*`·`Intersect*` 다수 + `LineSphereIntersect` |
+| C6 | 전역 특징 (면적/체적/평탄도/BBox/무게중심) | `SurfaceArea`, `SurfaceVolume_Single/Double`, `SurfaceFlatness`, `SurfaceBoundingBox`, `SurfaceMassCenter` | Easy3DObject Area/Volume | `area_`/`volume_`/`smallest_bounding_box_object_model_3d` | Surface Volume, Flatness, Bounding Box | 횡단면 툴 length·area |
+
+**항목 설명**
+
+- **C1 평면 피팅** — 측정의 기준 데이텀을 만든다. 3D 검사에서 가장 많이 쓰이는 단일 연산이다. LS(최소자승)는 이상점에 끌려가므로 **robust/RANSAC이 함께 있어야** 실전에서 쓸 수 있다. `repeatability_findings.md`에서 RANSAC threshold를 0.5→0.1로 조여 평면 tilt σ를 0.082°→0.0075°로 10배 안정화한 사례가 바로 이 항목이다.
+- **C2 선 / 세그먼트 피팅** — 엣지·경계선을 직선으로 대표한다. 각도·직각도·평행도 측정의 입력이고, 정렬 기준선으로도 쓰인다. VisionSW의 `LineCenter`가 이 계열의 특수 사례.
+- **C3 원 피팅** — 구멍·보스·핀의 중심과 지름을 낸다. 위치 측정의 기본 단위이고, 중심점이 Fixture의 기준 특징으로 자주 쓰인다.
+- **C4 구 / 실린더** — 곡면 부품의 데이텀. 다수 제품이 갖고 있지만 **단방향 레이저 삼각측량 높이맵에서는 뒷면 데이터가 없어 피팅 조건이 나쁘다** — 이게 §4에서 후순위로 둔 근거다.
+- **C5 거리 / 각도 / 교점 연산** — 피팅한 기하끼리 조합해 실제 도면 치수를 만든다. **툴이 아니라 연산**이고, 이게 없으면 피팅 결과가 최종 측정값이 되지 못한다. 도면 치수는 대개 "면과 면 사이 거리", "선과 원 중심 사이 거리", "두 면의 교선"처럼 조합값이기 때문이다. Aurora가 `Geometry3D`에 4개 그룹을 통째로 할당하고, InsWorks가 노출한 2D 툴 이름의 절반 이상이 이 계열인 게 그 방증.
+- **C6 전역 특징** — 개별 특징점을 잡지 않고 영역 전체를 한 숫자로 요약한다. 도포량(체적), 휨·뒤틀림(평탄도), 위치(무게중심·BBox)가 직접 지표가 되는 검사에서 가장 빠른 경로다. 특징점 검출보다 노이즈에 강한 것도 장점.
 
 ### D. 높이맵 네이티브 캘리퍼 (**최대 공백 영역**)
-| 기능 | Aurora | Gocator | eVision |
-|---|---|---|---|
-| 경로 따라 프로파일 추출 (단면) | `SurfaceProfileAlongPath`, `SurfaceSingleProfileAlongAxis`, `SurfaceMultipleProfilesAlongAxis`, `GetSurfacePath` | Surface Section (*"Profile measurement tools can be used on sections extracted from Surface data"*) | ZMap 자체가 정사영 → 2D 툴 |
-| 1D 엣지 / 리지 / 스트라이프 검출 | `ScanSingleEdge3D`, `ScanMultipleEdges3D`, `ScanExactlyNEdges3D` × {Edges, Ridges, Stripes} = **9개** | Feature Points 14종: Max Z, Min Z, Min X, Max X, Average, Corner, Top/Bottom/Left/Right Corner, Rising Edge, Falling Edge, Any Edge, Median | EasyGauge (2D) |
-| 검출점에 기하 피팅 | `FitSegmentToEdges3D/Ridges3D/Stripe3D`, `FitCircleToEdges3D/…`, `FitPathToEdges3D/…`, `MeasureObjectWidth3D` = **10개** | Fit Lines (1~2 fit area, 불연속 우회 가능) | — |
-| 로컬 극값 | `SurfaceLocalMaxima`, `SurfaceLocalMinima`, `SurfaceMaximalPoint`, `SurfaceMinimalPoint`, `SurfaceMedian` | Feature Points에 포함 | — |
+
+조사한 5개 제품 중 **4개가 보유**. 미보유는 HALCON뿐이고, HALCON은 애초에 높이맵 전용 타입이 없어서다(§1). 즉 "높이맵을 1급으로 다루는 제품은 예외 없이 이 캘리퍼를 갖는다."
+
+| # | 기능 | Aurora | Gocator | InsWorks | eVision |
+|---|---|---|---|---|---|
+| D1 | 경로 따라 프로파일 추출 (단면) | `SurfaceProfileAlongPath`, `SurfaceSingleProfileAlongAxis`, `SurfaceMultipleProfilesAlongAxis`, `GetSurfacePath` | Surface Section (*"Profile measurement tools can be used on sections extracted from Surface data"*) | **3D 횡단면 툴** — *"Range 이미지 X-Y 평면의 지정 영역 수직 컨투어를 획득"* | ZMap 자체가 정사영 → 2D 툴 |
+| D2 | 1D 엣지 / 리지 / 스트라이프 검출 | `ScanSingleEdge3D`, `ScanMultipleEdges3D`, `ScanExactlyNEdges3D` × {Edges, Ridges, Stripes} = **9개** | Feature Points 14종: Max Z, Min Z, Min X, Max X, Average, Corner, Top/Bottom/Left/Right Corner, Rising Edge, Falling Edge, Any Edge, Median | 동일 툴의 *"컨투어 특징 추출"* — 데이터시트 예시에 **corner extraction** 명시. 엣지/리지/스트라이프 구분 여부는 미확인 | EasyGauge (2D) |
+| D3 | 검출점에 기하 피팅 / 측정 | `FitSegmentToEdges3D/Ridges3D/Stripe3D`, `FitCircleToEdges3D/…`, `FitPathToEdges3D/…`, `MeasureObjectWidth3D` = **10개** | Fit Lines (1~2 fit area, 불연속 우회 가능) | 동일 툴의 *"측정"* — 예시에 **length calculation · area calculation** 명시 | — |
+| D4 | 로컬 극값 | `SurfaceLocalMaxima`, `SurfaceLocalMinima`, `SurfaceMaximalPoint`, `SurfaceMinimalPoint`, `SurfaceMedian` | Feature Points에 포함 | 미확인 | — |
+
+**항목 설명**
+
+- **D1 프로파일 추출** — 높이맵을 지정한 경로나 축으로 잘라 **1D 신호**로 만든다. 2D 이미지 캘리퍼와 같은 발상이고, 3D 측정의 대부분이 결국 "단면에서 재는" 일이기 때문에 D2·D3의 필수 입력이 된다. 여러 단면을 한 번에 뽑는 변형(Aurora `SurfaceMultipleProfilesAlongAxis`)이 있는 이유는 단면 하나는 노이즈에 취약해서다.
+- **D2 1D 특징점 검출** — 1D 신호에서 **엣지**(상승/하강 계단), **리지**(볼록한 정점), **스트라이프**(폭을 가진 단), **코너**, 극값을 서브픽셀 정밀도로 찾는다. **검출 가능한 특징의 종류가 곧 잴 수 있는 형상의 종류**다. Aurora가 Edge/Ridge/Stripe를 각각 Single/Multiple/ExactlyN 3변형으로 9개나 만든 것, Gocator가 Feature Point를 14종 열거한 것 모두 이 이유.
+- **D3 검출점에 기하 피팅 / 측정** — 여러 단면에서 찾은 점들을 모아 직선·원·경로로 피팅하거나 폭을 직접 낸다. **단발 측정을 노이즈에 강한 측정으로 바꾸는 단계**이고, C2·C3(기하 피팅)과 D2를 잇는 접착제다. Gocator의 Fit Line이 "fit area 2개로 불연속 구간을 우회"하는 옵션을 둔 게 실전 요구를 보여준다.
+- **D4 로컬 극값** — 영역 내 최대/최소/중앙값과 그 위치. 가장 단순하지만 실무에서 가장 많이 쓰인다(최고점 높이, 함몰 깊이). VisionSW의 `HeightMeasure`가 Mean/Max/HighTail 집계를 갖는 게 이 항목의 부분 구현이다.
+
+**InsWorks 방식의 구조적 차이**: Aurora는 추출·검출·피팅을 **19개 독립 필터**로 쪼개고, Gocator는 Feature Point 14종 + Fit Line을 툴 파라미터로 노출한다. InsWorks는 셋을 **단일 "3D 횡단면 툴" 하나에 묶었다**(획득 → 특징추출 → 측정). 설계 선택지가 둘이라는 뜻 — 프리미티브 분해형(Aurora) vs 통합 툴형(InsWorks). VisionSW의 기존 `PlaneFit`/`RefHeight`/`HeightMeasure`는 통합 툴형에 가깝다.
 
 ### E. 객체 단위 분할·검사
-| 기능 | Aurora | eVision | Gocator |
-|---|---|---|---|
-| 높이맵 → 개별 객체 분할 | `SegmentSurface_Planes`, `SegmentSurface_PlanarCells` | `E3DObjectExtractor` → `E3DObject[]` | Part Detection, Surface Segmentation |
-| **메트릭 기준 객체 필터링** | (부분적) | Length/Width/LocalHeight/ReferenceHeight/AspectRatio/Orientation/LocalTilt/ReferenceTilt/Area/Volume **범위 필터** | Decisions (Min/Max) |
-| **로컬 base plane** (객체 주변 픽셀로 배경 추정) | — | `E3DObject.BasePlane` (주변 픽셀 피팅), local height vs reference height **분리 출력** | Reference Regions (*"the surface around the hole is not flat"* 케이스용) |
-| 배열/컬렉션 순회 | 배열 네이티브 | 객체 리스트 | GoPxL **Array tools** |
+| # | 기능 | Aurora | eVision | Gocator | InsWorks |
+|---|---|---|---|---|---|
+| E1 | 높이맵 → 개별 객체 분할 | `SegmentSurface_Planes`, `SegmentSurface_PlanarCells` | `E3DObjectExtractor` → `E3DObject[]` | Part Detection, Surface Segmentation | 3D 표면결함검출 툴 (돌출·함몰 영역 추출) |
+| E2 | **메트릭 기준 객체 필터링** | (부분적) | Length/Width/LocalHeight/ReferenceHeight/AspectRatio/Orientation/LocalTilt/ReferenceTilt/Area/Volume **범위 필터** | Decisions (Min/Max) | 미확인 |
+| E3 | **로컬 base plane** (객체 주변 픽셀로 배경 추정) | — | `E3DObject.BasePlane` (주변 픽셀 피팅), local height vs reference height **분리 출력** | Reference Regions (*"the surface around the hole is not flat"* 케이스용) | `BasePlane` (동일 개념, 상세 미확인) |
+| E4 | 배열/컬렉션 순회 | 배열 네이티브 | 객체 리스트 | GoPxL **Array tools** | 미확인 |
+
+**항목 설명**
+
+- **E1 개별 객체 분할** — 연결된 영역을 각각의 객체로 쪼개 하나씩 측정한다. **"몇 개인가 / 각각이 규격에 맞나"** 부류 검사의 전제다. 개수가 가변인 대상(솔더 범프, 구멍 배열, 도포 비드 분절)은 이게 없으면 ROI를 사람이 전부 찍어야 하고 파트가 바뀌면 레시피를 다시 만들어야 한다. VisionSW가 지금 `CreateROI`로 ROI를 수동 지정하는 방식이라 정확히 이 한계에 걸려 있다.
+- **E2 메트릭 기준 객체 필터링** — 분할된 객체를 길이·폭·높이·면적·체적·종횡비·방향·기울기의 **범위**로 걸러낸다. 결정적인 건 이 값들이 **픽셀이 아니라 mm/도 단위**여야 한다는 점이다. 그래야 분해능이나 센서가 바뀌어도 파라미터가 그대로 유효하다. eVision의 range 필터 10종이 사실상 이 항목의 표준 스펙이라 볼 수 있다.
+- **E3 로컬 base plane** — 객체 **주변** 픽셀만으로 배경 평면을 추정하고 그 기준으로 높이를 잰다. eVision이 국소 기준 높이(local height)와 전역 기준 높이(reference height)를 **분리해서 둘 다 출력**하는 게 핵심 설계다. 파트 전체가 휘어 있어도 국소 단차는 정확히 나오기 때문이다. Gocator가 Hole/Opening/Stud 툴에 Reference Region을 두고 *"구멍 주변 표면이 평평하지 않은 경우"*라고 문서에 명시한 것도 같은 문제. VisionSW의 `PlaneFit`/`RefHeight`는 전역 ROI 기반이라 이 구분이 없다.
+- **E4 배열/컬렉션 순회** — 분할된 N개 객체에 같은 측정을 반복 적용한다. **객체 수가 런타임에 결정되므로** 그래프가 컬렉션 타입과 반복을 표현할 수 있어야 하고, 그래서 이건 툴이 아니라 데이터 모델·실행 모델 문제다 (§4 T0-2).
 
 ### F. 정렬 / 포즈 / 골든 비교
-| 기능 | Aurora | eVision | HALCON | Gocator |
-|---|---|---|---|---|
-| 강체 정렬 (rough → refine, registration) | `AdjustPointGrids3D`, `AdjustPointGrids3DGlobal` | `EFeaturesAligner`, `EPrincipalAxisExtractor`(PCA) | `register_object_model_3d_pair`/`_global` | Part Matching, Surface Align Wide |
-| CAD/골든 기준 포즈 | — | `E3DAligner` (참조 점군 **또는 CAD 메시**) | `find_surface_model` 등 5종 | Mesh Template Matching |
-| **앵커링** (로케이터 결과로 하위 툴 위치 이동) | (수동 변환) | 변환행렬 선적용 | **Anchor X/Y/Z 입력이 거의 모든 툴에 존재** | — |
-| 골든 샘플 편차 비교 | `GoldenTemplate3D`, `Point3DGridDistance`, `Point3DGridRMSE` | `E3DComparer` | `distance_object_model_3d` | Profile Master Comparison |
+| # | 기능 | Aurora | eVision | HALCON | Gocator | InsWorks |
+|---|---|---|---|---|---|---|
+| F1 | 강체 정렬 (rough → refine, registration) | `AdjustPointGrids3D`, `AdjustPointGrids3DGlobal` | `EFeaturesAligner`, `EPrincipalAxisExtractor`(PCA) | `register_object_model_3d_pair`/`_global` | Part Matching, Surface Align Wide | 3D 점군 매칭 툴 |
+| F2 | CAD/골든 기준 포즈 | — | `E3DAligner` (참조 점군 **또는 CAD 메시**) | `find_surface_model` 등 5종 | Mesh Template Matching | 미확인 |
+| F3 | **Fixture / 앵커링** (로케이터 결과로 하위 툴 위치 이동) | (수동 변환) | 변환행렬 선적용 | — | **Anchor X/Y/Z 입력이 거의 모든 툴에 존재** | **`Fixture`** + 공간 좌표 트리 |
+| F4 | 골든 샘플 편차 비교 | `GoldenTemplate3D`, `Point3DGridDistance`, `Point3DGridRMSE` | `E3DComparer` | `distance_object_model_3d` | Profile Master Comparison | 3D 표면결함검출 (Train/Runtime) |
+
+**항목 설명**
+
+- **F1 강체 정렬** — 파트가 실제로 놓인 위치·방향을 찾아 기준 자세로 맞춘다. 공통 구조가 **거친 초기 추정(PCA·특징점 대응) → 반복 정밀화**의 2단계라는 게 눈에 띈다. Aurora와 HALCON이 똑같이 pairwise와 global을 분리해 제공하는 것도 수렴점. 기계적 고정 없이 검사하려면 필수이고, 없으면 파트를 지그로 정확히 고정해야 한다.
+- **F2 CAD/골든 기준 포즈** — 참조 점군이나 CAD 메시에 대한 6자유도 자세를 낸다. 측정값을 **도면 좌표계로 보고**해야 할 때 필요하다. Aurora가 이걸 안 갖고 있으므로 엄격한 table-stakes는 아니고, 메시 의존성 때문에 VisionSW에서는 후순위.
+- **F3 Fixture / 앵커링** — 로케이터가 찾은 특징으로 **좌표계를 만들거나** 하위 툴에 오프셋을 주입한다. B4(강체 변환)와 목적은 같지만 **데이터를 건드리지 않는다**는 점이 결정적이다. 보간 손실이 없고, 큰 높이맵을 다시 만들지 않으므로 비용도 없다. 사용성 차이가 가장 큰 항목이고, Gocator가 거의 모든 툴에 Anchor X/Y/Z를 노출한 것과 InsWorks가 `Fixture`+좌표계 트리를 둔 것이 같은 해법이다. VisionSW의 `Align`은 데이터를 변환하는 쪽이라 여기서 갈린다.
+- **F4 골든 샘플 편차 비교** — 기준 스캔과의 국소 거리맵 또는 RMSE로 돌출·함몰·결손을 찾는다. **결함 종류를 미리 정의하지 않고 "기준과 다르다"만으로 잡는** 방식이라, 예상 못 한 결함에 강하다. 4사가 전부 갖고 있고 Train/Runtime 2단계 구조가 공통이다. B3(두 표면 차분)이 그 최소 구현이므로 저비용 진입 경로가 있다.
 
 ### G. 공통 인프라
-| 기능 | 근거 |
-|---|---|
-| 합/불 판정을 툴에 내장 (Min/Max threshold → pass/fail) | Gocator Decisions (디지털 출력까지 라우팅), Aurora 판정은 별도 |
-| 측정값 필터 (Scale/Offset, Hold Last Valid, Smoothing) | Gocator Filters |
-| 3D 뷰어 | Aurora, eVision `E3DViewer`, Gocator, HALCON `render_object_model_3d`, InsWorks 자체 2D/3D 표시 엔진 |
-| 스크립트 탈출구 | Gocator Script 툴 + GDK, HALCON 전체, Aurora 사용자 필터, InsWorks C#/Python 스크립트 + VS 디버깅 |
+| # | 기능 | 근거 |
+|---|---|---|
+| G1 | 합/불 판정을 툴에 내장 (Min/Max threshold → pass/fail) | Gocator Decisions (디지털 출력까지 라우팅), Aurora 판정은 별도 |
+| G2 | 측정값 필터 (Scale/Offset, Hold Last Valid, Smoothing) | Gocator Filters |
+| G3 | 3D 뷰어 | Aurora, eVision `E3DViewer`, Gocator, HALCON `render_object_model_3d`, InsWorks 자체 2D/3D 표시 엔진 |
+| G4 | 스크립트 탈출구 | Gocator Script 툴 + GDK, HALCON 전체, Aurora 사용자 필터, InsWorks C#/Python 스크립트 + VS 디버깅 |
+
+**항목 설명**
+
+- **G1 합/불 판정 내장** — 측정값을 공칭±공차 또는 Min/Max와 비교해 pass/fail을 내고 외부(디지털 출력·상위 시스템)로 보낸다. 설계상 중요한 건 **측정과 판정이 분리돼 있어야** 같은 측정값에 여러 판정 기준을 걸거나 판정 기준만 바꿔 재평가할 수 있다는 점이다. VisionSW는 `HeightMeasure`·`ThicknessMeasure` 안에 tolerance가 박혀 있어 이 분리가 없다 (§4 T1-7).
+- **G2 측정값 필터** — Scale/Offset 보정, 마지막 유효값 유지, 시간축 평활. 간헐적으로 무효 측정이 나와도 라인을 멈추지 않게 하는 실무 장치다. 반대로 **이걸 켜면 반복성 측정이 왜곡**되므로 검증 모드에서는 꺼야 한다.
+- **G3 3D 뷰어** — 점군·높이맵·피팅 결과(평면, 검출점)를 겹쳐 보는 인터랙티브 표시. 파라미터를 맞출 때 사람이 확인할 수 있는 유일한 수단이라 5사 전부 갖고 있다. VisionSW는 `PlaneView3D`가 있으니 부분 보유.
+- **G4 스크립트 탈출구** — 툴 조합으로 표현 안 되는 로직을 스크립트로 처리한다. **툴 카탈로그가 작을 때 오히려 더 중요하다** — 없는 툴을 스크립트로 메워 사용자가 막히지 않게 하기 때문이다. 1인 프로젝트라면 툴 100개를 만드는 것보다 이걸 먼저 넣는 게 합리적일 수 있다.
 
 ### H. InsWorks VDE — 툴 그룹 단위 대조 + VisionPro 계열 개념
 
@@ -109,7 +169,7 @@ InsWorks는 개별 필터 레퍼런스를 공개하지 않으므로 §2 A~G의 �
 
 | InsWorks 3D 툴 그룹 | 설명 (벤더 문서) | §2 / §4 대응 |
 |---|---|---|
-| 3D 횡단면(Cross-sectional) 툴 | *"Range 이미지 X-Y 평면의 지정 영역 수직 컨투어를 획득하고 컨투어 특징 추출·측정"* — 예시로 corner extraction / length / area 제시 | **D 전체** (T1-1·T1-2·T1-3) |
+| 3D 횡단면(Cross-sectional) 툴 | *"Range 이미지 X-Y 평면의 지정 영역 수직 컨투어를 획득하고 컨투어 특징 추출·측정"* — 예시로 corner extraction / length / area 제시 | **D 전체** (T1-1·T1-2·T1-3) — §2-D 표에 반영됨 |
 | 3D 필터 툴 | Range 이미지 노이즈 제거 | A (VisionSW `NoiseFilter` 보유) |
 | 3D 결손 픽셀 채우기 툴 | Range 이미지 무효 픽셀 채우기 | A (VisionSW `GapFill` 보유) |
 | 3D 점군 매칭 툴 | 3D 공간 위치결정 | F (T3-2) |

@@ -4,9 +4,7 @@
 #include "JsonBridge.h"
 #include "ImageEncoder.h"
 #include "Logger.h"
-#include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
-#include "RefHeightTool.h"
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
@@ -208,7 +206,6 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 const auto& o = it->second;
                 any = true;
                 if (o->heightmap    && !merged->heightmap)    merged->heightmap    = o->heightmap;
-                if (o->image   && !merged->image)   merged->image   = o->image;
                 if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
                 if (o->region  && !merged->region)  merged->region  = o->region;
                 if (o->plane   && !merged->plane)   merged->plane   = o->plane;
@@ -281,15 +278,6 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["cloud"] = pts;
             }
         }
-        if (ns.type == "RefHeight") {
-            auto* m = dynamic_cast<RefHeightTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["avgHeightMm"]   = r.avgHeightMm;
-                jr["sampleCount"]   = r.sampleCount;
-                jr["rejectedCount"] = r.rejectedCount;
-            }
-        }
         if ((ns.type == "HeightMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
             // 3D 미리보기용 서브샘플(최대 ~50k점) — 저장 파일은 전체 해상도(영향 없음)
             const auto& cpts = result.output->cloud->points;
@@ -355,18 +343,6 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["columns"] = r.columns;
             }
         }
-        if (ns.type == "ThicknessMeasure") {
-            auto* m = dynamic_cast<ThicknessMeasure*>(tool.get());
-            if (m) {
-                const auto& r = m->lastResult();
-                jr["thicknessMm"] = r.thicknessMm;
-                jr["minMm"]       = r.minMm;
-                jr["maxMm"]       = r.maxMm;
-                jr["pass"]        = r.pass;
-                if (!r.pass) pipelinePass = false;
-            }
-        }
-
         if (ns.type == "RegionMeasure") {
             auto* m = dynamic_cast<RegionMeasureTool*>(tool.get());
             if (m && m->lastResult().valid) {
@@ -381,11 +357,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             }
         }
 
-        // 프리뷰(base64 PNG). 출력에 이미지 없으면 Region(마스크) → 입력 heightmap 순으로 폴백. noPreview면 생략.
+        // 프리뷰(base64 PNG). 출력에 Region(마스크) 있으면 우선, 없으면 입력 heightmap 폴백. noPreview면 생략.
         if (!noPreview) {
-            if (result.output && result.output->hasImage())
-                jr["preview"] = imageToBase64(*result.output->image);
-            else if (result.output && result.output->hasRegion()) {
+            if (result.output && result.output->hasRegion()) {
                 // Region(마스크) 프리뷰 — 입력 heightmap 폴백보다 우선(Threshold/CreateROI 출력)
                 const auto& rgn = *result.output->region;
                 jr["preview"] = regionToBase64(rgn);

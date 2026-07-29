@@ -1,4 +1,4 @@
-export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Heights' | 'Image2D' | 'PointCloud3D' | 'Point' | 'Any'
+export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Heights' | 'PointCloud3D' | 'Point' | 'Any'
 
 export interface ToolDef {
   type: string
@@ -16,7 +16,6 @@ export const PORT_COLORS: Record<PortType, string> = {
   Region:        '#66bb6a',
   Plane:         '#26a69a',
   Heights:       '#ffc107',
-  Image2D:       '#ff9800',
   PointCloud3D:  '#9c27b0',
   Point:         '#ec407a',
   Any:           '#888',
@@ -27,11 +26,6 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'HeightMapLoader', label: 'HeightMap Loader', category: '입력',
     inputs: [], outputs: ['HeightMap'],
     defaultParams: { mode: 'file', path: '', folder: '', index: 0, xResMm: 1.0, yResMm: 1.0, zResMm: 0.001 },
-  },
-  {
-    type: 'ImageLoader', label: 'Image Loader', category: '입력',
-    inputs: [], outputs: ['Image2D'],
-    defaultParams: { path: '' },
   },
   {
     type: 'ExposureMerge', label: 'Exposure Split', category: '필터',
@@ -98,11 +92,6 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, edgeSigma: 30, outputStage: 0 },
   },
   {
-    type: 'EdgeDetector', label: 'Edge Detector', category: '필터',
-    inputs: ['Image2D'], outputs: ['Image2D'],
-    defaultParams: {},
-  },
-  {
     type: 'PlaneFit', label: 'Plane Fit', category: '측정',
     inputs: ['HeightMap'], outputs: ['Plane'],
     defaultParams: {
@@ -114,18 +103,6 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
-    type: 'RefHeight', label: 'Ref Height', category: '측정',
-    inputs: ['HeightMap'], outputs: ['Plane', 'Heights'],
-    outputLabels: ['Plane', 'Avg'],
-    defaultParams: {
-      rois: [],
-      mode: 'sor',
-      sorSigma: 2.0,
-      lowTailPct: 5,
-      highTailPct: 5,
-    },
-  },
-  {
     type: 'HeightMeasure', label: 'Height Measure', category: '측정',
     inputs: ['HeightMap', 'Plane'], outputs: ['Heights'],
     defaultParams: {
@@ -133,15 +110,6 @@ export const TOOL_DEFS: ToolDef[] = [
       aggregation: 'Mean',
       highTailPct: 20,
       useTolerance: false,
-      nominalMm: 0,
-      toleranceMm: 0.05,
-    },
-  },
-  {
-    type: 'ThicknessMeasure', label: 'Thickness Measure', category: '측정',
-    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
-    defaultParams: {
-      roi: { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
       nominalMm: 0,
       toleranceMm: 0.05,
     },

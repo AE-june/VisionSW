@@ -115,28 +115,6 @@ function PlaneFitParams({ params, onChange }: { params: Record<string, unknown>;
   </>
 }
 
-const ROI_TIPS: Record<string, string> = {
-  xMin: '측정 ROI의 X 시작 경계 (mm, 물리 좌표)',
-  xMax: '측정 ROI의 X 끝 경계 (mm, 물리 좌표)',
-  yMin: '측정 ROI의 Y 시작 경계 (mm, 물리 좌표)',
-  yMax: '측정 ROI의 Y 끝 경계 (mm, 물리 좌표)',
-}
-
-function ThicknessParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
-  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
-  const roi = params.roi as { xMin: number; xMax: number; yMin: number; yMax: number }
-
-  return <>
-    <div className="param-section">ROI (mm)</div>
-    {(['xMin','xMax','yMin','yMax'] as const).map(f => (
-      <NumField key={f} label={f} value={roi[f]} step={0.1} tooltip={ROI_TIPS[f]} onChange={v => set('roi', { ...roi, [f]: v })} />
-    ))}
-    <div className="param-section">측정</div>
-    <NumField label="Nominal (mm)"   value={params.nominalMm as number}   step={0.01} tooltip="목표 두께(mm). 측정값과의 차이가 Tolerance를 초과하면 NG" onChange={v => set('nominalMm', v)} />
-    <NumField label="Tolerance (mm)" value={params.toleranceMm as number} step={0.01} tooltip="허용 오차(mm). |측정값 - Nominal| > 이 값이면 NG 판정" onChange={v => set('toleranceMm', v)} />
-  </>
-}
-
 export function NoiseFilterParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const ft = (params.filterType as string) ?? 'median'
@@ -183,11 +161,6 @@ function CsvWriterParams({ params, onChange }: { params: Record<string, unknown>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>실행할 때마다 한 행씩 추가됩니다</div>
   </>
-}
-
-function LoaderParams({ params, onChange, toolType }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void; toolType: string }) {
-  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
-  return <PathField label="파일" value={params.path as string ?? ''} onChange={v => set('path', v)} toolType={toolType} />
 }
 
 // HeightMapLoader: 단일 파일 / 폴더(연속검사) 모드 — 이미지 소스를 노드가 단독 소유
@@ -516,21 +489,18 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
     return (
       <div className="param-panel-body">
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
-        {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
-        {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
-        {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     )
   }
@@ -543,21 +513,18 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
       </div>
       <div className="param-panel-body">
         {toolType === 'PlaneFit'         && <PlaneFitParams   params={params} onChange={handleChange} />}
-        {toolType === 'ThicknessMeasure' && <ThicknessParams  params={params} onChange={handleChange} />}
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
-        {toolType === 'ImageLoader' && <LoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
-        {toolType === 'EdgeDetector'     && <div className="param-empty">파라미터 없음</div>}
       </div>
     </div>
   )

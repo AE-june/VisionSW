@@ -17,7 +17,6 @@ NoiseFilter::NoiseFilter(Params params) : m_params(params) {}
 ToolResult NoiseFilter::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "null input" };
     if (input->hasHeightMap()) return filterHeightMap(input);   // HeightMap 우선
-    if (input->hasImage()) return filter2D(input);
     if (input->hasCloud()) return filter3D(input);
     return { ToolStatus::Skip, "no data to filter" };
 }
@@ -223,55 +222,6 @@ static std::vector<float> makeGaussianKernel(int size) {
     }
     for (auto& v : k) v /= sum;
     return k;
-}
-
-ToolResult NoiseFilter::filter2D(VisionDataPtr input) {
-    VISION_LOG_DEBUG("NoiseFilter::filter2D kernel={}", m_params.kernelSizeX);
-    const auto& src = *input->image;
-    int W = src.width, H = src.height, C = src.channels;
-
-    auto out = std::make_shared<VisionData>(*input);
-    out->image = std::make_shared<Image2D>();
-    out->image->width = W;
-    out->image->height = H;
-    out->image->channels = C;
-    out->image->data.resize(static_cast<size_t>(W) * H * C);
-
-    int k = std::max(3, m_params.kernelSizeX | 1);  // ensure odd
-    auto kernel = makeGaussianKernel(k);
-    int half = k / 2;
-
-    // Horizontal pass into temp buffer
-    std::vector<float> tmp(static_cast<size_t>(W) * H * C);
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            for (int c = 0; c < C; ++c) {
-                float sum = 0.f;
-                for (int dx = -half; dx <= half; ++dx) {
-                    int xx = std::clamp(x + dx, 0, W - 1);
-                    sum += kernel[dx + half] * src.data[(y * W + xx) * C + c];
-                }
-                tmp[(y * W + x) * C + c] = sum;
-            }
-        }
-    }
-
-    // Vertical pass to output
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            for (int c = 0; c < C; ++c) {
-                float sum = 0.f;
-                for (int dy = -half; dy <= half; ++dy) {
-                    int yy = std::clamp(y + dy, 0, H - 1);
-                    sum += kernel[dy + half] * tmp[(yy * W + x) * C + c];
-                }
-                out->image->data[(y * W + x) * C + c] =
-                    static_cast<uint8_t>(std::clamp(sum, 0.f, 255.f));
-            }
-        }
-    }
-
-    return { ToolStatus::Ok, "", out };
 }
 
 ToolResult NoiseFilter::filter3D(VisionDataPtr input) {

@@ -40,7 +40,6 @@ private:
     Params m_params;
 
     ToolResult filterHeightMap(VisionDataPtr input);   // HeightMap 필터 (mean/median/gaussian/sor)
-    ToolResult filter2D(VisionDataPtr input);     // 2D 이미지 가우시안 (레거시)
     ToolResult filter3D(VisionDataPtr input);     // 3D 클라우드 반경 이상치 (레거시)
 };
 

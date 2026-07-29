@@ -61,9 +61,6 @@ function ResultRows({ r }: { r: MeasureResult }) {
       ))}
     </>
   }
-  if (r.tool === 'ThicknessMeasure' && r.thicknessMm !== undefined)
-    return <Row label="Thickness" value={`${r.thicknessMm.toFixed(3)} mm`} pass={r.pass ?? r.ok} />
-
   return <Row label={r.tool} value="OK" pass />
 }
 

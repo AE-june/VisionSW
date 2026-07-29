@@ -1,10 +1,7 @@
 #include "ToolFactory.h"
 #include "HeightMapCache.h"
 #include "NoiseFilter.h"
-#include "EdgeDetector.h"
-#include "ThicknessMeasure.h"
 #include "PlaneFitTool.h"
-#include "RefHeightTool.h"
 #include "HeightFromPlaneTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
@@ -197,34 +194,6 @@ public:
         VISION_LOG_INFO("HeightMapLoader: {}x{} loaded from {}", heightmap->width, heightmap->height, m_path);
         auto data = std::make_shared<VisionData>();
         data->heightmap = heightmap;
-        data->sourceId = m_path;
-        return { ToolStatus::Ok, "", data };
-    }
-};
-
-class ImageLoaderTool : public IAlgorithmTool {
-    std::string m_path;
-public:
-    explicit ImageLoaderTool(std::string path) : m_path(std::move(path)) {}
-    std::string name() const override { return "ImageLoader"; }
-
-    ToolResult execute(VisionDataPtr) override {
-        if (m_path.empty())
-            return { ToolStatus::Fail, "ImageLoader: path not set" };
-        int w, h, ch;
-        unsigned char* raw = stbi_load(m_path.c_str(), &w, &h, &ch, 0);
-        if (!raw)
-            return { ToolStatus::Fail, "ImageLoader: cannot load " + m_path };
-
-        auto img = std::make_shared<Image2D>();
-        img->width    = w;
-        img->height   = h;
-        img->channels = ch;
-        img->data.assign(raw, raw + static_cast<size_t>(w) * h * ch);
-        stbi_image_free(raw);
-
-        auto data = std::make_shared<VisionData>();
-        data->image    = img;
         data->sourceId = m_path;
         return { ToolStatus::Ok, "", data };
     }
@@ -767,8 +736,8 @@ static std::string buildSavePath(const std::string& folder, const std::string& f
     return (fs::u8path(folder) / (msStamp() + "_" + stem + "." + ext)).u8string();
 }
 
-// ── ImageSaver: 입력(HeightMap 또는 Image2D)을 파일로 저장 (OpenCV cv::imwrite) ──────
-//   HeightMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화). Image2D → 그대로.
+// ── ImageSaver: 입력 HeightMap을 파일로 저장 (OpenCV cv::imwrite) ──────
+//   HeightMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화).
 class ImageSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
 public:
@@ -787,15 +756,7 @@ public:
         const bool ext16 = (ext == "png" || ext == "tif" || ext == "tiff");
 
         try {
-            if (input->hasImage()) {                       // 2D 이미지 그대로 저장
-                const auto& im = *input->image;
-                cv::Mat m(im.height, im.width, CV_8UC(im.channels), (void*)im.data.data());
-                cv::Mat out = m;
-                if (im.channels == 3) cv::cvtColor(m, out, cv::COLOR_RGB2BGR);
-                else if (im.channels == 4) cv::cvtColor(m, out, cv::COLOR_RGBA2BGRA);
-                if (!cv::imwrite(savePath, out)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
-            }
-            else if (input->hasHeightMap()) {                   // HeightMap → 16bit(png/tif) 또는 8bit
+            if (input->hasHeightMap()) {                   // HeightMap → 16bit(png/tif) 또는 8bit
                 const HeightMap& zm = *input->heightmap;
                 const size_t N = (size_t)zm.width * zm.height;
                 if (ext16) {
@@ -1265,9 +1226,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("chunkRows",   1000),    // 청크당 입력행 수(출력=/3)
             p.value("overlapRows", 180));    // 겹침 입력행(출력=/3). 실측 40출력행=0px, 기본 60출력행(마진))
     }
-    if (type == "ImageLoader") {
-        return std::make_shared<ImageLoaderTool>(p.value("path", ""));
-    }
     if (type == "ImageSaver") {
         // folder(필수)+filename(선택)+format. 구버전 호환: path만 있으면 분해.
         std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "png");
@@ -1349,17 +1307,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         }
         return std::make_shared<NoiseFilter>(params);
     }
-    if (type == "EdgeDetector") {
-        EdgeDetector::Params params;
-        std::string algo = p.value("algorithm", "Canny");
-        params.algorithm   = (algo == "Sobel")
-                             ? EdgeDetector::Algorithm::Sobel
-                             : EdgeDetector::Algorithm::Canny;
-        params.threshold1  = p.value("threshold1", 50.0f);
-        params.threshold2  = p.value("threshold2", 150.0f);
-        params.apertureSize = p.value("apertureSize", 3);
-        return std::make_shared<EdgeDetector>(params);
-    }
     if (type == "PlaneFit") {
         PlaneFitParams params;
 
@@ -1385,32 +1332,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.maxCloudPoints    = p.value("maxCloudPoints",    200000);
 
         return std::make_shared<PlaneFitTool>(params);
-    }
-    if (type == "RefHeight") {
-        RefHeightParams params;
-
-        // rois 배열: 전부 풀링해서 평균 높이 계산에 쓰임 (PlaneFit의 refRois와 동일 파싱)
-        if (p.contains("rois") && p["rois"].is_array()) {
-            for (const auto& r : p["rois"]) {
-                RefHeightParams::ROI roi;
-                roi.xPct = r.value("xPct", 0.f);
-                roi.yPct = r.value("yPct", 0.f);
-                roi.wPct = r.value("wPct", 1.f);
-                roi.hPct = r.value("hPct", 1.f);
-                params.rois.push_back(roi);
-            }
-        }
-
-        std::string mode = p.value("mode", "sor");
-        params.mode = (mode == "percentileTrim")
-            ? RefHeightParams::OutlierMode::PercentileTrim
-            : RefHeightParams::OutlierMode::Sor;
-
-        params.sorSigma    = p.value("sorSigma",    2.0f);
-        params.lowTailPct  = p.value("lowTailPct",  5.0f);
-        params.highTailPct = p.value("highTailPct", 5.0f);
-
-        return std::make_shared<RefHeightTool>(params);
     }
     if (type == "HeightMeasure") {
         HeightFromPlaneParams params;
@@ -1482,19 +1403,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.path = p.value("path", "");
         params.label = p.value("label", "");
         return std::make_shared<CsvWriterTool>(params);
-    }
-    if (type == "ThicknessMeasure") {
-        ThicknessMeasure::Params params;
-        if (p.contains("roi") && p["roi"].is_object()) {
-            const auto& r = p["roi"];
-            params.roi.xMin = r.value("xMin", 0.f);
-            params.roi.xMax = r.value("xMax", 100.f);
-            params.roi.yMin = r.value("yMin", 0.f);
-            params.roi.yMax = r.value("yMax", 100.f);
-        }
-        params.nominalMm   = p.value("nominalMm",   0.f);
-        params.toleranceMm = p.value("toleranceMm", 0.05f);
-        return std::make_shared<ThicknessMeasure>(params);
     }
 
     if (type == "Threshold") {

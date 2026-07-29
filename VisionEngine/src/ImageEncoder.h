@@ -40,16 +40,6 @@ inline void stbiCallback(void* ctx, void* data, int size) {
     buf->insert(buf->end(), p, p + size);
 }
 
-// ── Image2D → base64 PNG (원본 해상도 유지) ───────────────────────────────
-//  미리보기는 다운스케일하지 않는다 — 모든 노드가 초기 로드 해상도를 그대로 사용
-
-inline std::string imageToBase64(const Image2D& img) {
-    std::vector<uint8_t> jpg;
-    stbi_write_jpg_to_func(stbiCallback, &jpg, img.width, img.height, img.channels,
-                           img.data.data(), 85);
-    return base64Encode(jpg);
-}
-
 // ── HeightMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
 
 // outMin/outMax/outHasRange(옵션): 정규화하며 구한 실제 z범위를 반환 → 호출부 중복 스캔 방지

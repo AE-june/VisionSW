@@ -76,19 +76,6 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
     )
   }
 
-  // ThicknessMeasure
-  if (toolType === 'ThicknessMeasure' && result.thicknessMm !== undefined) {
-    const pass = result.pass === true
-    return (
-      <div className="tool-node-result">
-        <div className={`tool-node-measure ${pass ? 'pass' : 'fail'}`}>
-          <span className="measure-label">T</span>
-          <span className="measure-value">{result.thicknessMm.toFixed(3)} mm</span>
-          <span className={`measure-badge ${pass ? 'pass' : 'fail'}`}>{pass ? 'PASS' : 'FAIL'}</span>
-        </div>
-      </div>
-    )
-  }
 
   // 결과는 있지만 표시할 데이터가 없으면 상태 도트만 표시
   if (result.ok !== undefined) {
