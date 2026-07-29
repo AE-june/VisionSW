@@ -6,6 +6,7 @@
 > iNSNEX InsWorks VDE (2025.03 출시).
 > 조사는 벤더 공식 문서 기준. 미확인 항목은 §6에 별도 표기.
 > 방향 문서는 [ARCHITECTURE_DIRECTION.md](./ARCHITECTURE_DIRECTION.md), 이 문서는 그 §7·§9를 실제 제품 카탈로그로 검증·교정한 것.
+> Tier 0 상세 설계·구현 지시서는 [DESIGN_T0_FRAME_AND_COLLECTION.md](./DESIGN_T0_FRAME_AND_COLLECTION.md).
 
 ---
 

@@ -2,6 +2,7 @@
 
 #include "HeightMap.h"
 #include "Region.h"
+#include "Frame.h"
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -35,6 +36,7 @@ struct PointCloud3D {
 struct PlaneModel {
     double a = 0, b = 0, c = 0;   // z = a*x + b*y + c
     bool   valid = false;
+    std::string frameId;           // a,b,c가 유효한 좌표계 프레임 id. "" = 미지정
 
     // 점 P=(x,y,z)에서 평면까지의 부호 있는 수직거리 (mm)
     // 평면 위(+z쪽)면 양수, 아래면 음수
@@ -84,6 +86,10 @@ struct VisionData {
     std::shared_ptr<std::vector<std::pair<std::string, HeightMapPtr>>> stages;
     std::string                   sourceId;     // sensor / file origin
     int64_t                       timestampUs = 0;
+    // 실행 1회분 프레임 레지스트리 (runPipeline이 생성, 모든 노드가 공유)
+    std::shared_ptr<FrameRegistry> frames;
+    // 이 노드가 정의한 프레임 목록 (캐시 적중 시 레지스트리 복원용)
+    std::vector<Frame>             definedFrames;
 
     bool hasCloud()   const { return cloud && !cloud->empty(); }
     bool hasHeightMap()    const { return heightmap  && !heightmap->empty(); }

@@ -103,6 +103,11 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     // (여러 이미지를 순회하는 워커 프로세스가 g_heightmapFileCache를 무한정 쌓아두지 않도록)
     const bool batchMode = msg.value("batch", false);
     std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
+
+    // 실행 1회분 프레임 레지스트리 — 모든 노드가 공유
+    auto runFrames = std::make_shared<FrameRegistry>();
+    runFrames->define(Frame{frames::kWorld, "", Transform2D::identity()});
+
     // Parse nodes
     struct NodeSpec {
         std::string id, type;
@@ -172,6 +177,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {
                 // 캐시 적중 — 재실행/재전송 없이 출력만 재사용
                 outputs[nodeId] = cit->second.output;
+                // 캐시 적중 시에도 이 노드가 정의한 프레임을 레지스트리에 복원
+                for (const auto& f : cit->second.output->definedFrames)
+                    runFrames->define(f);
                 dirty[nodeId] = false;
                 continue;
             }
@@ -199,6 +207,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         VisionDataPtr inputData = nullptr;
         if (inputsFrom.count(nodeId)) {
             auto merged = std::make_shared<VisionData>();
+            merged->frames = runFrames;   // 실행 레지스트리 공유 (슬롯 병합 대상 아님)
             bool any = false;
             for (const auto& src : inputsFrom.at(nodeId)) {
                 auto it = outputs.find(src);

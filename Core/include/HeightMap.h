@@ -41,6 +41,7 @@ struct HeightMap {
     float zZeroCount = 0.f;// 높이 0에 해당하는 raw count (16bit 센서: 32768). zMm에서 차감.
     float originCol = 0.f; // 좌표계 원점 X (px) — Align이 설정
     float originRow = 0.f; // 좌표계 원점 Y (px) — Align이 설정
+    std::string frameId;   // 이 HeightMap이 속한 좌표계 프레임 id. "" = 미지정(검사 생략)
 
     // 채널별 역할 라벨(선택). 비어있으면 채널0="height"로 간주.
     // 예: {"height"}, {"height","intensity","thickness"}
