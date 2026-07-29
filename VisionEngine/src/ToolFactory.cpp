@@ -9,6 +9,10 @@
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
 #include "AlignTool.h"
+#include "ThresholdTool.h"
+#include "CreateRoiTool.h"
+#include "ReduceDomainTool.h"
+#include "RegionMeasureTool.h"
 #include "ExposureMergeCore.h"
 #include "IHeightMapLoader.h"
 #include "VisionData.h"
@@ -539,12 +543,17 @@ class TripleExposureMergeTool : public IAlgorithmTool {
     bool  m_removeReflection;  // 리플렉션 제거(연속성 BFS) on/off. off면 유효 노출 그대로 유지
     bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
     int   m_bands;      // 각 캐스케이드 단계의 행-밴드 수(병렬). 0=auto(코어수), 1=직렬(=기존 결과 검증용)
+    bool  m_chunkMode;    // true면 입력을 겹침 포함 청크로 나눠 캐스케이드(작업 메모리 바운드/스트리밍)
+    int   m_chunkRows;    // 청크당 입력 프로파일(행) 수. 출력행 = /3.
+    int   m_overlapRows;  // 청크 위·아래 확장 입력행 수(=겹침). 출력행 = /3. 실측 40출력행=전체모드 0px, 기본 60출력행(마진).
 public:
     TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
-                            int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands)
+                            int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands,
+                            bool chunkMode, int chunkRows, int overlapRows)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
           m_gapK(gapK), m_halfRes(halfRes), m_removeReflection(removeReflection),
-          m_noPreview(noPreview), m_bands(bands) {}
+          m_noPreview(noPreview), m_bands(bands),
+          m_chunkMode(chunkMode), m_chunkRows(chunkRows), m_overlapRows(overlapRows) {}
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -627,15 +636,59 @@ public:
             return out;
         };
 
-        // ② 캐스케이드 1단계: 저(우선) + 중(fill) → mergedA (중 노출 좌표계)
+        // ② 오프셋1(저↔중): 원시 저/중 stride-4 median. 양 모드 동일.
         const float ofs1 = globalOffset(lo, mid);
-        std::vector<float> mergedA = runStage(lo, mid, ofs1, nBands);
-        lap("② 1단계(저+중) 밴드병렬");
 
-        // ③ 캐스케이드 2단계: (저·중 결과, 우선) + 장(fill) → final (장 노출 좌표계)
-        const float ofs2 = globalOffset(mergedA, hi);
-        std::vector<float> finalZ = runStage(mergedA, hi, ofs2, nBands);
-        lap("③ 2단계(저·중+장) 밴드병렬");
+        std::vector<float> mergedA;   // 비청크 프리뷰 단계용(청크 모드에선 미materialize)
+        std::vector<float> finalZ;
+        float ofs2 = 0.f;
+        if (!m_chunkMode) {
+            // 전체 밴드병렬: 1단계 → mergedA(full) → 오프셋2 → 2단계 (기존 경로, 불변)
+            mergedA = runStage(lo, mid, ofs1, nBands);
+            lap("② 1단계(저+중) 밴드병렬");
+            ofs2 = globalOffset(mergedA, hi);
+            finalZ = runStage(mergedA, hi, ofs2, nBands);
+            lap("③ 2단계(저·중+장) 밴드병렬");
+        } else {
+            // 청크 모드: mergedA 전체 미보관. 오프셋2를 pre-filter stride-4 근사로 up-front 산출.
+            //  기여 픽셀(hi와 일치하는 곳)은 리플렉션 필터 전/후 동일 → 전체모드 ofs2와 사실상 일치.
+            { std::vector<float> d; d.reserve(BN/4+1);
+              for (size_t i=0;i<BN;i+=4){ float mA = !std::isnan(lo[i]) ? lo[i]-ofs1 : (!std::isnan(mid[i]) ? mid[i] : NaN);
+                if (!std::isnan(mA) && !std::isnan(hi[i]) && std::fabs(mA-hi[i])<=m_matchTol) d.push_back(mA-hi[i]); }
+              if (!d.empty()){ size_t m=d.size()/2; std::nth_element(d.begin(),d.begin()+m,d.end()); ofs2=d[m]; }
+              else VISION_LOG_INFO("ExposureMerge3[청크]: 경고 — ofs2 겹침 표본 0개 → offset=0.");
+            }
+            // 청크 [p0,p1)를 위·아래 ov행 확장해 두 단계를 블록 내에서 수행, 코어 행만 기록.
+            //  ov는 두 단계 BFS 전파를 덮어야 함(실측: 40 출력행이면 전체모드와 0px, 기본 60출력행 마진).
+            auto computeTripleFiltered = [&](int e0, int e1) {
+                const int bn = e1 - e0;
+                std::vector<uint8_t> s1;
+                exposureMergeDecision(lo.data()+(size_t)e0*w, mid.data()+(size_t)e0*w, w, bn,
+                                      m_matchTol, m_tolX, m_tolY, m_gapK, ofs1, s1, nullptr, m_removeReflection, m_reflTol);
+                std::vector<float> mA((size_t)bn*w);
+                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s1[i]; mA[i]= s==1? lo[(size_t)e0*w+i]-ofs1 : (s==2? mid[(size_t)e0*w+i] : NaN); }
+                std::vector<uint8_t> s2;
+                exposureMergeDecision(mA.data(), hi.data()+(size_t)e0*w, w, bn,
+                                      m_matchTol, m_tolX, m_tolY, m_gapK, ofs2, s2, nullptr, m_removeReflection, m_reflTol);
+                std::vector<float> fB((size_t)bn*w);
+                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s2[i]; fB[i]= s==1? mA[i]-ofs2 : (s==2? hi[(size_t)e0*w+i] : NaN); }
+                return fB;
+            };
+            finalZ.assign(BN, NaN);
+            const int chunkOut = std::max(1, m_chunkRows/3);
+            const int ov       = std::max(0, m_overlapRows/3);
+            int nChunks = 0;
+            for (int p0=0; p0<n; p0+=chunkOut) {
+                const int p1 = std::min(n, p0+chunkOut);
+                const int e0 = std::max(0, p0-ov), e1 = std::min(n, p1+ov);
+                auto fB = computeTripleFiltered(e0, e1);
+                for (int r=p0;r<p1;++r) std::copy(&fB[(size_t)(r-e0)*w], &fB[(size_t)(r-e0)*w+w], &finalZ[(size_t)r*w]);
+                ++nChunks;
+            }
+            VISION_LOG_INFO("ExposureMerge3[청크]: {}개 청크(코어 {}입력행+겹침 {}입력행), ofs1={:.1f} ofs2={:.1f}",
+                            nChunks, m_chunkRows, m_overlapRows, ofs1, ofs2);
+            lap("②③ 청크 캐스케이드");
+        }
 
         // ④ 출력 HeightMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
         auto makeOut = [&](std::vector<float> src) {   // by-value: 최종은 move로 넘겨 복사 제거
@@ -660,8 +713,8 @@ public:
         auto data = std::make_shared<VisionData>();
         data->heightmap = zFinal;
         data->sourceId = input->sourceId;
-        // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview 일 때만.
-        if (!m_noPreview) {
+        // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview && 비청크 일 때만(청크는 mergedA 미보관).
+        if (!m_noPreview && !m_chunkMode) {
             // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
             auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
                  zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
@@ -1207,7 +1260,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("halfRes",  true),
             p.value("removeReflection", true),   // 리플렉션 제거 on/off
             noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
-            p.value("mergeBands", 0));   // 결정 밴드 병렬 수. 0=auto(코어수), 1=직렬(검증용)
+            p.value("mergeBands", 0),    // 결정 밴드 병렬 수. 0=auto(코어수), 1=직렬(검증용)
+            p.value("chunkMode",   false),   // 청크 캐스케이드(작업메모리 바운드/스트리밍)
+            p.value("chunkRows",   1000),    // 청크당 입력행 수(출력=/3)
+            p.value("overlapRows", 180));    // 겹침 입력행(출력=/3). 실측 40출력행=0px, 기본 60출력행(마진))
     }
     if (type == "ImageLoader") {
         return std::make_shared<ImageLoaderTool>(p.value("path", ""));
@@ -1380,9 +1436,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         }
 
         std::string agg = p.value("aggregation", "Mean");
-        if      (agg == "Max")      params.aggregation = HeightFromPlaneParams::Aggregation::Max;
-        else if (agg == "HighTail") params.aggregation = HeightFromPlaneParams::Aggregation::HighTail;
-        else                        params.aggregation = HeightFromPlaneParams::Aggregation::Mean;
+        if      (agg == "Max")        params.aggregation = HeightFromPlaneParams::Aggregation::Max;
+        else if (agg == "HighTail")   params.aggregation = HeightFromPlaneParams::Aggregation::HighTail;
+        else if (agg == "Percentile") params.aggregation = HeightFromPlaneParams::Aggregation::Percentile;
+        else                          params.aggregation = HeightFromPlaneParams::Aggregation::Mean;
 
         params.highTailPct  = p.value("highTailPct",  20.f);
         params.useTolerance = p.value("useTolerance", false);
@@ -1438,6 +1495,40 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.nominalMm   = p.value("nominalMm",   0.f);
         params.toleranceMm = p.value("toleranceMm", 0.05f);
         return std::make_shared<ThicknessMeasure>(params);
+    }
+
+    if (type == "Threshold") {
+        ThresholdParams params;
+        params.channel     = p.value("channel", 0);
+        params.thresholdMm = p.value("thresholdMm", 0.f);
+        params.keepAbove   = p.value("keepAbove", true);
+        return std::make_shared<ThresholdTool>(params);
+    }
+    if (type == "CreateROI") {
+        CreateRoiParams params;
+        if (p.contains("rois") && p["rois"].is_array()) {
+            for (const auto& r : p["rois"]) {
+                CreateRoiParams::ROI roi;
+                roi.xPct = r.value("xPct", 0.f);
+                roi.yPct = r.value("yPct", 0.f);
+                roi.wPct = r.value("wPct", 1.f);
+                roi.hPct = r.value("hPct", 1.f);
+                roi.angleDeg = r.value("angleDeg", 0.f);
+                const std::string shape = r.value("shape", std::string("rect"));
+                roi.isCircle = (shape == "circle");
+                if (shape == "polygon" && r.contains("points") && r["points"].is_array())
+                    for (const auto& pt : r["points"])
+                        roi.poly.push_back({ pt.value("x", 0.f), pt.value("y", 0.f) });
+                params.rois.push_back(roi);
+            }
+        }
+        return std::make_shared<CreateRoiTool>(params);
+    }
+    if (type == "ReduceDomain") {
+        return std::make_shared<ReduceDomainTool>();
+    }
+    if (type == "RegionMeasure") {
+        return std::make_shared<RegionMeasureTool>();
     }
 
     VISION_LOG_WARN("ToolFactory: unknown tool type '{}'", type);

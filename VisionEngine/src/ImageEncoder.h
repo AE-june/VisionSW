@@ -85,4 +85,16 @@ inline std::string heightmapToBase64(const HeightMap& heightmap,
     return base64Encode(jpg);
 }
 
+// ── Region → base64 grayscale (mask 1→255, 0→0) ─────────────────────────────
+//  마스크 시각화용 프리뷰. 기존 파이프라인·UI mime(jpeg) 일관을 위해 JPG 사용.
+//  (이진 마스크라 JPG 경계 fuzz는 시각화 한정 — 무손실 PNG는 후속 개선.)
+inline std::string regionToBase64(const Region& rgn) {
+    if (rgn.empty()) return {};
+    std::vector<uint8_t> gray(rgn.mask.size());
+    for (size_t i = 0; i < rgn.mask.size(); ++i) gray[i] = rgn.mask[i] ? 255 : 0;
+    std::vector<uint8_t> jpg;
+    stbi_write_jpg_to_func(stbiCallback, &jpg, rgn.width, rgn.height, 1, gray.data(), 90);
+    return base64Encode(jpg);
+}
+
 } // namespace vision

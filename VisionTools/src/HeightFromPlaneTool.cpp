@@ -224,6 +224,19 @@ HeightFromPlaneTool::aggregate(std::vector<Pt3>& pts) const {
         }
         return { sx / n, sy / n, sz / n };
     }
+    case HeightFromPlaneParams::Aggregation::Percentile: {
+        // material ratio mr%(=highTailPct)에서의 높이 = 상위 mr% 백분위 "실측 점 하나". 표준(ISO 25178 베어링곡선).
+        //  값·위치 모두 동일한 실제 픽셀에서 나오므로 결과 위치의 zmap 값과 정확히 일치(보간 안 함 → 잔차 0).
+        //  순위 기반이라 그 위 극단 스파이크(리플/노이즈)에 강건.
+        const int N = static_cast<int>(pts.size());
+        auto byZ = [](const Pt3& a, const Pt3& b){ return a[2] < b[2]; };
+        const double mr = std::clamp(m_params.highTailPct, 0.f, 100.f) / 100.0;
+        const double q  = 1.0 - mr;                 // 오름차순 기준 분위 위치 (mr=0.5% → 0.995)
+        const int idx = std::clamp(static_cast<int>(std::llround(q * (N - 1))), 0, N - 1);
+        // idx번째 순위 점을 제자리에 → 그 점의 (x,y,z)를 그대로 사용 (실측 픽셀 1개)
+        std::nth_element(pts.begin(), pts.begin() + idx, pts.end(), byZ);
+        return pts[idx];
+    }
     }
     return pts[0];
 }

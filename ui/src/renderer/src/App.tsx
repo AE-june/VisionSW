@@ -631,7 +631,7 @@ export default function App() {
   const upstreamRes = (() => {
     if (!selectedNode) return undefined
     const tt = (selectedNode.data as { toolType: string }).toolType
-    if (tt !== 'PlaneFit' && tt !== 'RefHeight' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter' && tt !== 'RowStretch') return undefined
+    if (tt !== 'PlaneFit' && tt !== 'RefHeight' && tt !== 'HeightMeasure' && tt !== 'LineCenter' && tt !== 'Align' && tt !== 'NoiseFilter' && tt !== 'RowStretch' && tt !== 'Threshold' && tt !== 'CreateROI') return undefined
     const tEdges = edges.filter(e => e.target === selectedNode.id)
     if (tEdges.length === 0) return undefined
     // HeightMap 입력 포트(input-0) 엣지 우선, 없으면 첫 엣지

@@ -251,9 +251,9 @@ function HeightMapLoaderParams({ params, onChange }: { params: Record<string, un
         <div className="param-row">
           <span className="param-label">이미지</span>
           <div className="zl-idx">
-            <button className="btn-browse" disabled={clampIdx <= 0} onClick={() => gotoIndex(clampIdx - 1)}>◀</button>
+            <button className="btn-browse" onClick={() => gotoIndex((clampIdx - 1 + files.length) % files.length)}>◀</button>
             <span className="zl-idx-cur" title={cur?.name}>{clampIdx + 1}/{files.length}</span>
-            <button className="btn-browse" disabled={clampIdx >= files.length - 1} onClick={() => gotoIndex(clampIdx + 1)}>▶</button>
+            <button className="btn-browse" onClick={() => gotoIndex((clampIdx + 1) % files.length)}>▶</button>
           </div>
         </div>
       )}
@@ -405,7 +405,16 @@ function ExposureMerge3Params({ params, onChange }: { params: Record<string, unk
       <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
         tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
     </>}
-    <div className="param-empty" style={{ fontSize: 10 }}>중간 단계(저·중 머지 / 저·중·장 원본)는 결과창 드롭다운(디스플레이 전용)에서만 확인됩니다.</div>
+    <div className="param-section">청크 연산 (메모리 바운드/스트리밍)</div>
+    <CheckField label="청크 단위 연산" value={params.chunkMode as boolean ?? false} onChange={v => set('chunkMode', v)}
+      tooltip="끄면 전체 이미지를 한 번에 연산(기본). 켜면 입력을 겹침 포함 청크로 나눠 캐스케이드 — 작업 메모리를 청크 크기로 바운드. 청크 모드는 최종 출력만(중간 단계 생략)" />
+    {(params.chunkMode as boolean) && <>
+      <NumField label="청크 행 수 (입력)" value={params.chunkRows as number ?? 1000} step={100} onChange={v => set('chunkRows', v)}
+        tooltip="청크 하나에 담을 입력 프로파일(행) 수. 출력행 = /3. 클수록 겹침 재연산 비율↓" />
+      <NumField label="겹침 행 수 (입력)" value={params.overlapRows as number ?? 180} step={30} onChange={v => set('overlapRows', v)}
+        tooltip="청크 위·아래로 확장해 함께 연산하는 입력행 수(출력=/3). 캐스케이드 2단계 연속성이 청크 경계를 넘어 이어지도록 하는 마진. SDC 실측: 40출력행(120입력)이면 전체모드와 0px 동일. 기본 60출력행(180입력, 마진). 클수록 이음매 안전·연산량↑" />
+    </>}
+    <div className="param-empty" style={{ fontSize: 10 }}>중간 단계(저·중 머지 / 저·중·장 원본)는 결과창 드롭다운(디스플레이 전용, 비청크)에서만 확인됩니다.</div>
   </>
 }
 

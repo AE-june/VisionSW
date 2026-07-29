@@ -7,6 +7,8 @@ import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFro
 import LineCenterEditor, { type LineCenterSettings } from './LineCenterEditor'
 import NoiseFilterEditor from './NoiseFilterEditor'
 import RowStretchEditor from './RowStretchEditor'
+import ThresholdEditor, { type ThresholdSettings } from './ThresholdEditor'
+import CreateRoiEditor, { type CreateRoiSettings } from './CreateRoiEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
@@ -319,6 +321,42 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         </div>
       )}
 
+      {toolType === 'CreateROI' && (() => {
+        const roiList = (params.rois as Roi[]) ?? []
+        if (roiList.length === 0) return null
+        const hasMm = !!result.xResMm && !!result.yResMm && !!result.imgW && !!result.imgH
+        const fx = hasMm ? result.imgW! * result.xResMm! : (result.imgW ?? 0)
+        const fy = hasMm ? result.imgH! * result.yResMm! : (result.imgH ?? 0)
+        const u = hasMm ? ' mm' : ' px'
+        const n = (v: number) => v.toFixed(hasMm ? 2 : 0)
+        return (
+          <div className="node-result-measures">
+            {roiList.map((r, i) => {
+              const shape = r.shape ?? 'rect'
+              const label = shape === 'circle' ? '원' : shape === 'polygon' ? '폴리곤' : '사각'
+              const ang = (r.angleDeg ?? 0) !== 0 ? ` · ${(r.angleDeg ?? 0).toFixed(1)}°` : ''
+              let detail: string
+              if (shape === 'polygon') {
+                const pts = r.points ?? []
+                detail = `꼭짓점 ${pts.length}개 · bbox ${n(r.wPct * fx)}×${n(r.hPct * fy)}${u}`
+              } else if (shape === 'circle') {
+                const cx = (r.xPct + r.wPct / 2) * fx, cy = (r.yPct + r.hPct / 2) * fy
+                const rad = (r.wPct * fx) / 2
+                detail = `중심(${n(cx)}, ${n(cy)})${u} · R ${n(rad)}${u}`
+              } else {
+                detail = `(${n(r.xPct * fx)}, ${n(r.yPct * fy)}) · ${n(r.wPct * fx)}×${n(r.hPct * fy)}${u}`
+              }
+              return (
+                <div className="node-result-row" key={r.id ?? i}>
+                  <span className="node-result-label">{i + 1}. {label}{ang}</span>
+                  <span className="node-result-val">{detail}</span>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
+
       {result.msg && <div className="node-result-msg">{result.msg}</div>}
     </div>
   )
@@ -451,6 +489,32 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               onChange={(next: HeightFromPlaneSettings) =>
                 onParamChange(nodeId, { ...params, ...next })
               }
+            />
+          ) : toolType === 'Threshold' ? (
+            <ThresholdEditor
+              channel={(params.channel as number) ?? 0}
+              thresholdMm={(params.thresholdMm as number) ?? 0}
+              keepAbove={(params.keepAbove as boolean) ?? true}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              viewKey={nodeId}
+              onChange={(next: ThresholdSettings) => onParamChange(nodeId, { ...params, ...next })}
+            />
+          ) : toolType === 'CreateROI' ? (
+            <CreateRoiEditor
+              rois={(params.rois as Roi[]) ?? []}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              originCol={upstreamOriginCol}
+              originRow={upstreamOriginRow}
+              viewKey={nodeId}
+              onChange={(next: CreateRoiSettings) => onParamChange(nodeId, { ...params, ...next })}
             />
           ) : toolType === 'NoiseFilter' ? (
             <NoiseFilterEditor

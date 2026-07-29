@@ -16,19 +16,20 @@ export interface DrawRect { xPct: number; yPct: number; wPct: number; hPct: numb
 export interface Roi {
   id: string
   type: string
-  shape?: 'rect' | 'circle'   // 기본 rect
+  shape?: 'rect' | 'circle' | 'polygon'   // 기본 rect
   xPct: number
   yPct: number
   wPct: number
   hPct: number
   angleDeg?: number           // 중심 기준 회전 (deg, 시계방향). 기본 0
+  points?: { x: number; y: number }[]      // polygon 전용: 꼭짓점(pct). xPct/yPct/wPct/hPct는 bbox
   polarity?: string           // LineCenter 전용: 에지 극성 'd2l'(흑→백) | 'l2d'(백→흑)
 }
 
 interface DrawState { startX: number; startY: number; curX: number; curY: number }
 interface Pan { x: number; y: number }
 
-type EditMode = 'move' | 'resize' | 'rotate'
+type EditMode = 'move' | 'resize' | 'rotate' | 'vertex'
 interface EditState { id: string; mode: EditMode; handle: string; startX: number; startY: number; orig: Roi }
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
@@ -64,6 +65,15 @@ function resizeRotated(e: EditState, x: number, y: number, aspect: number, imgH?
 
 function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean; aspect?: number; imgW?: number; imgH?: number }): Roi {
   const o = e.orig
+  // polygon 꼭짓점 하나 이동 — 해당 점을 포인터로, bbox 재계산.
+  if (e.mode === 'vertex' && o.shape === 'polygon' && o.points) {
+    const idx = parseInt(e.handle)
+    const pts = o.points.map((p, i) => i === idx ? { x: clampUnit(x), y: clampUnit(y) } : p)
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y)
+    const minX = Math.min(...xs), minY = Math.min(...ys)
+    const maxX = Math.max(...xs), maxY = Math.max(...ys)
+    return { ...o, points: pts, xPct: minX, yPct: minY, wPct: maxX - minX, hPct: maxY - minY }
+  }
   if (e.mode === 'rotate') {
     const W = opts?.aspect && opts.aspect > 0 ? opts.aspect : 1
     const cx = (o.xPct + o.wPct / 2) * W, cy = o.yPct + o.hPct / 2
@@ -77,6 +87,13 @@ function applyEdit(e: EditState, x: number, y: number, opts?: { shift?: boolean;
   }
   if (e.mode === 'move') {
     const dx = x - e.startX, dy = y - e.startY
+    // 폴리곤: 모든 꼭짓점 + bbox를 함께 평행이동. bbox가 [0,1] 벗어나지 않게 이동량 클램프.
+    if (o.shape === 'polygon' && o.points) {
+      const tx = Math.min(Math.max(dx, -o.xPct), 1 - (o.xPct + o.wPct))
+      const ty = Math.min(Math.max(dy, -o.yPct), 1 - (o.yPct + o.hPct))
+      return { ...o, xPct: o.xPct + tx, yPct: o.yPct + ty,
+        points: o.points.map(p => ({ x: p.x + tx, y: p.y + ty })) }
+    }
     // 회전된 ROI는 회전 전 박스가 이미지 밖으로 나갈 수 있으므로 좌상단이 아닌 '중심'을 [0,1]로 클램프.
     // (좌상단 클램프는 넓은 90° 회전 ROI가 한쪽으로 못 움직이는 문제를 유발함)
     const ncx = clampUnit(o.xPct + o.wPct / 2 + dx)
@@ -136,8 +153,10 @@ interface Props {
   /** null/undefined면 팬 모드. 문자열이면 해당 타입 이름으로 ROI 그리기 (프리뷰 색상에 사용) */
   drawMode?: string | null
   /** 그리는 ROI 도형 (프리뷰 모양) */
-  drawShape?: 'rect' | 'circle'
+  drawShape?: 'rect' | 'circle' | 'polygon'
   onDrawComplete?: (rect: DrawRect) => void
+  /** polygon 그리기 완료 콜백 — 꼭짓점(pct, 절대). 더블클릭/Enter로 확정 */
+  onPolyComplete?: (points: { x: number; y: number }[]) => void
   /** 표시할 ROI 목록 */
   rois?: Roi[]
   /** ROI 편집(이동/리사이즈/삭제) 활성화 — 변경 콜백. 없으면 읽기전용 */
@@ -175,7 +194,7 @@ const MAX_ZOOM = 100   // native 스케일 상한 (10000% = 원본 픽셀의 100
 const HANDLE_MIN_PX = 30
 
 export default function ImageViewer({
-  preview, drawMode, drawShape, onDrawComplete, rois, onRoisChange, roiTypeLabel, overlayFor,
+  preview, drawMode, drawShape, onDrawComplete, onPolyComplete, rois, onRoisChange, roiTypeLabel, overlayFor,
   overlay, toolbarLeft, footer, placeholder, zMin, zMax, onImageSize, enableRotate, canvasHeight,
   resXMm, resYMm, viewKey
 }: Props) {
@@ -183,6 +202,8 @@ export default function ImageViewer({
   const restored = viewKey ? getViewState(viewKey) : {}
   const [zoom, setZoom] = useState(restored.zoom ?? 1)
   const [draw, setDraw] = useState<DrawState | null>(null)
+  const [poly, setPoly] = useState<{ x: number; y: number }[] | null>(null)   // polygon 그리는 중 꼭짓점(pct 절대)
+  const [polyCursor, setPolyCursor] = useState<{ x: number; y: number } | null>(null)   // 미리보기 선 끝
   const [edit, setEdit] = useState<EditState | null>(null)
   const [imgAspect, setImgAspect] = useState<number | null>(null)
   const [imgPx, setImgPx] = useState({ w: 0, h: 0 })
@@ -218,6 +239,7 @@ export default function ImageViewer({
     window.addEventListener('mouseup', onUp)
   }
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const grayRef = useRef<{ w: number; h: number; data: Uint8ClampedArray } | null>(null)  // 컬러맵 적용 전 원본 그레이(호버 값 조회용)
   const zoomRef = useRef(restored.zoom ?? 1)
   // 스크롤(팬) 드래그 시작 지점 저장
   const panStartRef = useRef<{ mx: number; my: number; sl: number; st: number } | null>(null)
@@ -303,17 +325,57 @@ export default function ImageViewer({
     }
   }, [zoom])
 
+  // polygon 확정 — 꼭짓점 3개↑ (더블클릭/Enter). 연속 중복(더블클릭 여파) 제거.
+  const completePoly = useCallback(() => {
+    setPoly(p => {
+      if (p && p.length >= 3) {
+        const pts = p.filter((v, i) => i === 0 ||
+          Math.abs(v.x - p[i - 1].x) > 1e-4 || Math.abs(v.y - p[i - 1].y) > 1e-4)
+        if (pts.length >= 3) onPolyComplete?.(pts)
+      }
+      return null
+    })
+    setPolyCursor(null)
+  }, [onPolyComplete])
+
+  // 그리기 모드/도형 벗어나면 진행 중 폴리곤 취소
+  useEffect(() => {
+    if (!drawMode || drawShape !== 'polygon') { setPoly(null); setPolyCursor(null) }
+  }, [drawMode, drawShape])
+
+  // 폴리곤 그리는 중 키보드: Enter=확정, Escape=취소
+  useEffect(() => {
+    if (!poly) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') completePoly()
+      else if (e.key === 'Escape') { setPoly(null); setPolyCursor(null) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [poly, completePoly])
+
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
     if (drawMode) {
       e.preventDefault()
       const { x, y } = toImgPct(e.clientX, e.clientY)
+      if (drawShape === 'polygon') {
+        // 시작점 근처(화면 12px) 클릭 = 닫기(완료). 그 외는 꼭짓점 추가.
+        if (poly && poly.length >= 3) {
+          const cb = contentBox(boxRef.current, imgPxRef.current, zoomRef.current)
+          const dx = (x - poly[0].x) * cb.w, dy = (y - poly[0].y) * cb.h
+          if (Math.hypot(dx, dy) < 12) { completePoly(); return }
+        }
+        setPoly(p => [...(p ?? []), { x, y }])   // 클릭마다 꼭짓점 추가
+        setPolyCursor({ x, y })
+        return
+      }
       setDraw({ startX: x, startY: y, curX: x, curY: y })
     } else {
       const el = containerRef.current
       panStartRef.current = { mx: e.clientX, my: e.clientY, sl: el?.scrollLeft ?? 0, st: el?.scrollTop ?? 0 }
     }
-  }, [drawMode, toImgPct])
+  }, [drawMode, drawShape, poly, completePoly, toImgPct])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     // 마우스 오버 좌표(이미지 px) 갱신 — 이미지 영역 안일 때만
@@ -322,20 +384,23 @@ export default function ImageViewer({
     if (img.w > 0 && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) {
       const col = p.x * img.w, row = p.y * img.h
       let val: number | null = null
-      const cv = canvasRef.current
-      if (cv) {
-        const ctx = cv.getContext('2d')
-        if (ctx) {
-          const px = ctx.getImageData(Math.floor(col), Math.floor(row), 1, 1).data
-          const gray = px[0]  // R채널 = grayscale
-          val = (zMin !== undefined && zMax !== undefined)
-            ? (gray === 0 ? null : zMin + (gray / 255) * (zMax - zMin))
-            : gray
-        }
+      // 컬러맵 적용 전 원본 그레이에서 조회 (canvas는 컬러맵 시 jet색이라 R채널이 높이가 아님)
+      const g = grayRef.current
+      if (g && g.w > 0) {
+        const gc = Math.min(g.w - 1, Math.max(0, Math.floor(col)))
+        const gr = Math.min(g.h - 1, Math.max(0, Math.floor(row)))
+        const gray = g.data[(gr * g.w + gc) * 4]  // R채널 = grayscale
+        val = (zMin !== undefined && zMax !== undefined)
+          ? (gray === 0 ? null : zMin + (gray / 255) * (zMax - zMin))
+          : gray
       }
       setHover({ col, row, val })
     } else {
       setHover(null)
+    }
+    if (poly) {
+      const { x, y } = toImgPct(e.clientX, e.clientY)
+      setPolyCursor({ x, y })
     }
     if (draw) {
       let { x, y } = toImgPct(e.clientX, e.clientY)
@@ -356,7 +421,7 @@ export default function ImageViewer({
         el.scrollTop = panStartRef.current.st - (e.clientY - panStartRef.current.my)
       }
     }
-  }, [draw, drawShape, csize, imgAspect, toImgPct])
+  }, [draw, poly, drawShape, csize, imgAspect, toImgPct, zMin, zMax])
 
   const onMouseUp = useCallback(() => {
     panStartRef.current = null
@@ -454,6 +519,9 @@ export default function ImageViewer({
       const ctx = cv.getContext('2d')
       if (!ctx) return
       ctx.drawImage(img, 0, 0)
+      // 컬러맵 적용 전 원본 그레이 보관 — 호버 값은 항상 이 원본에서 조회(컬러맵 R채널 오독 방지)
+      const base = ctx.getImageData(0, 0, cv.width, cv.height)
+      grayRef.current = { w: cv.width, h: cv.height, data: base.data }
       if (colormap) {
         // 8bit gray(0~255)를 실제 z(raw)로 역산한 뒤 [lo,hi] 범위로 매핑
         const hasRange = zMin !== undefined && zMax !== undefined
@@ -553,6 +621,7 @@ export default function ImageViewer({
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
+        onDoubleClick={poly ? completePoly : undefined}
         onMouseLeave={() => { onMouseUp(); setHover(null) }}
       >
         {preview ? (
@@ -569,6 +638,23 @@ export default function ImageViewer({
                   borderRadius: drawShape === 'circle' ? '50%' : undefined, borderWidth: '2px' }} />
             )}
 
+            {/* 그리는 중 폴리곤: 확정 꼭짓점 + 마우스까지 미리보기 선 */}
+            {poly && poly.length > 0 && (
+              <svg viewBox={`0 0 ${cbox.w} ${cbox.h}`} preserveAspectRatio="none"
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+                <polyline
+                  points={[...poly, ...(polyCursor ? [polyCursor] : [])].map(p => `${p.x * cbox.w},${p.y * cbox.h}`).join(' ')}
+                  fill="rgba(102,187,106,0.12)" stroke="#66bb6a" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                {poly.map((p, i) => (
+                  // 시작점: 3개 이상이면 크게(클릭해 닫기 대상)
+                  <circle key={i} cx={p.x * cbox.w} cy={p.y * cbox.h}
+                    r={i === 0 && poly.length >= 3 ? 6 : 3}
+                    fill={i === 0 && poly.length >= 3 ? 'none' : '#66bb6a'}
+                    stroke="#66bb6a" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                ))}
+              </svg>
+            )}
+
             {/* 오버레이(라인/중심/화살표)는 콘텐츠(이미지)에 정렬. 함수면 현재 zoom 전달(크기 고정용) */}
             {overlay && (
               <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
@@ -581,6 +667,49 @@ export default function ImageViewer({
             const idxInType = arr.slice(0, i).filter(r => r.type === roi.type).length
             const label = `${roiTypeLabel?.(roi.type) ?? roi.type} ${idxInType + 1}`
             const editable = !!onRoisChange && !drawMode
+            // polygon: svg 폴리곤 + 삭제만(이동/리사이즈 없음 — v1)
+            if (roi.shape === 'polygon' && roi.points && roi.points.length >= 3) {
+              const ptsStr = roi.points.map(p => `${p.x * cbox.w},${p.y * cbox.h}`).join(' ')
+              const bx = roi.xPct * cbox.w, by = roi.yPct * cbox.h
+              const bxR = (roi.xPct + roi.wPct) * cbox.w   // bbox 우상단(삭제 버튼)
+              return (
+                <div key={roi.id} className={`pfe-roi-poly pfe-roi-${roi.type}`}
+                  style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                  <svg viewBox={`0 0 ${cbox.w} ${cbox.h}`} preserveAspectRatio="none"
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+                    <polygon points={ptsStr} fill="rgba(102,187,106,0.15)" stroke="#66bb6a"
+                      strokeWidth={2} vectorEffect="non-scaling-stroke"
+                      style={{ pointerEvents: editable ? 'auto' : 'none', cursor: editable ? 'move' : 'default' }}
+                      onMouseDown={editable ? (e => {
+                        e.stopPropagation(); e.preventDefault()
+                        const { x, y } = toImgPct(e.clientX, e.clientY)
+                        setEdit({ id: roi.id, mode: 'move', handle: '', startX: x, startY: y, orig: roi })
+                      }) : undefined} />
+                  </svg>
+                  {/* 라벨: bbox 위쪽 바깥. bottom:100% 기본값을 top으로 덮어써 위치 고정. */}
+                  <span className="pfe-roi-label"
+                    style={{ position: 'absolute', left: `${bx}px`, top: `${by}px`, bottom: 'auto', transform: 'translateY(-100%)' }}>{label}</span>
+                  {editable && (
+                    <button className="pfe-roi-del"
+                      style={{ position: 'absolute', left: `${bxR}px`, top: `${by}px`, right: 'auto', transform: 'translate(-100%, -50%)', pointerEvents: 'auto' }}
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); onRoisChange!(rois.filter(r => r.id !== roi.id)) }}
+                    >×</button>
+                  )}
+                  {/* 꼭짓점 핸들 — 드래그로 개별 이동 */}
+                  {editable && roi.points.map((p, vi) => (
+                    <div key={vi} className="pfe-roi-vertex"
+                      style={{ position: 'absolute', left: `${p.x * cbox.w}px`, top: `${p.y * cbox.h}px`,
+                        transform: 'translate(-50%, -50%)', pointerEvents: 'auto' }}
+                      onMouseDown={e => {
+                        e.stopPropagation(); e.preventDefault()
+                        const { x, y } = toImgPct(e.clientX, e.clientY)
+                        setEdit({ id: roi.id, mode: 'vertex', handle: String(vi), startX: x, startY: y, orig: roi })
+                      }} />
+                  ))}
+                </div>
+              )
+            }
             const left = roi.xPct * cbox.w
             const top = roi.yPct * cbox.h
             const width = roi.wPct * cbox.w

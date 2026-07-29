@@ -8,6 +8,10 @@ add_library(VisionTools STATIC
     src/CsvWriterTool.cpp
     src/LineCenterTool.cpp
     src/AlignTool.cpp
+    src/ThresholdTool.cpp
+    src/CreateRoiTool.cpp
+    src/ReduceDomainTool.cpp
+    src/RegionMeasureTool.cpp
 )
 
 target_include_directories(VisionTools

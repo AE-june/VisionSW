@@ -22,6 +22,8 @@ interface Props {
   zMax?: number
   /** 원형 ROI 그리기 허용 (도형 토글 버튼 표시) */
   enableCircle?: boolean
+  /** 폴리곤 ROI 그리기 허용 (도형 드롭다운에 Polygon 추가) */
+  enablePolygon?: boolean
   /** ROI 회전 허용 (회전 핸들 표시) */
   enableRotate?: boolean
   /** mm 단위 좌표 입력용 분해능 (mm/pixel). 있으면 px/mm 토글 표시 */
@@ -64,9 +66,9 @@ function NumField({ value, onCommit, step = 1 }: { value: number; onCommit: (v: 
   )
 }
 
-export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enableRotate, resXMm, resYMm, originCol, originRow, onImageSize, viewKey }: Props) {
+export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFor, overlay, zMin, zMax, enableCircle, enablePolygon, enableRotate, resXMm, resYMm, originCol, originRow, onImageSize, viewKey }: Props) {
   const [drawType, setDrawType] = useState<string | null>(null)
-  const [drawShape, setDrawShape] = useState<'rect' | 'circle'>('rect')
+  const [drawShape, setDrawShape] = useState<'rect' | 'circle' | 'polygon'>('rect')
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
   const [unit, setUnit] = useState<'px' | 'mm'>('px')
   const [selType, setSelType] = useState<string>(roiTypes[0]?.type ?? '')
@@ -75,8 +77,10 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
   // 렌더링 직전 원점(pct)을 더하고, 변경/생성 결과는 다시 빼서 상대값으로 저장한다.
   const oPctX = originCol != null && imgSize.w > 0 ? originCol / imgSize.w : 0
   const oPctY = originRow != null && imgSize.h > 0 ? originRow / imgSize.h : 0
-  const toAbs = (r: Roi): Roi => ({ ...r, xPct: r.xPct + oPctX, yPct: r.yPct + oPctY })
-  const toRel = (r: Roi): Roi => ({ ...r, xPct: r.xPct - oPctX, yPct: r.yPct - oPctY })
+  const toAbs = (r: Roi): Roi => ({ ...r, xPct: r.xPct + oPctX, yPct: r.yPct + oPctY,
+    points: r.points?.map(p => ({ x: p.x + oPctX, y: p.y + oPctY })) })
+  const toRel = (r: Roi): Roi => ({ ...r, xPct: r.xPct - oPctX, yPct: r.yPct - oPctY,
+    points: r.points?.map(p => ({ x: p.x - oPctX, y: p.y - oPctY })) })
 
   const addRoi = (rect: DrawRect) => {
     if (!drawType) return
@@ -89,6 +93,19 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
     setDrawType(null)
   }
 
+  // 폴리곤 완성: 절대 pct 꼭짓점 → 원점 상대 저장 + bbox 채움(목록/좌표 표시용)
+  const addPoly = (pts: { x: number; y: number }[]) => {
+    if (!drawType) return
+    const rel = pts.map(p => ({ x: p.x - oPctX, y: p.y - oPctY }))
+    const xs = rel.map(p => p.x), ys = rel.map(p => p.y)
+    const minX = Math.min(...xs), minY = Math.min(...ys)
+    const maxX = Math.max(...xs), maxY = Math.max(...ys)
+    const newRoi: Roi = { id: uid(), type: drawType, shape: 'polygon', points: rel,
+      xPct: minX, yPct: minY, wPct: maxX - minX, hPct: maxY - minY }
+    onChange([...rois, newRoi])
+    setDrawType(null)
+  }
+
   const activeType = selType || roiTypes[0]?.type || ''
   const toolbarLeft = <>
     {roiTypes.length > 1 && (
@@ -97,11 +114,12 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         {roiTypes.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
       </select>
     )}
-    {enableCircle && (
+    {(enableCircle || enablePolygon) && (
       <select className="param-select" value={drawShape}
-        onChange={e => setDrawShape(e.target.value as 'rect' | 'circle')}>
+        onChange={e => setDrawShape(e.target.value as 'rect' | 'circle' | 'polygon')}>
         <option value="rect">Rectangle</option>
-        <option value="circle">Circle</option>
+        {enableCircle && <option value="circle">Circle</option>}
+        {enablePolygon && <option value="polygon">Polygon</option>}
       </select>
     )}
     <button
@@ -119,7 +137,9 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
       </span>
     ))}
     {drawType
-      ? <span className="pfe-drawing-hint">드래그해서 영역 지정 · 다시 버튼 클릭 시 취소</span>
+      ? (drawShape === 'polygon'
+          ? <span className="pfe-drawing-hint">클릭해서 꼭짓점 추가 · 시작점 다시 클릭하면 완료</span>
+          : <span className="pfe-drawing-hint">드래그해서 영역 지정 · 다시 버튼 클릭 시 취소</span>)
       : <span className="pfe-drawing-hint">ROI를 드래그하면 이동, 모서리를 끌면 크기 조정</span>}
   </>
 
@@ -201,6 +221,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
 
   // 도형별 입력 필드 정의 — 도형마다 파라미터 이름/개수가 달라도 각 행이 스스로 설명
   const fieldsFor = (roi: Roi): { label: string; value: number; set: (v: number) => void }[] => {
+    if (roi.shape === 'polygon') return []   // 폴리곤: 좌표 편집 없음(v1) — 삭제만
     if (roi.shape === 'circle')
       return [
         { label: 'Cx', value: cCx(roi), set: (v: number) => updateCircle(roi.id, 'cx', v) },
@@ -233,6 +254,7 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
         drawMode={drawType}
         drawShape={drawShape}
         onDrawComplete={addRoi}
+        onPolyComplete={addPoly}
         onImageSize={(w, h) => { setImgSize({ w, h }); onImageSize?.(w, h) }}
         rois={rois.map(toAbs)}
         onRoisChange={next => onChange(next.map(toRel))}
@@ -264,7 +286,9 @@ export default function RoiCanvas({ rois, roiTypes, preview, onChange, overlayFo
             return (
               <div className="roi-coord-row" key={roi.id}>
                 <span className="roi-coord-idx">{idxInType + 1}</span>
-                {enableCircle && (
+                {roi.shape === 'polygon' ? (
+                  <span className="roi-field-label">폴리곤 ({roi.points?.length ?? 0}점)</span>
+                ) : enableCircle && (
                   <select className="param-select roi-shape-sel" value={roi.shape ?? 'rect'}
                     onChange={e => setShape(roi.id, e.target.value as 'rect' | 'circle')}>
                     <option value="rect">Rectangle</option>

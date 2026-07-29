@@ -57,7 +57,30 @@ export const TOOL_DEFS: ToolDef[] = [
     defaultParams: {
       matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
       removeReflection: true,
+      chunkMode: false, chunkRows: 1000, overlapRows: 180,
     },
+  },
+  {
+    type: 'Threshold', label: 'Threshold', category: '분할',
+    inputs: ['HeightMap'], outputs: ['Region'],
+    defaultParams: { channel: 0, thresholdMm: 0, keepAbove: true },
+  },
+  {
+    type: 'CreateROI', label: 'Create ROI', category: '분할',
+    inputs: ['HeightMap'], outputs: ['Region'],
+    defaultParams: { rois: [] },
+  },
+  {
+    type: 'ReduceDomain', label: 'Reduce Domain', category: '변환',
+    inputs: ['HeightMap', 'Region'], outputs: ['HeightMap'],
+    inputLabels: ['HeightMap', 'Region'],
+    defaultParams: {},
+  },
+  {
+    type: 'RegionMeasure', label: 'Region Measure', category: '측정',
+    inputs: ['Region', 'HeightMap'], outputs: ['Heights'],
+    inputLabels: ['Region', 'HeightMap'],
+    defaultParams: {},
   },
   {
     type: 'LineCenter', label: 'Line Finder', category: '정렬',

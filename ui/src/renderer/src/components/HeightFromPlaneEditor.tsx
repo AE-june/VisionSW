@@ -56,12 +56,13 @@ export default function HeightFromPlaneEditor(props: Props) {
           onChange={e => emit({ aggregation: e.target.value })}>
           <option value="Mean">Mean (평균)</option>
           <option value="Max">Max (최대)</option>
-          <option value="HighTail">HighTail (상위 %)</option>
+          <option value="HighTail">HighTail (상위 % 평균)</option>
+          <option value="Percentile">Percentile (상위 % 백분위값, 표준)</option>
         </select>
       </div>
-      {aggregation === 'HighTail' && (
+      {(aggregation === 'HighTail' || aggregation === 'Percentile') && (
         <div className="param-row">
-          <span className="param-label">High Tail (%)</span>
+          <span className="param-label">{aggregation === 'Percentile' ? 'Material ratio (%)' : 'High Tail (%)'}</span>
           <input className="param-input" type="number" step="0.1" min="0.1" max="100" value={highTailPct}
             onChange={e => emit({ highTailPct: parseFloat(e.target.value) || 0 })} />
         </div>

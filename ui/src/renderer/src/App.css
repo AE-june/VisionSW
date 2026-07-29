@@ -1025,6 +1025,18 @@
   transition: opacity 0.1s;
 }
 .pfe-roi-editable:hover .pfe-roi-handle { opacity: 0.9; }
+
+/* polygon 꼭짓점 핸들 — 항상 보이고 드래그로 개별 이동 */
+.pfe-roi-vertex {
+  width: 11px; height: 11px;
+  background: #66bb6a;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 2px rgba(0,0,0,0.6);
+  cursor: grab;
+}
+.pfe-roi-vertex:hover { background: #a5d6a7; }
+
 .pfe-roi-handle.h-nw { left: 0;    top: 0;    cursor: nwse-resize; }
 .pfe-roi-handle.h-n  { left: 50%;  top: 0;    cursor: ns-resize; }
 .pfe-roi-handle.h-ne { left: 100%; top: 0;    cursor: nesw-resize; }

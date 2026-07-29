@@ -27,10 +27,11 @@ struct HeightFromPlaneParams {
     enum class Aggregation {
         Mean,       // ROI 내 유효 Z 평균
         Max,        // ROI 내 최대 Z
-        HighTail    // 상위 highTailPct% Z의 평균
+        HighTail,   // 상위 highTailPct% Z의 평균
+        Percentile  // material ratio highTailPct%에서의 높이 = 상위 highTailPct% 백분위 "실측 점 하나". 표준(ISO 25178). 값·위치 동일 픽셀 → 결과 위치의 zmap값과 정확히 일치.
     } aggregation = Aggregation::Mean;
 
-    float highTailPct = 20.f;       // HighTail 비율 (%)
+    float highTailPct = 20.f;       // HighTail: 평균낼 상위 비율(%). Percentile: material ratio(상위 %) 지점.
 
     // 합부 판정 (선택)
     bool  useTolerance = false;
