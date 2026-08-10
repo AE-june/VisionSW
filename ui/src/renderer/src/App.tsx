@@ -191,7 +191,7 @@ export default function App() {
       })),
       edges: allEdges
         .filter(e => needed.has(e.source) && needed.has(e.target))
-        .map(e => ({ source: e.source, target: e.target })),
+        .map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })),
       useCache: true,    // 파라미터 안 바뀐 상류는 캐시 재사용 (재실행 안 함)
       forceNode: nodeId  // 이 노드는 항상 재실행 (정확한 실행시간)
     }
@@ -342,7 +342,9 @@ export default function App() {
       })),
       edges: edges.map(e => ({
         source: e.source,
-        target: e.target
+        target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle
       }))
     }
 
@@ -419,7 +421,7 @@ export default function App() {
     const pathById = (i: number) => new Map(listed.map(l => [l.id, l.files[i].path]))
 
     const csv = allNodes.find(n => (n.data as { toolType: string }).toolType === 'CsvWriter')
-    const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target }))
+    const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle }))
 
     const buildRecipe = (i: number) => {
       const paths = pathById(i)
