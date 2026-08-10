@@ -93,3 +93,8 @@ sample_data/
 *~
 .DS_Store
 Thumbs.db
+
+# 벤치마크 출력물 / 로컬 산출물
+*.csv
+memory/
+*.tsbuildinfo

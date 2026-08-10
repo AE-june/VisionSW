@@ -111,7 +111,7 @@ export function registerEngineIpc() {
     if (!wsReady || !ws) {
       return { error: 'VisionEngine not connected' }
     }
-    ws.send(JSON.stringify({ cmd: 'run', ...recipe as object }))
+    ws.send(JSON.stringify({ cmd: 'run', schemaVersion: 2, ...(recipe as object) }))
     return { ok: true }
   })
 

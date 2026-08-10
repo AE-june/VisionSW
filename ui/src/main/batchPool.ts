@@ -198,7 +198,7 @@ export function registerBatchIpc(): void {
   ipcMain.handle('batch:run', async (_event, workerId: number, recipe: unknown) => {
     const w = workers.find((w) => w.id === workerId)
     if (!w?.ready || !w.ws) return { error: `워커 ${workerId} 연결 안 됨` }
-    w.ws.send(JSON.stringify({ cmd: 'run', batch: true, ...(recipe as object) }))
+    w.ws.send(JSON.stringify({ cmd: 'run', schemaVersion: 2, batch: true, ...(recipe as object) }))
     return { ok: true }
   })
 

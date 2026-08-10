@@ -26,11 +26,8 @@ public:
     std::string name() const override { return "CsvWriter"; }
     ToolResult  execute(VisionDataPtr input) override;
 
-    const CsvWriterResult& lastResult() const { return m_result; }
-
 private:
     CsvWriterParams m_params;
-    CsvWriterResult m_result;
 };
 
 } // namespace vision

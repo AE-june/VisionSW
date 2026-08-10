@@ -84,7 +84,7 @@ VSDK_API void vsdk_free_result(VsdkResult* r);
  *  type      : 노드 타입 (예 "NoiseFilter","ExposureMerge2","PlaneFit"...).
  *  paramsJson: 해당 노드 파라미터 JSON (없으면 NULL 또는 "{}").
  *  inHeightmap    : 입력 HeightMap (로더 노드면 NULL 가능).
- *  inPlane   : 입력 평면 (HeightMeasure처럼 평면 입력이 필요한 노드용, 아니면 NULL).
+ *  inPlane   : 입력 평면 (Level처럼 평면 입력이 필요한 노드용, 아니면 NULL).
  *  out       : 결과. 반환값 = status. */
 VSDK_API int vsdk_run(const char* type, const char* paramsJson,
                       const VsdkHeightMap* inHeightmap, const VsdkPlane* inPlane,
@@ -101,8 +101,6 @@ VSDK_API int vsdk_align        (const VsdkHeightMap* in, const char* paramsJson,
 VSDK_API int vsdk_plane_fit    (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
 VSDK_API int vsdk_heightmap_to_cloud(const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
 VSDK_API int vsdk_thickness    (const VsdkHeightMap* in, const char* paramsJson, VsdkResult* out);
-/* HeightMeasure: HeightMap + (선택)평면 입력 → 영역별 높이. */
-VSDK_API int vsdk_height_measure(const VsdkHeightMap* in, const VsdkPlane* plane, const char* paramsJson, VsdkResult* out);
 
 /* 조직화된 point cloud 이중노출 머지 (per-point X 보존).
  *  xyz = numProfiles*width 개 점(x,y,z 3연속 float, row-major). 짝수 프로파일=저노출, 홀수=고노출.

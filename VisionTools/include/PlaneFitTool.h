@@ -11,14 +11,7 @@ namespace vision {
 //  PlaneFitParams
 // ─────────────────────────────────────────────────────────────────────
 struct PlaneFitParams {
-    // ROI in percentage of HeightMap dimensions (0.0 ~ 1.0)
-    struct ROI {
-        float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
-        bool valid() const { return wPct > 0.f && hPct > 0.f; }
-    };
-
-    std::vector<ROI> refRois;   // reference regions for plane fitting (>=1)
-
+    // 포트 1에 Region을 연결하면 해당 영역만 피팅. 없으면 전체 HeightMap 사용.
     enum class Algorithm {
         LeastSquares,   // 최소제곱법 (normal equations)
         RANSAC,         // Random Sample Consensus
@@ -54,17 +47,10 @@ public:
     std::string name() const override { return "PlaneFit"; }
     ToolResult  execute(VisionDataPtr input) override;
 
-    const PlaneFitResult& lastResult() const { return m_result; }
-
 private:
     PlaneFitParams m_params;
-    PlaneFitResult m_result;
 
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
-
-    std::vector<Pt3> extractPoints(const HeightMap& map,
-                                   const PlaneFitParams::ROI& roi,
-                                   int offCol = 0, int offRow = 0) const;
 
     struct Plane { double a = 0, b = 0, c = 0; bool valid = false; int inliers = 0; };
     Plane fitLS    (const std::vector<Pt3>& pts) const;   // 중심화 + Eigen QR

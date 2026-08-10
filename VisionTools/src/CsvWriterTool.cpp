@@ -9,40 +9,49 @@ namespace vision {
 CsvWriterTool::CsvWriterTool(CsvWriterParams params) : m_params(std::move(params)) {}
 
 ToolResult CsvWriterTool::execute(VisionDataPtr input) {
-    m_result = {};
-
     if (m_params.path.empty())
         return { ToolStatus::Fail, "CsvWriter: 파일 경로가 설정되지 않았습니다." };
-    if (!input || !input->hasHeights())
-        return { ToolStatus::Fail, "CsvWriter: 입력에 높이값(Heights)이 없습니다. HeightMeasure를 먼저 연결하세요." };
+    if (!input || input->measurements.empty())
+        return { ToolStatus::Fail, "CsvWriter: 입력에 measurements가 없습니다. RegionMeasure 또는 Compare를 먼저 연결하세요." };
+
+    // UTF-8 경로 처리 (한글 등 비-ASCII 경로 안전)
+    const auto u8p = std::filesystem::u8path(m_params.path);
+
+    std::error_code ec;
+    const bool isEmpty = !std::filesystem::exists(u8p, ec)
+                      || (std::filesystem::file_size(u8p, ec) == 0);
 
     // append 모드 — 실행할 때마다 한 행 추가
-    // m_params.path는 UTF-8 — narrow std::string 그대로 열면 ANSI 코드페이지로 해석돼
-    // 한글 등 비-ASCII 경로에서 open 자체가 실패한다. u8path로 감싸 정확히 연다.
-    std::ofstream ofs(std::filesystem::u8path(m_params.path), std::ios::app);
+    std::ofstream ofs(u8p, std::ios::app);
     if (!ofs.is_open())
         return { ToolStatus::Fail, "CsvWriter: 파일을 열 수 없습니다: " + m_params.path };
 
-    const auto& h = *input->heights;
-    // 라벨(소스 파일명 등)이 있으면 첫 컬럼에 기록 — 폴더검사 추적성
+    const auto& meas = input->measurements;
+
+    // 파일이 비어있으면 헤더 행 먼저 기록
+    if (isEmpty) {
+        if (!m_params.label.empty()) ofs << "label,";
+        for (std::size_t i = 0; i < meas.size(); ++i) {
+            if (i) ofs << ",";
+            ofs << meas[i].name;
+        }
+        ofs << "\n";
+    }
+
+    // 데이터 행
     if (!m_params.label.empty())
         ofs << m_params.label << ",";
     ofs << std::fixed << std::setprecision(6);
-    for (std::size_t i = 0; i < h.size(); ++i) {
+    for (std::size_t i = 0; i < meas.size(); ++i) {
         if (i) ofs << ",";
-        ofs << h[i];
+        ofs << meas[i].value;
     }
     ofs << "\n";
 
-    m_result.saved   = true;
-    m_result.columns = static_cast<int>(h.size());
-    m_result.path    = m_params.path;
+    VISION_LOG_INFO("CsvWriter: {}개 측정값을 한 행으로 추가 → {}", meas.size(), m_params.path);
 
-    VISION_LOG_INFO("CsvWriter: {}개 값을 한 행으로 추가 → {}", h.size(), m_params.path);
-
-    // 타입화 출력: 싱크. 높이값만 통과(체인용), 이미지/heightmap 미포함 → 결과창에 이미지 안 뜸.
     auto out = std::make_shared<VisionData>();
-    out->heights  = input->heights;
+    out->measurements.push_back({"rowCount", static_cast<double>(meas.size()), "cols", true});
     out->sourceId = input->sourceId;
     return { ToolStatus::Ok, "", out };
 }

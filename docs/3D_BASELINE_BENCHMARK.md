@@ -15,7 +15,7 @@
 1. **높이맵을 1급 타입으로 삼은 설계 판단은 옳았다.** 조사한 5개 제품 중 4개가 높이맵을 1급으로 다룬다. Aurora는 `Surface`(격자 높이맵)를 point cloud보다 **권장 타입으로 명시**하고, eVision은 `ZMap`, Gocator는 Surface, InsWorks는 "Range 이미지"를 중심에 둔다. 전용 타입이 없는 건 HALCON뿐이다.
 2. **가장 큰 공백은 "높이맵 위에서 도는 캘리퍼/게이지 툴"이다.** Aurora는 이 목적의 필터가 19개, Gocator는 Feature Point 14종 + Profile 툴 14개, InsWorks는 "3D 횡단면 툴"로 같은 일을 한다. VisionSW는 0개. 측정 툴로서의 기본기가 여기 있다.
 3. **사용성의 핵심은 툴 개수가 아니라 3가지 구조적 개념이다** (§2-H) — **Fixture**(찾은 특징으로 좌표계를 만들고 하위 툴이 그 안에서 동작), **중첩 ToolBlock**(서브그래프를 하나의 툴처럼 재사용), **좌표계 트리**. Cognex VisionPro 계열 개념이고 InsWorks가 그대로 채택했다. VisionSW엔 셋 다 없다.
-4. **2D를 따로 만들 필요는 거의 없다.** eVision은 3D 측정 툴을 **아예 만들지 않고**, 높이맵을 metric 보정된 그레이스케일 이미지로 만들어 기존 2D 툴셋(게이지·블롭·매칭)을 그대로 재사용한다. → VisionSW도 `Image2D`/`HeightMap` 통합(B1의 남은 범위)이 "증분 사항"이 아니라 **2D 커버리지 전략의 핵심**이다.
+4. **2D를 따로 만들 필요는 거의 없다.** eVision은 3D 측정 툴을 **아예 만들지 않고**, 높이맵을 metric 보정된 그레이스케일 이미지로 만들어 기존 2D 툴셋(게이지·블롭·매칭)을 그대로 재사용한다. → VisionSW의 `Image2D`/`HeightMap` 통합(B1)은 "증분 사항"이 아니라 **2D 커버리지 전략의 핵심**이었고, **2026-07-30 완료됐다**(§3 · §4 T0-3).
 
 ---
 
@@ -115,7 +115,7 @@
 - **D3 검출점에 기하 피팅 / 측정** — 여러 단면에서 찾은 점들을 모아 직선·원·경로로 피팅하거나 폭을 직접 낸다. **단발 측정을 노이즈에 강한 측정으로 바꾸는 단계**이고, C2·C3(기하 피팅)과 D2를 잇는 접착제다. Gocator의 Fit Line이 "fit area 2개로 불연속 구간을 우회"하는 옵션을 둔 게 실전 요구를 보여준다.
 - **D4 로컬 극값** — 영역 내 최대/최소/중앙값과 그 위치. 가장 단순하지만 실무에서 가장 많이 쓰인다(최고점 높이, 함몰 깊이). VisionSW의 `HeightMeasure`가 Mean/Max/HighTail 집계를 갖는 게 이 항목의 부분 구현이다.
 
-**InsWorks 방식의 구조적 차이**: Aurora는 추출·검출·피팅을 **19개 독립 필터**로 쪼개고, Gocator는 Feature Point 14종 + Fit Line을 툴 파라미터로 노출한다. InsWorks는 셋을 **단일 "3D 횡단면 툴" 하나에 묶었다**(획득 → 특징추출 → 측정). 설계 선택지가 둘이라는 뜻 — 프리미티브 분해형(Aurora) vs 통합 툴형(InsWorks). VisionSW의 기존 `PlaneFit`/`RefHeight`/`HeightMeasure`는 통합 툴형에 가깝다.
+**InsWorks 방식의 구조적 차이**: Aurora는 추출·검출·피팅을 **19개 독립 필터**로 쪼개고, Gocator는 Feature Point 14종 + Fit Line을 툴 파라미터로 노출한다. InsWorks는 셋을 **단일 "3D 횡단면 툴" 하나에 묶었다**(획득 → 특징추출 → 측정). 설계 선택지가 둘이라는 뜻 — 프리미티브 분해형(Aurora) vs 통합 툴형(InsWorks). VisionSW의 기존 `PlaneFit`/`HeightMeasure`는 통합 툴형에 가깝다.
 
 ### E. 객체 단위 분할·검사
 | # | 기능 | Aurora | eVision | Gocator | InsWorks |
@@ -129,7 +129,7 @@
 
 - **E1 개별 객체 분할** — 연결된 영역을 각각의 객체로 쪼개 하나씩 측정한다. **"몇 개인가 / 각각이 규격에 맞나"** 부류 검사의 전제다. 개수가 가변인 대상(솔더 범프, 구멍 배열, 도포 비드 분절)은 이게 없으면 ROI를 사람이 전부 찍어야 하고 파트가 바뀌면 레시피를 다시 만들어야 한다. VisionSW가 지금 `CreateROI`로 ROI를 수동 지정하는 방식이라 정확히 이 한계에 걸려 있다.
 - **E2 메트릭 기준 객체 필터링** — 분할된 객체를 길이·폭·높이·면적·체적·종횡비·방향·기울기의 **범위**로 걸러낸다. 결정적인 건 이 값들이 **픽셀이 아니라 mm/도 단위**여야 한다는 점이다. 그래야 분해능이나 센서가 바뀌어도 파라미터가 그대로 유효하다. eVision의 range 필터 10종이 사실상 이 항목의 표준 스펙이라 볼 수 있다.
-- **E3 로컬 base plane** — 객체 **주변** 픽셀만으로 배경 평면을 추정하고 그 기준으로 높이를 잰다. eVision이 국소 기준 높이(local height)와 전역 기준 높이(reference height)를 **분리해서 둘 다 출력**하는 게 핵심 설계다. 파트 전체가 휘어 있어도 국소 단차는 정확히 나오기 때문이다. Gocator가 Hole/Opening/Stud 툴에 Reference Region을 두고 *"구멍 주변 표면이 평평하지 않은 경우"*라고 문서에 명시한 것도 같은 문제. VisionSW의 `PlaneFit`/`RefHeight`는 전역 ROI 기반이라 이 구분이 없다.
+- **E3 로컬 base plane** — 객체 **주변** 픽셀만으로 배경 평면을 추정하고 그 기준으로 높이를 잰다. eVision이 국소 기준 높이(local height)와 전역 기준 높이(reference height)를 **분리해서 둘 다 출력**하는 게 핵심 설계다. 파트 전체가 휘어 있어도 국소 단차는 정확히 나오기 때문이다. Gocator가 Hole/Opening/Stud 툴에 Reference Region을 두고 *"구멍 주변 표면이 평평하지 않은 경우"*라고 문서에 명시한 것도 같은 문제. VisionSW의 `PlaneFit`은 전역 ROI 기반이라 이 구분이 없다.
 - **E4 배열/컬렉션 순회** — 분할된 N개 객체에 같은 측정을 반복 적용한다. **객체 수가 런타임에 결정되므로** 그래프가 컬렉션 타입과 반복을 표현할 수 있어야 하고, 그래서 이건 툴이 아니라 데이터 모델·실행 모델 문제다 (§4 T0-2).
 
 ### F. 정렬 / 포즈 / 골든 비교
@@ -157,7 +157,7 @@
 
 **항목 설명**
 
-- **G1 합/불 판정 내장** — 측정값을 공칭±공차 또는 Min/Max와 비교해 pass/fail을 내고 외부(디지털 출력·상위 시스템)로 보낸다. 설계상 중요한 건 **측정과 판정이 분리돼 있어야** 같은 측정값에 여러 판정 기준을 걸거나 판정 기준만 바꿔 재평가할 수 있다는 점이다. VisionSW는 `HeightMeasure`·`ThicknessMeasure` 안에 tolerance가 박혀 있어 이 분리가 없다 (§4 T1-7).
+- **G1 합/불 판정 내장** — 측정값을 공칭±공차 또는 Min/Max와 비교해 pass/fail을 내고 외부(디지털 출력·상위 시스템)로 보낸다. 설계상 중요한 건 **측정과 판정이 분리돼 있어야** 같은 측정값에 여러 판정 기준을 걸거나 판정 기준만 바꿔 재평가할 수 있다는 점이다. VisionSW는 `HeightMeasure` 안에 tolerance가 박혀 있어 이 분리가 없다 (§4 T1-7).
 - **G2 측정값 필터** — Scale/Offset 보정, 마지막 유효값 유지, 시간축 평활. 간헐적으로 무효 측정이 나와도 라인을 멈추지 않게 하는 실무 장치다. 반대로 **이걸 켜면 반복성 측정이 왜곡**되므로 검증 모드에서는 꺼야 한다.
 - **G3 3D 뷰어** — 점군·높이맵·피팅 결과(평면, 검출점)를 겹쳐 보는 인터랙티브 표시. 파라미터를 맞출 때 사람이 확인할 수 있는 유일한 수단이라 5사 전부 갖고 있다. VisionSW는 `PlaneView3D`가 있으니 부분 보유.
 - **G4 스크립트 탈출구** — 툴 조합으로 표현 안 되는 로직을 스크립트로 처리한다. **툴 카탈로그가 작을 때 오히려 더 중요하다** — 없는 툴을 스크립트로 메워 사용자가 막히지 않게 하기 때문이다. 1인 프로젝트라면 툴 100개를 만드는 것보다 이걸 먼저 넣는 게 합리적일 수 있다.
@@ -212,24 +212,42 @@ InsWorks는 **"先进成像/계산 이미징 툴셋"을 4개 툴셋 중 하나�
 
 ---
 
-## 3. VisionSW 현재 상태 (23개 노드)
+## 3. VisionSW 현재 상태 (노드 20개 + 미노출 계약 3개)
 
-`ui/src/renderer/src/types/tools.ts` 기준. PortType: `HeightMap` · `Region` · `Plane` · `Heights` · `Image2D` · `PointCloud3D` · `Point` · `Any`
+`ui/src/renderer/src/types/tools.ts` 기준 (2026-07-30 실측).
+PortType: `HeightMap` · `Region` · `Plane` · `Heights` · `PointCloud3D` · `Point` · `Any` — **`Image2D` 제거됨**(T0-3).
+포트 다중성: `PortSpec { type, isArray }` 도입됨.
 
 | 카테고리 | 노드 |
 |---|---|
-| 입력 | HeightMapLoader, ImageLoader |
-| 필터 | ExposureMerge(Split), ExposureMerge2, ExposureMerge3, RowStretch, NoiseFilter, GapFill, EdgeDetector |
+| 입력 | HeightMapLoader |
+| 필터 | ExposureMerge(Split), ExposureMerge2, ExposureMerge3, RowStretch, NoiseFilter, GapFill |
 | 분할 | Threshold(→Region), CreateROI(→Region) |
 | 변환 | ReduceDomain, HeightMapToCloud, ExposureMergeCloud |
-| 측정 | RegionMeasure, PlaneFit, RefHeight, HeightMeasure, ThicknessMeasure |
+| 측정 | RegionMeasure, PlaneFit, HeightMeasure |
 | 정렬 | LineCenter(→Point), Align |
 | 출력 | CsvWriter, ImageSaver, CloudSaver |
+| (축약, 미노출) | Collect, Filter, Select — `PLANNED_REDUCTION_NODES`에 **인터페이스 계약만** 정의. `TOOL_DEFS` 미등록이라 툴박스에 안 나오고 드롭 불가. 구현은 T2-1/T2-2 시점 |
+
+### 제거된 노드 4개 (의도적, 확인됨)
+
+| 노드 | 원래 포트 | 사유 |
+|---|---|---|
+| `ImageLoader` | – → Image2D | **T0-3.** `Image2D` 포트 타입 폐지에 따른 정리 |
+| `EdgeDetector` (Sobel/Canny) | Image2D → Image2D | **T0-3.** 동일 |
+| `RefHeight` | HeightMap → Plane, Heights | 의도적 제거 |
+| `ThicknessMeasure` | PointCloud3D → PointCloud3D | 의도적 제거 |
+
+`VisionTools/src/` 현재 10개: `AlignTool` `CreateRoiTool` `CsvWriterTool` `HeightFromPlaneTool` `LineCenterTool` `NoiseFilter` `PlaneFitTool` `ReduceDomainTool` `RegionMeasureTool` `ThresholdTool`.
 
 **ARCHITECTURE_DIRECTION.md 대비 실제 진척 (문서가 뒤처져 있음)**
-- B2(Region 1급화): 문서상 "신규" → **실제로는 상당 부분 구현됨.** `Region` 포트 + `Threshold` + `CreateROI` + `ReduceDomain` + `RegionMeasure` 존재.
-- B4(Geometry 1급화): 문서상 "신규" → **부분 구현.** `Plane`·`Point` 포트가 이미 분리돼 있음 (kind 태그 통합형은 아니고 개별 포트 방식).
-- B3(iconic/control 분리): `Heights` 포트가 control 역할로 분리 시작됨.
+- B1(통합 N채널 Image): **완결.** `Image2D` 흡수 완료, `using Image = HeightMap` 유지. → T0-3 완료.
+- B2(Region 1급화): 문서상 "신규" → **상당 부분 구현됨.** `Region` 포트 + `Threshold` + `CreateROI` + `ReduceDomain` + `RegionMeasure` + `Region::frameId`.
+- B4(Geometry 1급화): **부분 구현.** `Plane`·`Point` 포트 분리됨 (kind 태그 통합형 아니고 개별 포트 방식). `PlaneModel::frameId` 추가됨.
+- B3(iconic/control 분리): `Heights` 포트가 control 역할로 분리 시작. `regions`/`planes` 벡터화로 특수 슬롯 통합 진행 중.
+- F1(제어흐름): `Collect`/`Filter`/`Select` 인터페이스 계약만 정의(미노출). 브로드캐스트 규칙(`Broadcast.h`)은 순수 함수로 확정됐고 실행 배선은 배열 생산 노드(T2-1) 시점.
+- **T0-1(좌표계 프레임 트리): `Core/include/Frame.h` + `Tests/Core/FrameTest.cpp` 도입됨.** 전 툴 적용은 미완 — 상세는 [DESIGN_T0_SURFACE_PRIMITIVES.md](./DESIGN_T0_SURFACE_PRIMITIVES.md) §1.2.
+- **T0-2(컬렉션): `Edge` 포트 핸들 + `Broadcast.h` + 슬롯 벡터화 도입됨.** 브로드캐스트 실행 배선은 미완.
 - → 문서 §7 상태 표기를 갱신할 필요가 있다.
 
 ---
@@ -242,7 +260,7 @@ InsWorks는 **"先进成像/계산 이미징 툴셋"을 4개 툴셋 중 하나�
 |---|---|---|---|
 | T0-1 | **좌표계 규약 명문화 — 프레임 트리** (world / heightmap / pixel + Fixture가 만드는 파생 프레임) + 변환 API. rigid 보장, 원점·분해능·단위 일원화 | eVision 3계 문서 규정, Aurora 브리지 필터군, **InsWorks "공간 좌표 트리"** | 암묵적. `3575c7d`에서 원점 불일치 버그 발생 |
 | T0-2 | **컬렉션 타입 + ForEach** (`Region[]`, `Geometry[]`, `Array`) | Gocator Array tools, eVision 객체 리스트, Aurora 배열 네이티브 | 없음 (문서 F1) |
-| T0-3 | **Image2D / HeightMap 통합 완결** — 높이맵을 2D 툴이 그대로 먹게 | eVision 전략의 근간(*"All Open eVision 2D processing are available on ZMaps"*) | B1 절반. `EdgeDetector`만 Image2D 전용으로 고립 |
+| T0-3 | **Image2D / HeightMap 통합 완결** — 높이맵을 2D 툴이 그대로 먹게 | eVision 전략의 근간(*"All Open eVision 2D processing are available on ZMaps"*) | ✅ **완료.** `Image2D` 포트 폐지, `ImageLoader`·`EdgeDetector` 제거(§3) |
 | T0-4 | **레벨링 노드** (피팅 평면 기준으로 높이맵 평탄화 / 평면거리맵 출력) | Aurora `FlattenSurface`·`SurfaceToPlaneDistanceImage`, eVision ZMap Leveling, Gocator Tilt Correction, **InsWorks `DiffReferBasePlane`** | 없음. `PlaneFit`이 평면을 내지만 그걸로 맵을 펴는 노드가 없음 |
 | T0-5 | 표면 기본 변환: Crop / Resample / Subtract / ValidPointsRegion | 4사 전부 | 없음 |
 | T0-6 | **중첩 서브그래프 (ToolBlock)** — 노드 묶음을 하나의 툴로 캡슐화·재사용·중첩 | InsWorks 중첩 ToolBlock (VisionPro 계열), 레시피 규모 확장의 유일한 수단 | 없음 |
@@ -257,7 +275,7 @@ InsWorks는 **"先进成像/계산 이미징 툴셋"을 4개 툴셋 중 하나�
 | T1-4 | **Line3D / Circle3D 피팅** (Plane은 있음) | Aurora, Gocator, HALCON, InsWorks | `PlaneFit`만 존재 |
 | T1-5 | **기하 연산** — 거리 / 각도 / 교점 / 구성 | Aurora `Geometry3D` 4그룹, **InsWorks 2D 툴 이름 노출분의 절반 이상이 이것** (Distance*/Angle*/Intersect*/Create*) | 없음 |
 | T1-6 | **전역 측정** — Area / Volume / Flatness | 3사 전부 | 없음 (`HeightMeasure`는 ROI 높이만) |
-| T1-7 | **Compare → Decision** (공칭±공차 → 합/불), 판정 결합 | Gocator Decisions | `HeightMeasure`·`ThicknessMeasure`에 tolerance가 하드코딩. 독립 노드 없음 |
+| T1-7 | **Compare → Decision** (공칭±공차 → 합/불), 판정 결합 | Gocator Decisions | `HeightMeasure`에 tolerance가 하드코딩. 독립 노드 없음 |
 
 ### 🟡 Tier 2 — 객체 단위 검사
 
@@ -265,7 +283,7 @@ InsWorks는 **"先进成像/계산 이미징 툴셋"을 4개 툴셋 중 하나�
 |---|---|---|---|
 | T2-1 | **ConnectedComponents** → `Region[]` | eVision `E3DObjectExtractor`, Gocator Segmentation | 없음 |
 | T2-2 | **메트릭 객체 필터** — Length/Width/Height/Area/Volume/AspectRatio/Orientation/Tilt 범위 | eVision 10개 range 필터가 사실상 표준 스펙 | 없음 |
-| T2-3 | **로컬 base plane** — 객체 주변 픽셀로 배경 평면 추정 → local height / reference height 분리 | eVision `E3DObject.BasePlane`, Gocator Reference Regions, **InsWorks 표면결함검출 툴의 `BasePlane`** | 없음. `PlaneFit`/`RefHeight`는 전역 ROI 기반 |
+| T2-3 | **로컬 base plane** — 객체 주변 픽셀로 배경 평면 추정 → local height / reference height 분리 | eVision `E3DObject.BasePlane`, Gocator Reference Regions, **InsWorks 표면결함검출 툴의 `BasePlane`** | 없음. `PlaneFit`은 전역 ROI 기반 |
 | T2-4 | 3D 모폴로지 (높이맵 dilate/erode/open/close), Region Boolean(∪∩−) | Aurora `DilateSurfacePoints` 등 | 없음 |
 
 ### 🟢 Tier 3 — 정렬 / 앵커링 / 골든 비교

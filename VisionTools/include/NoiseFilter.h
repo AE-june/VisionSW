@@ -1,7 +1,6 @@
 #pragma once
 
 #include "IAlgorithmTool.h"
-#include <vector>
 
 namespace vision {
 
@@ -15,17 +14,13 @@ class NoiseFilter : public IAlgorithmTool {
 public:
     enum class Type { Mean, Median, Gaussian, SOR, Bilateral };
 
-    // 필터 적용 영역 (HeightMap 크기 대비 비율 0~1). 사각형만.
-    struct RoiRect { float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f; };
-
     struct Params {
         Type  type          = Type::Median;  // HeightMap 필터 종류
         int   kernelSizeX   = 3;             // X 커널 크기 (홀수, ≥3)
         int   kernelSizeY   = 3;             // Y 커널 크기 (홀수, ≥3)
         float stdRatio      = 2.0f;          // SOR: |z-mean| > stdRatio*std 이면 제거
         float sigmaRangeMm  = 0.02f;         // Bilateral: Z값 유사도 허용범위 (mm)
-        // 필터를 적용할 ROI들. 비어있으면 전체 이미지에 적용(기존 동작).
-        std::vector<RoiRect> rois;
+        // 포트 1에 Region을 연결하면 해당 영역만 필터. 없으면 전체 이미지에 적용.
         // (레거시 3D 클라우드 SOR용)
         float radius        = 1.0f;
         int   minNeighbors  = 5;

@@ -15,16 +15,14 @@ HeightFromPlaneTool::HeightFromPlaneTool(HeightFromPlaneParams params)
 //  execute
 // ═════════════════════════════════════════════════════════════════════
 ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
-    m_result = {};
-
-    if (!input || !input->hasHeightMap())
+    if (!input || !input->inHeightMap(0))
         return { ToolStatus::Fail, "HeightMeasure: HeightMap이 없습니다." };
     if (m_params.measureRois.empty())
         return { ToolStatus::Fail, "HeightMeasure: 측정 ROI가 없습니다." };
 
-    const HeightMap&       map   = *input->heightmap;
+    const HeightMap&       map   = *input->inHeightMap(0);
     // plane 입력이 있으면 평면 기준 수직거리, 없으면 절대 높이(z)
-    const PlaneModel* plane = input->hasPlane() ? input->plane0().get() : nullptr;
+    const PlaneModel* plane = input->inPlane(1) ? input->inPlane(1).get() : nullptr;
     // HeightMap 원점이 설정돼 있으면(Align 통과) ROI를 원점만큼 이동.
     // ROI 좌표는 원점 기준 상대값(px)이라 검출된 원점에 더해 절대 위치를 만든다.
     // 원점이 0이면 기존과 동일(하위 호환).
@@ -41,7 +39,8 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
 
     // ROI별 측정은 서로 독립 → ROI 단위 병렬. 결과는 인덱스로 기록해 직렬과 동일 순서/값 보장.
     const int nRoi = static_cast<int>(m_params.measureRois.size());
-    m_result.measures.assign(nRoi, HeightMeasure{});
+    HeightFromPlaneResult localResult;
+    localResult.measures.assign(nRoi, HeightMeasure{});
     std::atomic<bool> allPassA{true};
     cv::parallel_for_(cv::Range(0, nRoi), [&](const cv::Range& rg) {
         for (int i = rg.start; i < rg.end; ++i) {
@@ -53,7 +52,7 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
                 hm.pointCount = 0;
                 hm.pass = false;
                 allPassA = false;
-                m_result.measures[i] = hm;
+                localResult.measures[i] = hm;
                 continue;
             }
 
@@ -70,21 +69,28 @@ ToolResult HeightFromPlaneTool::execute(VisionDataPtr input) {
             } else {
                 hm.pass = true;
             }
-            m_result.measures[i] = hm;
+            localResult.measures[i] = hm;
         }
     });
 
-    m_result.valid   = true;
-    m_result.allPass = allPassA.load();
+    localResult.valid   = true;
+    localResult.allPass = allPassA.load();
 
-    // 타입화 출력: 측정된 높이값 배열만 전달 (이미지/plane 미포함).
-    // 높이는 입력 heightmap을 입력 plane 기준으로 측정 — 결과창 이미지는 엔진이 입력 heightmap으로 폴백 표시.
+    // 타입화 출력: 이름 있는 measurements/decisions으로 전달.
     auto out = std::make_shared<VisionData>();
-    out->heights = std::make_shared<std::vector<double>>();
-    out->heights->reserve(m_result.measures.size());
-    for (const auto& m : m_result.measures) out->heights->push_back(m.distance);
+    for (int i = 0; i < nRoi; ++i) {
+        const auto& hm = localResult.measures[i];
+        const std::string prefix = "d" + std::to_string(i + 1) + "_";
+        out->measurements.push_back({prefix + "cx",         hm.cx,                          "mm",  true});
+        out->measurements.push_back({prefix + "cy",         hm.cy,                          "mm",  true});
+        out->measurements.push_back({prefix + "distance",   hm.distance,                    "mm",  hm.pointCount > 0});
+        out->measurements.push_back({prefix + "pointCount", static_cast<double>(hm.pointCount), "pts", true});
+        out->decisions.push_back({prefix + "pass", hm.pass, "",
+                                   hm.distance, m_params.nominalMm, m_params.toleranceMm});
+    }
+    out->decisions.push_back({"allPass", localResult.allPass, "", 0, 0, 0});
     out->sourceId = input->sourceId;
-    return { ToolStatus::Ok, "", out };
+    return {ToolStatus::Ok, "", out};
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -14,26 +14,36 @@ PlaneFitTool::PlaneFitTool(PlaneFitParams params) : m_params(std::move(params)) 
 //  execute
 // ═════════════════════════════════════════════════════════════════════
 ToolResult PlaneFitTool::execute(VisionDataPtr input) {
-    m_result = {};
-
-    if (!input || !input->hasHeightMap())
+    if (!input || !input->inHeightMap(0))
         return { ToolStatus::Fail, "PlaneFit: HeightMap이 없습니다." };
-    if (m_params.refRois.empty())
-        return { ToolStatus::Fail, "PlaneFit: Reference ROI가 없습니다." };
 
-    const HeightMap& map = *input->heightmap;
+    const HeightMap& map = *input->inHeightMap(0);
 
-    // HeightMap 원점이 설정돼 있으면(Align 통과) reference ROI를 원점만큼 이동.
-    // ROI 좌표는 원점 기준 상대값(px). 원점이 0이면 기존과 동일(하위 호환).
-    const int offCol = static_cast<int>(std::lround(map.originCol));
-    const int offRow = static_cast<int>(std::lround(map.originRow));
-
-    // Collect points from all reference ROIs
-    std::vector<Pt3> pts;
-    for (const auto& roi : m_params.refRois) {
-        auto p = extractPoints(map, roi, offCol, offRow);
-        pts.insert(pts.end(), p.begin(), p.end());
+    // 포트 1에 Region 배열이 있으면 전부 합집합(OR)해 피팅 범위로 사용. 없으면 전체 HeightMap.
+    const auto& portRegions = input->inRegions(1);
+    std::shared_ptr<Region> unionRgn;
+    if (!portRegions.empty()) {
+        if (portRegions.size() == 1) {
+            unionRgn = portRegions[0];
+        } else {
+            unionRgn = std::make_shared<Region>(Region::makeEmpty(map.width, map.height));
+            for (const auto& r : portRegions) {
+                if (!r) continue;
+                for (size_t i = 0; i < unionRgn->mask.size(); ++i)
+                    unionRgn->mask[i] |= r->mask[i];
+            }
+        }
     }
+    const Region* rgn = unionRgn ? unionRgn.get() : nullptr;
+
+    std::vector<Pt3> pts;
+    for (int row = 0; row < map.height; ++row)
+        for (int col = 0; col < map.width; ++col) {
+            if (!map.valid(col, row)) continue;
+            if (rgn && !rgn->contains(col, row)) continue;
+            pts.push_back({ map.xMm(col), map.yMm(row),
+                             static_cast<double>(map.zMm(col, row)) });
+        }
     if (pts.size() < 3)
         return { ToolStatus::Fail, "PlaneFit: 평면 피팅 포인트 부족 (최소 3개 필요)" };
 
@@ -60,65 +70,37 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
     double tiltDeg = std::atan(std::sqrt(plane.a * plane.a + plane.b * plane.b))
                      * 180.0 / 3.14159265358979323846;
 
-    m_result.a   = plane.a;
-    m_result.b   = plane.b;
-    m_result.c   = plane.c;
-    m_result.rmse          = rmse;
-    m_result.tiltDeg       = tiltDeg;
-    m_result.refPointCount = static_cast<int>(pts.size());
-    m_result.inlierCount   = plane.inliers;
-    m_result.valid         = true;
+    VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
+        plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
 
-    // 3D 뷰용: 전체 HeightMap을 격자 다운샘플 (목표 개수는 파라미터, 메모리 보호용 하드 상한)
+    auto out = std::make_shared<VisionData>();
+    out->measurements = {
+        {"planeA",        plane.a,                             "",    true},
+        {"planeB",        plane.b,                             "",    true},
+        {"planeC",        plane.c,                             "mm",  true},
+        {"rmse",          rmse,                                "mm",  true},
+        {"tiltDeg",       tiltDeg,                             "deg", true},
+        {"refPointCount", static_cast<double>(pts.size()),     "pts", true},
+        {"inlierCount",   static_cast<double>(plane.inliers),  "pts", true},
+    };
+    // 3D 뷰용 포인트클라우드 overlay
     const size_t HARD_CAP = 500000;
     const size_t target = std::min(HARD_CAP,
         static_cast<size_t>(std::max(1, m_params.maxCloudPoints)));
     const size_t total  = static_cast<size_t>(map.width) * map.height;
     const int    step   = std::max(1, static_cast<int>(std::sqrt(
                               static_cast<double>(total) / target)));
+    Overlay ov;
+    ov.kind = Overlay::Kind::Cloud;
     for (int row = 0; row < map.height; row += step)
         for (int col = 0; col < map.width; col += step)
             if (map.valid(col, row))
-                m_result.cloudPoints.push_back({ map.xMm(col), map.yMm(row),
-                                                 static_cast<double>(map.zMm(col, row)) });
-
-    VISION_LOG_INFO("PlaneFit: z = {:.6f}*x + {:.6f}*y + {:.6f}  rmse={:.4f}mm tilt={:.3f}° pts={}",
-        plane.a, plane.b, plane.c, rmse, tiltDeg, pts.size());
-
-    // 타입화 출력: plane(a,b,c)만 하류로 전달. 이미지/heightmap은 넘기지 않음
-    // (plane 엣지는 plane 정보만). 이 노드 결과창 이미지는 엔진이 입력 heightmap으로 폴백해 표시.
-    auto out = std::make_shared<VisionData>();
-    out->setPlane(std::make_shared<PlaneModel>(PlaneModel{ plane.a, plane.b, plane.c, true }));
+                ov.cloudPoints.push_back({map.xMm(col), map.yMm(row),
+                                          static_cast<double>(map.zMm(col, row))});
+    out->overlays.push_back(std::move(ov));
+    out->setPlane(std::make_shared<PlaneModel>(PlaneModel{plane.a, plane.b, plane.c, true}));
     out->sourceId = input->sourceId;
-    return { ToolStatus::Ok, "", out };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-//  extractPoints — percentage ROI → (x_mm, y_mm, z_mm)
-// ─────────────────────────────────────────────────────────────────────
-std::vector<PlaneFitTool::Pt3>
-PlaneFitTool::extractPoints(const HeightMap& map, const PlaneFitParams::ROI& roi,
-                            int offCol, int offRow) const {
-    int x0 = static_cast<int>(roi.xPct * map.width)               + offCol;
-    int y0 = static_cast<int>(roi.yPct * map.height)              + offRow;
-    int x1 = static_cast<int>((roi.xPct + roi.wPct) * map.width)  + offCol;
-    int y1 = static_cast<int>((roi.yPct + roi.hPct) * map.height) + offRow;
-
-    x0 = std::clamp(x0, 0, map.width  - 1);
-    y0 = std::clamp(y0, 0, map.height - 1);
-    x1 = std::clamp(x1, 0, map.width);
-    y1 = std::clamp(y1, 0, map.height);
-
-    std::vector<Pt3> pts;
-    pts.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0));
-
-    // row-major 순회 (data가 [row*width+col] 이므로 캐시 효율적)
-    for (int row = y0; row < y1; ++row)
-        for (int col = x0; col < x1; ++col)
-            if (map.valid(col, row))
-                pts.push_back({ map.xMm(col), map.yMm(row),
-                                 static_cast<double>(map.zMm(col, row)) });
-    return pts;
+    return {ToolStatus::Ok, "", out};
 }
 
 // ─────────────────────────────────────────────────────────────────────

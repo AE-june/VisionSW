@@ -16,8 +16,8 @@ NoiseFilter::NoiseFilter(Params params) : m_params(params) {}
 
 ToolResult NoiseFilter::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "null input" };
-    if (input->hasHeightMap()) return filterHeightMap(input);   // HeightMap 우선
-    if (input->hasCloud()) return filter3D(input);
+    if (input->inHeightMap(0)) return filterHeightMap(input);   // HeightMap 우선
+    if (input->inCloud(0)) return filter3D(input);
     return { ToolStatus::Skip, "no data to filter" };
 }
 
@@ -27,7 +27,7 @@ ToolResult NoiseFilter::execute(VisionDataPtr input) {
 //   SOR: 창 내 유효 이웃의 평균/표준편차로 이상치 판정 → 제거(NaN)
 // ─────────────────────────────────────────────────────────────────────
 ToolResult NoiseFilter::filterHeightMap(VisionDataPtr input) {
-    const HeightMap& src = *input->heightmap;
+    const HeightMap& src = *input->inHeightMap(0);
     const int W = src.width, H = src.height;
     if (W <= 0 || H <= 0) return { ToolStatus::Fail, "NoiseFilter: 빈 HeightMap" };
 
@@ -173,38 +173,34 @@ ToolResult NoiseFilter::filterHeightMap(VisionDataPtr input) {
 
     cv::Mat full(H, W, CV_32F, const_cast<float*>(src.data.data()));
 
-    if (m_params.rois.empty()) {
-        // ROI 없음 → 전체 이미지 필터 (기존 동작)
+    auto rgn = input->inRegion(1);
+    if (!rgn) {
+        // Region 없음 → 전체 이미지 필터 (기존 동작)
         cv::Mat res = filterRegion(full);
         std::memcpy(heightmap->data.data(), res.ptr<float>(), sizeof(float) * N);
     } else {
-        // ROI별로 (경계 halo 포함) 잘라서 필터 후, halo 제외한 ROI 코어만 되쓰기.
-        // halo = max(kx,ky) → ROI 내부 결과는 전체 필터와 동일 (커널 도달범위 확보).
+        // Region bounding box + halo로 서브이미지 필터 → 마스크=1인 픽셀만 결과 적용.
         const int halo = std::max(kx, ky);
-        // 좌표 원점(Align) 보정: ROI 좌표는 원점 기준 상대값 → 원점만큼 이동. 원점 0이면 기존과 동일.
-        const int offCol = static_cast<int>(std::lround(src.originCol));
-        const int offRow = static_cast<int>(std::lround(src.originRow));
-        for (const auto& roi : m_params.rois) {
-            int rx0 = std::clamp(static_cast<int>(roi.xPct * W)               + offCol, 0, W - 1);
-            int ry0 = std::clamp(static_cast<int>(roi.yPct * H)               + offRow, 0, H - 1);
-            int rx1 = std::clamp(static_cast<int>((roi.xPct + roi.wPct) * W)  + offCol, 0, W);
-            int ry1 = std::clamp(static_cast<int>((roi.yPct + roi.hPct) * H)  + offRow, 0, H);
-            if (rx1 <= rx0 || ry1 <= ry0) continue;
-
-            int ex0 = std::max(0, rx0 - halo), ey0 = std::max(0, ry0 - halo);
-            int ex1 = std::min(W, rx1 + halo), ey1 = std::min(H, ry1 + halo);
+        const Rect2D bbox = rgn->boundingBox();
+        if (bbox.w > 0 && bbox.h > 0) {
+            int ex0 = std::max(0, bbox.x - halo);
+            int ey0 = std::max(0, bbox.y - halo);
+            int ex1 = std::min(W, bbox.x + bbox.w + halo);
+            int ey1 = std::min(H, bbox.y + bbox.h + halo);
             cv::Mat sub = full(cv::Rect(ex0, ey0, ex1 - ex0, ey1 - ey0)).clone();
             cv::Mat subRes = filterRegion(sub);
 
-            for (int row = ry0; row < ry1; ++row) {
+            for (int row = bbox.y; row < bbox.y + bbox.h; ++row) {
                 const float* sr = subRes.ptr<float>(row - ey0);
                 float* dz = &heightmap->data[static_cast<size_t>(row) * W];
-                for (int col = rx0; col < rx1; ++col)
-                    dz[col] = sr[col - ex0];
+                for (int col = bbox.x; col < bbox.x + bbox.w; ++col) {
+                    if (rgn->contains(col, row))
+                        dz[col] = sr[col - ex0];
+                }
             }
         }
     }
-    out->heightmap = heightmap;
+    out->setHeightMap(heightmap);
     return { ToolStatus::Ok, "", out };
 }
 
@@ -227,7 +223,10 @@ static std::vector<float> makeGaussianKernel(int size) {
 ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
     VISION_LOG_DEBUG("NoiseFilter::filter3D radius={} minNeighbors={}",
                      m_params.radius, m_params.minNeighbors);
-    const auto& src = *input->cloud;
+    auto inCloud = input->inCloud(0);
+    if (!inCloud)
+        return { ToolStatus::Fail, "NoiseFilter::filter3D: PointCloud3D 입력이 없습니다" };
+    const auto& src = *inCloud;
 
     // Guard against excessive computation for very large clouds
     const size_t maxBruteForce = 50000;
@@ -240,9 +239,11 @@ ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
     float r2 = m_params.radius * m_params.radius;
     int minN = m_params.minNeighbors;
 
-    auto out = std::make_shared<VisionData>(*input);
-    out->cloud = std::make_shared<PointCloud3D>();
-    out->cloud->frameId = src.frameId;
+    auto out = std::make_shared<VisionData>();
+    out->sourceId = input->sourceId;
+    out->frames   = input->frames;
+    out->setCloud(std::make_shared<PointCloud3D>());
+    out->clouds[0]->frameId = src.frameId;
 
     for (size_t i = 0; i < src.points.size(); ++i) {
         const auto& p = src.points[i];
@@ -255,11 +256,11 @@ ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
                 if (++cnt >= minN) break;
             }
         }
-        if (cnt >= minN) out->cloud->points.push_back(p);
+        if (cnt >= minN) out->clouds[0]->points.push_back(p);
     }
 
     VISION_LOG_DEBUG("NoiseFilter::filter3D {} → {} points",
-                     src.points.size(), out->cloud->points.size());
+                     src.points.size(), out->clouds[0]->points.size());
     return { ToolStatus::Ok, "", out };
 }
 

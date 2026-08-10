@@ -5,16 +5,10 @@ export interface MeasureResult {
   tool: string
   ok: boolean
   msg: string
-  heightDiff?: number
-  thicknessMm?: number
-  minMm?: number
-  maxMm?: number
   pass?: boolean
-  // PlaneFit
-  planeA?: number; rmse?: number; tiltDeg?: number
-  // HeightFromPlane
-  measures?: { distance: number; pointCount: number; pass: boolean }[]
-  allPass?: boolean
+  // Generic named measurements / decisions
+  measurements?: { name: string; value: number; unit: string; valid: boolean }[]
+  decisions?: { name: string; pass: boolean; reason: string; measured?: number; nominal?: number; tolerance?: number }[]
 }
 
 export interface LogEntry {
@@ -42,26 +36,24 @@ function Row({ label, value, pass }: { label: string; value: string; pass: boole
 function ResultRows({ r }: { r: MeasureResult }) {
   if (!r.ok) return <Row label={r.tool} value={r.msg || 'Fail'} pass={false} />
 
-  if (r.tool === 'PlaneFit') {
-    if (r.planeA === undefined) return <Row label="PlaneFit" value="OK" pass />
-    return <>
-      <Row label="Plane RMSE" value={`${r.rmse?.toFixed(4)} mm`} pass />
-      <Row label="기울기" value={`${r.tiltDeg?.toFixed(3)}°`} pass />
-    </>
-  }
-  if (r.tool === 'HeightMeasure') {
-    if (!r.measures || r.measures.length === 0) return <Row label="Height" value="—" pass={false} />
-    return <>
-      {r.measures.map((m, i) => (
-        <Row key={i}
-          label={`Meas ${i + 1}`}
-          value={m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
-          pass={m.pass}
-        />
-      ))}
-    </>
-  }
-  return <Row label={r.tool} value="OK" pass />
+  const meas = r.measurements ?? []
+  const decs = (r.decisions ?? []).filter(d => d.name !== 'allPass')
+
+  if (meas.length === 0 && decs.length === 0)
+    return <Row label={r.tool} value="OK" pass />
+
+  return <>
+    {meas.filter(m => m.valid).map((m, i) => (
+      <Row key={`m-${i}`}
+        label={m.name}
+        value={`${m.value.toFixed(m.unit === 'pts' ? 0 : 4)}${m.unit ? ' ' + m.unit : ''}`}
+        pass
+      />
+    ))}
+    {decs.map((d, i) => (
+      <Row key={`d-${i}`} label={d.name} value={d.pass ? 'PASS' : 'FAIL'} pass={d.pass} />
+    ))}
+  </>
 }
 
 export default function ResultPanel({ results, logs, overallPass, onClear }: Props) {

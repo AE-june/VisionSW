@@ -66,11 +66,8 @@ public:
     std::string name() const override { return "HeightMeasure"; }
     ToolResult  execute(VisionDataPtr input) override;
 
-    const HeightFromPlaneResult& lastResult() const { return m_result; }
-
 private:
     HeightFromPlaneParams m_params;
-    HeightFromPlaneResult m_result;
 
     using Pt3 = std::array<double, 3>;   // {x_mm, y_mm, z_mm}
 

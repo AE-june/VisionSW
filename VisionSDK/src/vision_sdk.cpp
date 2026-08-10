@@ -28,27 +28,39 @@ static void setMsg(VsdkResult* r, const std::string& m) {
 }
 
 // VsdkHeightMap(+선택 평면) → VisionData 입력 (복사).
+// Phase 2 규약: 툴이 in(port) 헬퍼로 읽으므로 inputs[0]/inputs[1]에 배치한다.
 static VisionDataPtr makeInput(const VsdkHeightMap* z, const VsdkPlane* p) {
     if ((!z || !z->data) && (!p || !p->valid)) return nullptr;
     auto d = std::make_shared<VisionData>();
+
+    // port 0 — HeightMap
     if (z && z->data) {
+        auto port0 = std::make_shared<VisionData>();
         auto zm = std::make_shared<HeightMap>();
         zm->width = z->width;         zm->height = z->height;
         zm->xResMm = z->xResMm;       zm->yResMm = z->yResMm;   zm->zResMm = z->zResMm;
         zm->zZeroCount = z->zZeroCount; zm->originCol = z->originCol; zm->originRow = z->originRow;
         zm->data.assign(z->data, z->data + (size_t)z->width * z->height);
-        d->heightmap = zm;
+        port0->setHeightMap(zm);
+        d->inputs.push_back(port0);
+    } else {
+        d->inputs.push_back(nullptr);   // port 0 자리 확보
     }
-    if (p && p->valid)
-        d->setPlane(std::make_shared<PlaneModel>(PlaneModel{ p->a, p->b, p->c, true }));
+
+    // port 1 — Plane (Level)
+    if (p && p->valid) {
+        auto port1 = std::make_shared<VisionData>();
+        port1->setPlane(std::make_shared<PlaneModel>(PlaneModel{ p->a, p->b, p->c, true }));
+        d->inputs.push_back(port1);
+    }
     return d;
 }
 
 // VisionData 출력 → VsdkResult 페이로드 (SDK가 malloc 소유).
 static void marshalOut(const VisionDataPtr& o, VsdkResult* r) {
     if (!o) return;
-    if (o->heightmap) {
-        const auto& z = *o->heightmap;
+    if (o->heightmap0()) {
+        const auto& z = *o->heightmap0();
         const size_t n = (size_t)z.width * z.height;
         r->heightmap.width = z.width;       r->heightmap.height = z.height;
         r->heightmap.xResMm = z.xResMm;     r->heightmap.yResMm = z.yResMm; r->heightmap.zResMm = z.zResMm;
@@ -56,8 +68,8 @@ static void marshalOut(const VisionDataPtr& o, VsdkResult* r) {
         r->heightmap.data = (float*)std::malloc(n * sizeof(float));
         if (r->heightmap.data) std::memcpy(r->heightmap.data, z.data.data(), n * sizeof(float));
     }
-    if (o->cloud) {
-        const auto& c = *o->cloud;
+    if (o->cloud0()) {
+        const auto& c = *o->cloud0();
         const int n = (int)c.points.size();
         r->cloud.count = n;
         r->cloud.xyz = (float*)std::malloc((size_t)n * 3 * sizeof(float));
@@ -73,11 +85,12 @@ static void marshalOut(const VisionDataPtr& o, VsdkResult* r) {
         r->plane.a = pl.a; r->plane.b = pl.b; r->plane.c = pl.c;
         r->plane.valid = pl.valid ? 1 : 0;
     }
-    if (o->heights) {
-        const int n = (int)o->heights->size();
+    if (!o->measurements.empty()) {
+        const int n = (int)o->measurements.size();
         r->heights.count = n;
         r->heights.values = (double*)std::malloc((size_t)n * sizeof(double));
-        if (r->heights.values) std::memcpy(r->heights.values, o->heights->data(), n * sizeof(double));
+        if (r->heights.values)
+            for (int i = 0; i < n; ++i) r->heights.values[i] = o->measurements[i].value;
     }
 }
 
@@ -135,8 +148,6 @@ int vsdk_align        (const VsdkHeightMap* in, const char* p, VsdkResult* o) { 
 int vsdk_plane_fit    (const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("PlaneFit",       p, in, nullptr, o); }
 int vsdk_heightmap_to_cloud(const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("HeightMapToCloud",    p, in, nullptr, o); }
 int vsdk_thickness    (const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("ThicknessMeasure", p, in, nullptr, o); }
-int vsdk_height_measure(const VsdkHeightMap* in, const VsdkPlane* pl, const char* p, VsdkResult* o) { return vsdk_run("HeightMeasure", p, in, pl, o); }
-
 /* ── 조직화된 point cloud 이중노출 머지 (per-point X 보존) ──────────────────────
  *  xyz: numProfiles*width 개 점(각 x,y,z 3연속 float, row-major). 짝수 프로파일=저노출,
  *       홀수=고노출. 무효점(NaN/Inf/−999999/(0,0,0))은 Z=NaN로 취급.
