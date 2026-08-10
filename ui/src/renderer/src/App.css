@@ -227,6 +227,7 @@
 }
 
 .toolbox-item {
+  position: relative;
   padding: 6px 16px;
   font-size: 12px;
   color: #ccc;
@@ -238,6 +239,24 @@
   color: #00bcd4;
 }
 .toolbox-item:active { cursor: grabbing; }
+
+/* ── 툴박스 툴팁 (fixed — overflow-y:auto 클리핑 회피) ── */
+.toolbox-tooltip {
+  position: fixed;
+  transform: translateY(-50%);
+  background: #1a1a2e;
+  border: 1px solid #3a3a5a;
+  border-radius: 5px;
+  color: #ddd;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 7px 11px;
+  max-width: 230px;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.55);
+  white-space: normal;
+}
 
 /* ── 노드 캔버스 ── */
 .node-canvas {

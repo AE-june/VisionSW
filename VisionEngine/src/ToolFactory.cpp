@@ -2,7 +2,7 @@
 #include "HeightMapCache.h"
 #include "NoiseFilter.h"
 #include "PlaneFitTool.h"
-#include "HeightFromPlaneTool.h"
+#include "LineFitTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
 #include "AlignTool.h"
@@ -10,7 +10,17 @@
 #include "CreateRoiTool.h"
 #include "ReduceDomainTool.h"
 #include "RegionMeasureTool.h"
+#include "ValidRegionTool.h"
+#include "LevelTool.h"
+#include "SurfaceCropTool.h"
+#include "SurfaceResampleTool.h"
+#include "SurfaceSubtractTool.h"
+#include "ExtractProfileTool.h"
+#include "ProfileFeatureTool.h"
+#include "CompareTool.h"
+#include "CombineDecisionTool.h"
 #include "ExposureMergeCore.h"
+#include "HeightMapSidecar.h"
 #include "IHeightMapLoader.h"
 #include "VisionData.h"
 #include "HeightMap.h"
@@ -175,7 +185,7 @@ public:
                 it->second->yResMm = m_yResMm;
                 it->second->zResMm = m_zResMm;
                 auto data = std::make_shared<VisionData>();
-                data->heightmap = it->second;
+                data->setHeightMap(it->second);
                 data->sourceId = m_path;
                 VISION_LOG_INFO("HeightMapLoader: cache hit {} (res x{} y{} z{})", m_path, m_xResMm, m_yResMm, m_zResMm);
                 return { ToolStatus::Ok, "", data };
@@ -187,13 +197,17 @@ public:
         if (!heightmap)
             return { ToolStatus::Fail, "HeightMapLoader: 파일을 읽을 수 없습니다: " + m_path };
 
+        // 사이드카 JSON이 있으면 메타데이터를 덮어씀 (HeightMapSaver가 함께 저장한 것)
+        if (auto meta = readSidecar(m_path))
+            applySidecar(*heightmap, *meta);
+
         {
             std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
             heightmapCachePut(m_path, heightmap);
         }
         VISION_LOG_INFO("HeightMapLoader: {}x{} loaded from {}", heightmap->width, heightmap->height, m_path);
         auto data = std::make_shared<VisionData>();
-        data->heightmap = heightmap;
+        data->setHeightMap(heightmap);
         data->sourceId = m_path;
         return { ToolStatus::Ok, "", data };
     }
@@ -203,29 +217,27 @@ public:
 //   splitCount=2: 짝/홀 행 = 저/장 노출. splitCount=3: r%3=0/1/2 = 저/중/장 노출.
 //   행 = r*splitCount + phase. 행확장/보간 없이 각 노출을 n(=h/splitCount)행 그대로 출력.
 //   출력: outputStage로 노출 하나 선택. (머지/리플렉션 제거는 ExposureMerge2/3 노드가 담당)
+// A5-6: outputStage 파라미터 제거 → stages에 전부 싣고 UI가 고른다.
+//   주 출력은 항상 stage 0(저노출). noPreview 시 stages 생략(배치 가속).
 class ExposureMergeTool : public IAlgorithmTool {
-    int   m_splitCount;    // 2 또는 3
-    int   m_outputStage;   // 0..splitCount-1 (0=저노출 … 마지막=장노출)
-    bool  m_skipStages;    // true면 결과창 미리보기용 다른 단계는 만들지 않음(배치 가속/메모리 절약)
+    int   m_splitCount;
+    bool  m_noPreview;
 public:
-    ExposureMergeTool(int splitCount, int outputStage, bool skipStages)
-        : m_splitCount(std::clamp(splitCount, 2, 3)),
-          m_outputStage(outputStage), m_skipStages(skipStages) {}
+    ExposureMergeTool(int splitCount, bool noPreview)
+        : m_splitCount(std::clamp(splitCount, 2, 3)), m_noPreview(noPreview) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
+        if (!input || !input->inHeightMap(0))
             return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
 
-        const auto& zm = *input->heightmap;
+        const auto& zm = *input->inHeightMap(0);
         const int w = zm.width, h = zm.height;
         const int sc = m_splitCount;
         if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
 
-        const int n = h / sc;                              // 노출별 출력 행 수
-        const int si = std::clamp(m_outputStage, 0, sc - 1);
+        const int n = h / sc;
 
-        // 노출 하나를 n×w로 추출 (행 = r*sc + phase). 행확장 없음.
         auto extract = [&](int phase) {
             std::vector<float> half((size_t)n * w);
             for (int r = 0; r < n; ++r)
@@ -239,7 +251,7 @@ public:
             z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
             z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
             z->originCol=zm.originCol; z->originRow=zm.originRow;
-            z->data = std::move(half);   // 이미 n×w
+            z->data=std::move(half);
             return z;
         };
 
@@ -249,85 +261,81 @@ public:
 
         auto data = std::make_shared<VisionData>();
         data->sourceId = input->sourceId;
-        if (m_skipStages) {
-            data->heightmap = makeZRaw(extract(si));   // 선택 노출만 생성(메모리 절약)
-        } else {
+        // 주 출력 = 항상 stage 0 (저노출)
+        auto z0 = makeZRaw(extract(0));
+        data->setHeightMap(z0);
+        if (!m_noPreview) {
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
-            for (int p = 0; p < sc; ++p) {
-                auto z = makeZRaw(extract(p));
-                if (p == si) data->heightmap = z;
-                data->stages->push_back({ labels[p], z });
-            }
+            data->stages->push_back({ labels[0], z0 });
+            for (int p = 1; p < sc; ++p)
+                data->stages->push_back({ labels[p], makeZRaw(extract(p)) });
         }
-        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행 (출력 {})", w, h, sc, n, si);
+        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
         return { ToolStatus::Ok, "", data };
     }
 };
 
-// ── RowStretch (행 늘리기): 지정 ROI(세로 밴드, 가로 전체)의 행을 배수만큼 선형보간
-//    업샘플. 밴드마다 개별 배수. 밴드 밖은 ×1 그대로. 출력 높이 = Σ(행별 배수).
-//    (기존 이중노출 분리 노드가 저노출 상/하단을 늘리던 방식을 ROI로 일반화 — 홀짝 분리 없음)
+// ── RowStretch (행 늘리기): Region 포트(포트 1, 선택)가 지정한 행을 scale배 선형보간 업샘플.
+//    A5-4: rois 파라미터 제거 → Region 포트. 없으면 전체 이미지 행 × scale.
+//    Region이 있으면 해당 행(Region 내 픽셀이 1개 이상 있는 행)만 늘리고 나머지는 × 1.
 class RowStretchTool : public IAlgorithmTool {
+    int m_scale;
 public:
-    struct Band { float yPct, hPct; int scale; };
-private:
-    std::vector<Band> m_bands;
-public:
-    explicit RowStretchTool(std::vector<Band> bands) : m_bands(std::move(bands)) {}
+    explicit RowStretchTool(int scale) : m_scale(std::max(1, scale)) {}
     std::string name() const override { return "RowStretch"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
-            return { ToolStatus::Fail, "행 늘리기: HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->heightmap;
+        if (!input || !input->inHeightMap(0))
+            return { ToolStatus::Fail, "RowStretch: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->inHeightMap(0);
         const int w = zm.width, h = zm.height;
-        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "행 늘리기: 빈 HeightMap" };
+        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "RowStretch: 빈 HeightMap" };
         const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const auto region = input->inRegion(1);
 
-        // 입력 행마다 배수 결정 (밴드에 속하면 그 밴드 배수, 겹치면 뒤 밴드 우선, 아니면 1)
-        //   밴드 yPct는 좌표 원점(Align) 기준 상대값 → 원점 행만큼 이동. 원점 0이면 기존과 동일.
-        const int offRow = (int)std::lround(zm.originRow);
         std::vector<int> rowScale((size_t)h, 1);
-        for (const auto& b : m_bands) {
-            int y0 = std::clamp((int)(b.yPct * h)            + offRow, 0, h);
-            int y1 = std::clamp((int)((b.yPct + b.hPct) * h) + offRow, 0, h);
-            int s  = std::max(1, b.scale);
-            for (int r = y0; r < y1; ++r) rowScale[r] = s;
+        if (region && !region->empty()) {
+            const int rh = region->height, rw = region->width;
+            for (int r = 0; r < h && r < rh; ++r)
+                for (int c = 0; c < w && c < rw; ++c)
+                    if (region->contains(c, r)) { rowScale[r] = m_scale; break; }
+        } else {
+            std::fill(rowScale.begin(), rowScale.end(), m_scale);
         }
+
         size_t outH = 0; for (int r = 0; r < h; ++r) outH += (size_t)rowScale[r];
-
         auto z = std::make_shared<HeightMap>();
-        z->width = w; z->height = (int)outH;
-        z->xResMm = zm.xResMm; z->yResMm = zm.yResMm;   // yRes는 기존 노드와 동일하게 유지
-        z->zResMm = zm.zResMm; z->zZeroCount = zm.zZeroCount;
-        z->originCol = zm.originCol; z->originRow = zm.originRow;
-        z->data.assign((size_t)outH * w, NaN);
+        z->width=w; z->height=(int)outH;
+        z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
+        z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
+        z->originCol=zm.originCol; z->originRow=zm.originRow;
+        z->data.assign((size_t)outH*w, NaN);
 
-        auto at = [&](int r, int c){ return zm.data[(size_t)r * w + c]; };
-        size_t outRow = 0;
-        for (int r = 0; r < h; ++r) {
-            const int s = rowScale[r];
-            for (int k = 0; k < s; ++k) {
-                float* dst = &z->data[outRow * w];
-                if (k == 0 || r + 1 >= h) {          // 원본 행 그대로 (마지막 행도 그대로)
-                    std::copy(&zm.data[(size_t)r * w], &zm.data[(size_t)r * w + w], dst);
-                } else {                              // r ~ r+1 선형보간 (NaN 인지)
-                    const float t = (float)k / s;
-                    for (int c = 0; c < w; ++c) {
-                        float a = at(r, c), b = at(r + 1, c);
-                        if      (!std::isnan(a) && !std::isnan(b)) dst[c] = a * (1.f - t) + b * t;
-                        else if (!std::isnan(a))                    dst[c] = a;
-                        else                                        dst[c] = b;
+        auto at=[&](int r, int c){ return zm.data[(size_t)r*w+c]; };
+        size_t outRow=0;
+        for (int r=0; r<h; ++r) {
+            const int s=rowScale[r];
+            for (int k=0; k<s; ++k) {
+                float* dst=&z->data[outRow*w];
+                if (k==0 || r+1>=h) {
+                    std::copy(&zm.data[(size_t)r*w], &zm.data[(size_t)r*w+w], dst);
+                } else {
+                    const float t=(float)k/s;
+                    for (int c=0; c<w; ++c) {
+                        float a=at(r,c), b=at(r+1,c);
+                        if (!std::isnan(a)&&!std::isnan(b)) dst[c]=a*(1.f-t)+b*t;
+                        else if (!std::isnan(a)) dst[c]=a;
+                        else dst[c]=b;
                     }
                 }
                 ++outRow;
             }
         }
 
-        auto data = std::make_shared<VisionData>();
-        data->heightmap = z;
-        data->sourceId = input->sourceId;
-        VISION_LOG_INFO("RowStretch: {}x{} → {}x{} (밴드 {}개)", w, h, w, (int)outH, (int)m_bands.size());
+        auto data=std::make_shared<VisionData>();
+        data->setHeightMap(z);
+        data->sourceId=input->sourceId;
+        VISION_LOG_INFO("RowStretch: {}x{} → {}x{} (scale={})", w, h, w, (int)outH, m_scale);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -336,29 +344,27 @@ public:
 //    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
 //    규칙: 겹침은 저노출 우선(리플 자동배제), fill은 신뢰 씨앗에서 연결성으로 검증.
 //    [증분1] ① 연속성 주력. ② 신뢰표면편차+I/LLT 게이팅, I중앙값 홀짝판별, 자동보정은 추후.
+// A5-1: halfRes=true → 새 프레임 정의(nodeId가 있을 때).
+// A5-2: chunkMode/chunkRows/overlapRows 레시피에서 제거 → 엔진 자동 판단(n > 4096 시 청크).
 class DualExposureMergeTool : public IAlgorithmTool {
-    float m_matchTol;   // 겹침 일치 허용(카운트) — 씨앗/오프셋 추정용
-    float m_reflTol;    // 리플 허용(카운트) — ② 예약
+    float m_matchTol;
+    float m_reflTol;
     float m_tolX, m_tolY;
     int   m_gapK;
     bool  m_halfRes;
-    bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
-    bool  m_chunkMode;   // true면 입력을 청크(겹침 포함)로 나눠 처리 — 실시간 스트리밍 대응
-    int   m_chunkRows;   // 청크당 입력 프로파일(행) 수
-    int   m_overlapRows; // 청크 위·아래 겹침 행 수 (BFS 연결성 컨텍스트용)
+    bool  m_noPreview;
+    std::string m_nodeId;  // A5-1: 새 프레임 정의용 (비어있으면 프레임 정의 안 함)
 public:
     DualExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
-                          int gapK, bool halfRes, bool noPreview,
-                          bool chunkMode, int chunkRows, int overlapRows)
+                          int gapK, bool halfRes, bool noPreview, std::string nodeId)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
-          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview),
-          m_chunkMode(chunkMode), m_chunkRows(std::max(2,chunkRows)), m_overlapRows(std::max(0,overlapRows)) {}
+          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview), m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge2"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
+        if (!input || !input->inHeightMap(0))
             return { ToolStatus::Fail, "이중노출 머지: HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->heightmap;
+        const auto& zm = *input->inHeightMap(0);
         const int w = zm.width, h = zm.height;
         if (h < 2) return { ToolStatus::Fail, "이중노출 머지: 이미지 높이가 너무 작습니다" };
         const int n = h / 2;                        // 전체 pair(출력행) 수
@@ -419,10 +425,13 @@ public:
         };
 
         // ── 전체 이미지 vs 청크 실행 ─────────────────────────────────────────────
+        // A5-2: chunkMode 자동 판단. chunkRows/overlapRows는 고정 상수.
+        const bool chunkMode = (n > 4096);
+        const int chunkRowsAuto = 1000, overlapRowsAuto = 320;
         long removed = 0; float offset = 0.f;
         std::vector<float> lowCFull, highFull, mergedFull;   // 디스플레이 단계용(전체모드 + !noPreview)
         std::vector<float> filtered;
-        if (!m_chunkMode) {
+        if (!chunkMode) {
             // 청크 미사용: 기존처럼 전체 이미지에 대해 한 번에 연산.
             const bool wantStages = !m_noPreview;
             filtered = computeFiltered(0, n, removed, offset,
@@ -431,8 +440,8 @@ public:
             // 청크 모드: 코어 청크를 위·아래 겹침만큼 확장해 처리하고, 코어 행만 출력에 기록.
             //   겹침은 BFS 연속성 컨텍스트를 청크 경계 너머까지 확보해 이음매 결함을 방지.
             filtered.assign((size_t)n*w, NaN);
-            const int chunkPairs = std::max(1, m_chunkRows/2);   // 입력행/2 = pair(출력행)
-            const int ov         = std::max(0, m_overlapRows/2); // 겹침도 pair 단위
+            const int chunkPairs = std::max(1, chunkRowsAuto/2);
+            const int ov         = std::max(0, overlapRowsAuto/2);
             // 오프셋은 두 노출의 전역 캘리브레이션 성질 → 전체 이미지에서 1회 산출해 모든 청크가 공유.
             //   (전체 모드와 동일한 flat stride-4 샘플링으로 값 일치 보장)
             float gOffset = 0.f;
@@ -457,7 +466,7 @@ public:
                     std::copy(&blk[(size_t)(r-e0)*w], &blk[(size_t)(r-e0)*w+w], &filtered[(size_t)r*w]);
                 ++nChunks;
             }
-            VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, m_chunkRows, m_overlapRows, removed);
+            VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, chunkRowsAuto, overlapRowsAuto, removed);
         }
 
         // ⑤ 출력 HeightMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
@@ -482,10 +491,18 @@ public:
         auto zFinal = makeOut(std::move(filtered));
 
         auto data = std::make_shared<VisionData>();
-        data->heightmap = zFinal;
+        data->setHeightMap(zFinal);
         data->sourceId = input->sourceId;
+        data->frames = input->frames;
+        // A5-1: halfRes=true 시 새 프레임 정의 (yResMm×2 해상도 변경을 프레임 트리에 기록)
+        if (m_halfRes && !m_nodeId.empty()) {
+            Frame f; f.id = "hm:" + m_nodeId; f.toParent = Transform2D::identity();
+            data->definedFrames.push_back(f);
+            if (data->frames) data->frames->define(f);
+            zFinal->frameId = f.id;
+        }
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — 전체모드 && !noPreview 일 때만(청크 모드는 최종만).
-        if (!m_chunkMode && !m_noPreview && !mergedFull.empty()) {
+        if (!chunkMode && !m_noPreview && !mergedFull.empty()) {
             auto zMerged=makeOut(std::move(mergedFull)), zLow=makeOut(std::move(lowCFull)), zHigh=makeOut(std::move(highFull));
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
@@ -493,7 +510,7 @@ public:
             data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
             data->stages->push_back({ "4. 장노출",             zHigh });
         }
-        if (!m_chunkMode)
+        if (!chunkMode)
             VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
                             offset, removed, m_matchTol, m_tolX, m_tolY);
         return { ToolStatus::Ok, "", data };
@@ -502,33 +519,31 @@ public:
 
 // ── TripleExposureMerge (3노출 머지): 인터리브 저/중/장(행 r%3=0/1/2) → 공유 결정 코어를
 //    캐스케이드로 2번 적용. 우선순위 저>중>장, 각 단계 오프셋 보정 + 연속성 BFS 리플렉션 제거.
-//    (기능은 ExposureMerge2와 동일; 청크 모드는 미포함 — 전체 이미지 1회 연산)
+// A5-1: halfRes=true → 새 프레임 정의(nodeId가 있을 때).
+// A5-2: chunkMode/chunkRows/overlapRows 레시피에서 제거 → 엔진 자동 판단(n > 4096 시 청크).
 class TripleExposureMergeTool : public IAlgorithmTool {
-    float m_matchTol;   // 겹침 일치 허용(카운트) — 오프셋 추정용
-    float m_reflTol;    // 리플렉션 씨앗 허용(카운트) — 클수록 고노출 fill 더 유지 → 덜 제거
+    float m_matchTol;
+    float m_reflTol;
     float m_tolX, m_tolY;
     int   m_gapK;
     bool  m_halfRes;
-    bool  m_removeReflection;  // 리플렉션 제거(연속성 BFS) on/off. off면 유효 노출 그대로 유지
-    bool  m_noPreview;  // true(검사/배치)면 최종 출력 1개만 생성, 중간 단계(디스플레이용) 생략
-    int   m_bands;      // 각 캐스케이드 단계의 행-밴드 수(병렬). 0=auto(코어수), 1=직렬(=기존 결과 검증용)
-    bool  m_chunkMode;    // true면 입력을 겹침 포함 청크로 나눠 캐스케이드(작업 메모리 바운드/스트리밍)
-    int   m_chunkRows;    // 청크당 입력 프로파일(행) 수. 출력행 = /3.
-    int   m_overlapRows;  // 청크 위·아래 확장 입력행 수(=겹침). 출력행 = /3. 실측 40출력행=전체모드 0px, 기본 60출력행(마진).
+    bool  m_removeReflection;
+    bool  m_noPreview;
+    int   m_bands;
+    std::string m_nodeId;  // A5-1: 새 프레임 정의용
 public:
     TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
                             int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands,
-                            bool chunkMode, int chunkRows, int overlapRows)
+                            std::string nodeId)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
           m_gapK(gapK), m_halfRes(halfRes), m_removeReflection(removeReflection),
-          m_noPreview(noPreview), m_bands(bands),
-          m_chunkMode(chunkMode), m_chunkRows(chunkRows), m_overlapRows(overlapRows) {}
+          m_noPreview(noPreview), m_bands(bands), m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
+        if (!input || !input->inHeightMap(0))
             return { ToolStatus::Fail, "3노출 머지: HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->heightmap;
+        const auto& zm = *input->inHeightMap(0);
         const int w = zm.width, h = zm.height;
         if (h < 3) return { ToolStatus::Fail, "3노출 머지: 이미지 높이가 너무 작습니다(≥3행)" };
         const int n = h / 3;                        // 3중 프로파일당 출력행 수
@@ -608,10 +623,13 @@ public:
         // ② 오프셋1(저↔중): 원시 저/중 stride-4 median. 양 모드 동일.
         const float ofs1 = globalOffset(lo, mid);
 
+        // A5-2: chunkMode 자동 판단. overlapRows EM3은 180.
+        const bool chunkMode = (n > 4096);
+        const int chunkRowsAuto = 1000, overlapRowsAuto = 180;
         std::vector<float> mergedA;   // 비청크 프리뷰 단계용(청크 모드에선 미materialize)
         std::vector<float> finalZ;
         float ofs2 = 0.f;
-        if (!m_chunkMode) {
+        if (!chunkMode) {
             // 전체 밴드병렬: 1단계 → mergedA(full) → 오프셋2 → 2단계 (기존 경로, 불변)
             mergedA = runStage(lo, mid, ofs1, nBands);
             lap("② 1단계(저+중) 밴드병렬");
@@ -644,8 +662,8 @@ public:
                 return fB;
             };
             finalZ.assign(BN, NaN);
-            const int chunkOut = std::max(1, m_chunkRows/3);
-            const int ov       = std::max(0, m_overlapRows/3);
+            const int chunkOut = std::max(1, chunkRowsAuto/3);
+            const int ov       = std::max(0, overlapRowsAuto/3);
             int nChunks = 0;
             for (int p0=0; p0<n; p0+=chunkOut) {
                 const int p1 = std::min(n, p0+chunkOut);
@@ -655,7 +673,7 @@ public:
                 ++nChunks;
             }
             VISION_LOG_INFO("ExposureMerge3[청크]: {}개 청크(코어 {}입력행+겹침 {}입력행), ofs1={:.1f} ofs2={:.1f}",
-                            nChunks, m_chunkRows, m_overlapRows, ofs1, ofs2);
+                            nChunks, chunkRowsAuto, overlapRowsAuto, ofs1, ofs2);
             lap("②③ 청크 캐스케이드");
         }
 
@@ -680,10 +698,18 @@ public:
         auto zFinal = makeOut(std::move(finalZ));
 
         auto data = std::make_shared<VisionData>();
-        data->heightmap = zFinal;
+        data->setHeightMap(zFinal);
         data->sourceId = input->sourceId;
+        data->frames = input->frames;
+        // A5-1: halfRes=true 시 새 프레임 정의
+        if (m_halfRes && !m_nodeId.empty()) {
+            Frame f; f.id = "hm:" + m_nodeId; f.toParent = Transform2D::identity();
+            data->definedFrames.push_back(f);
+            if (data->frames) data->frames->define(f);
+            zFinal->frameId = f.id;
+        }
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview && 비청크 일 때만(청크는 mergedA 미보관).
-        if (!m_noPreview && !m_chunkMode) {
+        if (!m_noPreview && !chunkMode) {
             // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
             auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
                  zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
@@ -736,110 +762,59 @@ static std::string buildSavePath(const std::string& folder, const std::string& f
     return (fs::u8path(folder) / (msStamp() + "_" + stem + "." + ext)).u8string();
 }
 
-// ── ImageSaver: 입력 HeightMap을 파일로 저장 (OpenCV cv::imwrite) ──────
-//   HeightMap → 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화).
-class ImageSaverTool : public IAlgorithmTool {
+// ── HeightMapSaver: HeightMap을 파일로 저장 + 사이드카 JSON 메타 ──────────
+//   HeightMap 입력만 허용. 16-bit(png/tif) 또는 8-bit(그 외, min-max 정규화).
+//   사이드카: <savePath>.meta.json — xResMm/yResMm/zResMm/zZeroCount/originCol/Row 등.
+//   HeightMapLoader가 사이드카를 인식해 왕복 불변량이 성립한다.
+class HeightMapSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
 public:
-    ImageSaverTool(std::string folder, std::string filename, std::string format)
+    HeightMapSaverTool(std::string folder, std::string filename, std::string format)
         : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)) {}
-    std::string name() const override { return "ImageSaver"; }
+    std::string name() const override { return "HeightMapSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (m_folder.empty()) return { ToolStatus::Fail, "ImageSaver: 저장 폴더가 설정되지 않았습니다" };
-        if (!input)           return { ToolStatus::Fail, "ImageSaver: 입력이 없습니다" };
+        if (m_folder.empty()) return { ToolStatus::Fail, "HeightMapSaver: 저장 폴더가 설정되지 않았습니다" };
+        if (!input)           return { ToolStatus::Fail, "HeightMapSaver: 입력이 없습니다" };
+        if (!input->inHeightMap(0)) return { ToolStatus::Fail, "HeightMapSaver: HeightMap 입력이 없습니다" };
 
+        const HeightMap& zm = *input->inHeightMap(0);
         const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
         std::string ext = m_format;
         for (auto& ch : ext) ch = (char)std::tolower(ch);
         if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
         const bool ext16 = (ext == "png" || ext == "tif" || ext == "tiff");
+        const size_t N = (size_t)zm.width * zm.height;
 
         try {
-            if (input->hasHeightMap()) {                   // HeightMap → 16bit(png/tif) 또는 8bit
-                const HeightMap& zm = *input->heightmap;
-                const size_t N = (size_t)zm.width * zm.height;
-                if (ext16) {
-                    cv::Mat m16(zm.height, zm.width, CV_16U);
-                    uint16_t* d = (uint16_t*)m16.data;
-                    for (size_t i = 0; i < N; ++i) {
-                        float v = zm.data[i];
-                        d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0 (HeightMapLoader 규약)
-                    }
-                    if (!cv::imwrite(savePath, m16)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
-                } else {
-                    float lo = 1e30f, hi = -1e30f;
-                    for (size_t i = 0; i < N; ++i) { float v = zm.data[i]; if (!std::isnan(v)) { lo = std::min(lo,v); hi = std::max(hi,v); } }
-                    float span = std::max(1e-6f, hi - lo);
-                    cv::Mat m8(zm.height, zm.width, CV_8U);
-                    for (size_t i = 0; i < N; ++i) {
-                        float v = zm.data[i];
-                        m8.data[i] = std::isnan(v) ? 0 : (uchar)std::clamp((v-lo)/span*255.f, 0.f, 255.f);
-                    }
-                    if (!cv::imwrite(savePath, m8)) return { ToolStatus::Fail, "ImageSaver: 저장 실패: " + savePath };
+            if (ext16) {
+                cv::Mat m16(zm.height, zm.width, CV_16U);
+                uint16_t* d = (uint16_t*)m16.data;
+                for (size_t i = 0; i < N; ++i) {
+                    float v = zm.data[i];
+                    d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0
                 }
+                if (!cv::imwrite(savePath, m16)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
+            } else {
+                float lo = 1e30f, hi = -1e30f;
+                for (size_t i = 0; i < N; ++i) { float v = zm.data[i]; if (!std::isnan(v)) { lo = std::min(lo,v); hi = std::max(hi,v); } }
+                float span = std::max(1e-6f, hi - lo);
+                cv::Mat m8(zm.height, zm.width, CV_8U);
+                for (size_t i = 0; i < N; ++i) {
+                    float v = zm.data[i];
+                    m8.data[i] = std::isnan(v) ? 0 : (uchar)std::clamp((v-lo)/span*255.f, 0.f, 255.f);
+                }
+                if (!cv::imwrite(savePath, m8)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
             }
-            else return { ToolStatus::Fail, "ImageSaver: 저장할 HeightMap/이미지가 입력에 없습니다" };
         } catch (const std::exception& e) {
-            return { ToolStatus::Fail, std::string("ImageSaver: ") + e.what() };
+            return { ToolStatus::Fail, std::string("HeightMapSaver: ") + e.what() };
         }
-        VISION_LOG_INFO("ImageSaver: 저장됨 → {}", savePath);
+
+        // 사이드카 메타 저장 — HeightMapLoader가 읽어 왕복 불변량 달성
+        writeSidecar(savePath, zm);
+
+        VISION_LOG_INFO("HeightMapSaver: 저장됨 → {}", savePath);
         return { ToolStatus::Ok, "", input };   // 통과 (탭 노드)
-    }
-};
-
-// ── ExposureMergeCloud: 인터리브 HeightMap(짝=저/홀=고) → 이중노출 머지 → PointCloud3D. ──
-//   공유 코어(exposureMergeDecision)로 Z 결정 후 이긴 노출 셀만 (x,y,z)mm 점 생성.
-//   VisionSW HeightMap은 균일 X(col×xRes) — per-point 보정 X는 SDK(vsdk_exposure_merge_cloud) 경로 전용.
-class ExposureMergeCloudTool : public IAlgorithmTool {
-    float m_matchTol, m_tolX, m_tolY; int m_gapK;
-public:
-    ExposureMergeCloudTool(float matchTol, float tolX, float tolY, int gapK)
-        : m_matchTol(matchTol), m_tolX(tolX), m_tolY(tolY), m_gapK(gapK) {}
-    std::string name() const override { return "ExposureMergeCloud"; }
-
-    ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
-            return { ToolStatus::Fail, "이중노출 머지(클라우드): HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->heightmap;
-        const int w = zm.width, h = zm.height;
-        if (h < 2) return { ToolStatus::Fail, "이미지 높이가 너무 작습니다" };
-        const int n = h / 2;
-        const size_t BN = (size_t)n * w;
-        const float NaN = std::numeric_limits<float>::quiet_NaN();
-        auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
-
-        // 홀짝 분리 → 공유 코어 결정
-        std::vector<float> low(BN), high(BN);
-        cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
-            for (int r = rg.start; r < rg.end; ++r)
-                for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*r,c); high[i]=at(2*r+1,c); }
-        });
-        std::vector<uint8_t> source;
-        float offset = exposureMergeDecision(low.data(), high.data(), w, n, m_matchTol, m_tolX, m_tolY, m_gapK, NaN, source);
-
-        // 이긴 노출 셀만 (x,y,z)mm 점 생성. 머지는 반해상도라 Y피치 ×2.
-        const float yRes2 = zm.yResMm * 2.f;
-        auto cloud = std::make_shared<PointCloud3D>();
-        cloud->points.reserve(BN / 2);
-        for (int r = 0; r < n; ++r) for (int c = 0; c < w; ++c) {
-            size_t i = (size_t)r*w + c;
-            uint8_t s = source[i];
-            if (s == 0) continue;
-            float zc = (s == 1) ? (low[i] - offset) : high[i];
-            if (std::isnan(zc)) continue;
-            Point3f pt;
-            pt.x = (c - zm.originCol) * zm.xResMm;
-            pt.y = (r - zm.originRow) * yRes2;
-            pt.z = (zc - zm.zZeroCount) * zm.zResMm;
-            cloud->points.push_back(pt);
-        }
-
-        auto data = std::make_shared<VisionData>();
-        data->cloud = cloud;
-        data->sourceId = input->sourceId;
-        VISION_LOG_INFO("ExposureMergeCloud: {}x{} → {} points (offset={:.1f})", w, h, (long)cloud->points.size(), offset);
-        return { ToolStatus::Ok, "", data };
     }
 };
 
@@ -853,9 +828,9 @@ public:
     std::string name() const override { return "HeightMapToCloud"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap())
+        if (!input || !input->inHeightMap(0))
             return { ToolStatus::Fail, "HeightMap→Cloud: HeightMap 입력이 필요합니다" };
-        const HeightMap& zm = *input->heightmap;
+        const HeightMap& zm = *input->inHeightMap(0);
         auto cloud = std::make_shared<PointCloud3D>();
         cloud->frameId = input->sourceId;
         cloud->points.reserve((size_t)(zm.width / m_step + 1) * (zm.height / m_step + 1));
@@ -866,7 +841,7 @@ public:
             }
         // 타입화 출력: 클라우드만 전달(다운스트림 저장/처리용). 결과창 이미지는 입력 heightmap으로 폴백.
         auto out = std::make_shared<VisionData>();
-        out->cloud    = cloud;
+        out->setCloud(cloud);
         out->sourceId = input->sourceId;
         VISION_LOG_INFO("HeightMapToCloud: {} points (step={}, {}x{})",
                         cloud->points.size(), m_step, zm.width, zm.height);
@@ -884,15 +859,15 @@ public:
     std::string name() const override { return "CloudSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (m_folder.empty())             return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
-        if (!input || !input->hasCloud()) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. HeightMap→Cloud를 먼저 연결하세요." };
+        if (m_folder.empty())              return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
+        if (!input || !input->inCloud(0)) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. HeightMap→Cloud를 먼저 연결하세요." };
 
         const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
         std::string ext = m_format;
         for (auto& ch : ext) ch = (char)std::tolower(ch);
         if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
 
-        const auto& pts = input->cloud->points;
+        const auto& pts = input->inCloud(0)->points;
         std::ofstream ofs(savePath, std::ios::binary);
         if (!ofs) return { ToolStatus::Fail, "CloudSaver: 파일을 열 수 없습니다: " + savePath };
 
@@ -918,6 +893,31 @@ public:
     }
 };
 
+// ── Collect: 여러 포트 입력의 measurements/decisions/overlays를 하나로 수집. ─────
+//   inputs[0..N-1]에 들어온 모든 측정값·판정을 합쳐 단일 VisionData로 출력.
+//   첫 번째 비-null HeightMap/Cloud를 주 출력으로 사용.
+class CollectTool : public IAlgorithmTool {
+public:
+    std::string name() const override { return "Collect"; }
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input) return { ToolStatus::Fail, "Collect: 입력이 없습니다" };
+        auto out = std::make_shared<VisionData>();
+        out->sourceId = input->sourceId;
+        out->frames   = input->frames;
+        for (const auto& inp : input->inputs) {
+            if (!inp) continue;
+            if (!out->heightmap0() && inp->heightmap0())
+                out->setHeightMap(inp->heightmap0());
+            if (!out->cloud0() && inp->cloud0())
+                out->setCloud(inp->cloud0());
+            for (const auto& m  : inp->measurements) out->measurements.push_back(m);
+            for (const auto& d  : inp->decisions)    out->decisions.push_back(d);
+            for (const auto& ov : inp->overlays)      out->overlays.push_back(ov);
+        }
+        return { ToolStatus::Ok, "", out };
+    }
+};
+
 // ── GapFill: HeightMap의 결측(NaN) 픽셀을 보간해 메움. ───────────────────────────
 //   가장 가까운 유효 픽셀까지 거리 ≤ maxGap 인 결측만 채우고, 그보다 큰 구멍(중앙)은
 //   NaN으로 남긴다(검사에서 가짜 표면을 지어내지 않기 위함).
@@ -928,19 +928,20 @@ public:
     enum class Method { Neighbor, Median, Laplace, Nearest, Idw, Linear, Anisotropic };
 private:
     Method m_method;
-    int    m_maxGap, m_minValid, m_idwRadius, m_outputStage;
+    int    m_maxGap, m_minValid, m_idwRadius;
     float  m_idwPower, m_edgeSigma;
     bool   m_noPreview;
 public:
-    GapFillTool(Method m, int maxGap, int minValid, int idwRadius, float idwPower, float edgeSigma, int outputStage, bool noPreview)
+    // A5-6: outputStage 제거 → 주 출력은 항상 stage 0(메운 결과), UI가 stages에서 선택.
+    GapFillTool(Method m, int maxGap, int minValid, int idwRadius, float idwPower, float edgeSigma, bool noPreview)
         : m_method(m), m_maxGap(std::max(1,maxGap)), m_minValid(std::max(1,minValid)),
-          m_idwRadius(std::max(1,idwRadius)), m_outputStage(outputStage), m_idwPower(idwPower),
+          m_idwRadius(std::max(1,idwRadius)), m_idwPower(idwPower),
           m_edgeSigma(edgeSigma), m_noPreview(noPreview) {}
     std::string name() const override { return "GapFill"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->hasHeightMap()) return { ToolStatus::Fail, "GapFill: HeightMap 입력이 필요합니다" };
-        const HeightMap& zm = *input->heightmap;
+        if (!input || !input->inHeightMap(0)) return { ToolStatus::Fail, "GapFill: HeightMap 입력이 필요합니다" };
+        const HeightMap& zm = *input->inHeightMap(0);
         const int w = zm.width, h = zm.height;
         const size_t N = (size_t)w * h;
         const float NaN = std::numeric_limits<float>::quiet_NaN();
@@ -1127,23 +1128,19 @@ public:
         long filled = 0;
         for (size_t i=0;i<N;++i) if (fillable[i] && !std::isnan(out[i])) ++filled;
 
-        // 출력 HeightMap (메타 유지). 미리보기 생략 모드면 실제 출력 단계 하나만 만든다.
-        const int si = std::clamp(m_outputStage, 0, 2);
+        // 출력 HeightMap (메타 유지). 주 출력은 항상 메운 결과(stage 0). UI가 stages에서 선택.
         auto mk = [&](const std::vector<float>& d){ auto z=std::make_shared<HeightMap>(zm); z->data=d; return z; };
-        std::vector<float> maskData;
-        if (si == 2 || !m_noPreview) {
-            maskData.assign(N, NaN);
-            for (size_t i=0;i<N;++i) maskData[i] = (fillable[i] && !std::isnan(out[i])) ? 1.f
-                                               : (std::isnan(src[i]) ? NaN : 0.f);
-        }
-        HeightMapPtr zFilled = (si==0 || !m_noPreview) ? mk(out) : nullptr;
-        HeightMapPtr zOrig   = (si==1 || !m_noPreview) ? mk(src) : nullptr;
-        HeightMapPtr zMask   = (si==2 || !m_noPreview) ? mk(maskData) : nullptr;
+        auto zFilled = mk(out);
 
         auto vd = std::make_shared<VisionData>();
-        vd->heightmap = (si==0) ? zFilled : (si==1) ? zOrig : zMask;
+        vd->setHeightMap(zFilled);
         vd->sourceId = input->sourceId;
+        vd->frames = input->frames;
         if (!m_noPreview) {
+            std::vector<float> maskData(N, NaN);
+            for (size_t i=0;i<N;++i) maskData[i] = (fillable[i] && !std::isnan(out[i])) ? 1.f
+                                               : (std::isnan(src[i]) ? NaN : 0.f);
+            auto zOrig = mk(src), zMask = mk(maskData);
             vd->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             vd->stages->push_back({ "1. 메운 결과", zFilled });
             vd->stages->push_back({ "2. 원본",      zOrig });
@@ -1184,32 +1181,23 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("zResMm",  0.001f));
     }
     if (type == "RowStretch") {
-        std::vector<RowStretchTool::Band> bands;
-        if (p.contains("rois") && p["rois"].is_array())
-            for (const auto& r : p["rois"])
-                bands.push_back({ r.value("yPct", 0.f), r.value("hPct", 1.f), r.value("scale", 2) });
-        return std::make_shared<RowStretchTool>(std::move(bands));
+        return std::make_shared<RowStretchTool>(p.value("scale", 2));
     }
     if (type == "ExposureMerge") {
-        // 다중노출 분리: splitCount(2/3)만큼 노출별 행 분리, outputStage로 선택.
-        // 기존 레시피 호환: splitCount 없으면 2(홀짝), outputStage는 splitCount-1로 clamp.
         return std::make_shared<ExposureMergeTool>(
             p.value("splitCount", 2),
-            p.value("outputStage", 0),
             noPreview);
     }
     if (type == "ExposureMerge2") {
         return std::make_shared<DualExposureMergeTool>(
-            p.value("matchTol",    20.0f),
-            p.value("reflTol",     -1.0f),   // <0이면 코어가 씨앗 허용을 matchTol로 폴백(기존 동작 보존). 명시하면 씨앗만 분리 제어.
-            p.value("tolX",        10.0f),
-            p.value("tolY",        100.0f),
-            p.value("gapK",        2),
-            p.value("halfRes",     true),
-            noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
-            p.value("chunkMode",   false),   // 청크 모드 off → 전체 이미지 연산(기존 동작)
-            p.value("chunkRows",   1000),    // 청크당 입력 프로파일(행) 수 (겹침 부담 희석 위해 크게)
-            p.value("overlapRows", 320));    // 청크 겹침 행 수 (리플렉션 제거 연결성 확보; 검증상 ≥320이면 전체모드와 동일)
+            p.value("matchTol", 20.0f),
+            p.value("reflTol",  -1.0f),
+            p.value("tolX",     10.0f),
+            p.value("tolY",     100.0f),
+            p.value("gapK",     2),
+            p.value("halfRes",  true),
+            noPreview,
+            p.value("_nodeId",  std::string()));
     }
     if (type == "ExposureMerge3") {
         return std::make_shared<TripleExposureMergeTool>(
@@ -1219,14 +1207,12 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("tolY",     100.0f),
             p.value("gapK",     2),
             p.value("halfRes",  true),
-            p.value("removeReflection", true),   // 리플렉션 제거 on/off
-            noPreview,    // 검사(배치)면 최종 출력 1개만 생성 → 중간단계(디스플레이) 생략
-            p.value("mergeBands", 0),    // 결정 밴드 병렬 수. 0=auto(코어수), 1=직렬(검증용)
-            p.value("chunkMode",   false),   // 청크 캐스케이드(작업메모리 바운드/스트리밍)
-            p.value("chunkRows",   1000),    // 청크당 입력행 수(출력=/3)
-            p.value("overlapRows", 180));    // 겹침 입력행(출력=/3). 실측 40출력행=0px, 기본 60출력행(마진))
+            p.value("removeReflection", true),
+            noPreview,
+            p.value("mergeBands", 0),
+            p.value("_nodeId",  std::string()));
     }
-    if (type == "ImageSaver") {
+    if (type == "HeightMapSaver") {
         // folder(필수)+filename(선택)+format. 구버전 호환: path만 있으면 분해.
         std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "png");
         if (folder.empty()) {
@@ -1238,15 +1224,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 if (!e.empty()) format = e;
             }
         }
-        return std::make_shared<ImageSaverTool>(folder, filename, format);
+        return std::make_shared<HeightMapSaverTool>(folder, filename, format);
     }
     if (type == "HeightMapToCloud") {
         return std::make_shared<HeightMapToCloudTool>(p.value("step", 1));
-    }
-    if (type == "ExposureMergeCloud") {
-        return std::make_shared<ExposureMergeCloudTool>(
-            p.value("matchTol", 20.0f), p.value("tolX", 5.0f),
-            p.value("tolY", 30.0f), p.value("gapK", 0));
     }
     if (type == "GapFill") {
         std::string ms = p.value("method", "neighbor");
@@ -1263,7 +1244,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("idwRadius", 8),
             p.value("idwPower", 2.0f),
             p.value("edgeSigma", 30.0f),
-            p.value("outputStage", 0),
             noPreview);
     }
     if (type == "CloudSaver") {
@@ -1293,34 +1273,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.sigmaRangeMm = p.value("sigmaRangeMm", 0.02f);
         params.radius       = p.value("radius",       1.0f);
         params.minNeighbors = p.value("minNeighbors", 5);
-        // rois: 사각형만 (비어있으면 전체 이미지에 필터 적용)
-        if (p.contains("rois") && p["rois"].is_array()) {
-            for (const auto& r : p["rois"]) {
-                if (r.value("shape", std::string("rect")) != "rect") continue;
-                NoiseFilter::RoiRect roi;
-                roi.xPct = r.value("xPct", 0.f);
-                roi.yPct = r.value("yPct", 0.f);
-                roi.wPct = r.value("wPct", 1.f);
-                roi.hPct = r.value("hPct", 1.f);
-                params.rois.push_back(roi);
-            }
-        }
         return std::make_shared<NoiseFilter>(params);
     }
     if (type == "PlaneFit") {
         PlaneFitParams params;
-
-        // rois 배열: 모두 reference ROI (평면 피팅 전용), xPct/yPct/wPct/hPct
-        if (p.contains("rois") && p["rois"].is_array()) {
-            for (const auto& r : p["rois"]) {
-                PlaneFitParams::ROI roi;
-                roi.xPct = r.value("xPct", 0.f);
-                roi.yPct = r.value("yPct", 0.f);
-                roi.wPct = r.value("wPct", 1.f);
-                roi.hPct = r.value("hPct", 1.f);
-                params.refRois.push_back(roi);
-            }
-        }
 
         std::string algo = p.value("algorithm", "LeastSquares");
         if      (algo == "RANSAC") params.algorithm = PlaneFitParams::Algorithm::RANSAC;
@@ -1333,70 +1289,42 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
 
         return std::make_shared<PlaneFitTool>(params);
     }
-    if (type == "HeightMeasure") {
-        HeightFromPlaneParams params;
-
-        // rois 배열: type=='mask'는 제외 영역, 그 외는 measure. shape=rect/circle/polygon.
-        if (p.contains("rois") && p["rois"].is_array()) {
-            for (const auto& r : p["rois"]) {
-                HeightFromPlaneParams::ROI roi;
-                roi.xPct = r.value("xPct", 0.f);
-                roi.yPct = r.value("yPct", 0.f);
-                roi.wPct = r.value("wPct", 1.f);
-                roi.hPct = r.value("hPct", 1.f);
-                const std::string shape = r.value("shape", std::string("rect"));
-                roi.isCircle = (shape == "circle");
-                if (shape == "polygon" && r.contains("points") && r["points"].is_array())
-                    for (const auto& pt : r["points"])
-                        roi.poly.push_back({ pt.value("x", 0.f), pt.value("y", 0.f) });
-                if (r.value("type", std::string("measure")) == "mask")
-                    params.maskRois.push_back(roi);
-                else
-                    params.measureRois.push_back(roi);
-            }
-        }
-
-        std::string agg = p.value("aggregation", "Mean");
-        if      (agg == "Max")        params.aggregation = HeightFromPlaneParams::Aggregation::Max;
-        else if (agg == "HighTail")   params.aggregation = HeightFromPlaneParams::Aggregation::HighTail;
-        else if (agg == "Percentile") params.aggregation = HeightFromPlaneParams::Aggregation::Percentile;
-        else                          params.aggregation = HeightFromPlaneParams::Aggregation::Mean;
-
-        params.highTailPct  = p.value("highTailPct",  20.f);
-        params.useTolerance = p.value("useTolerance", false);
-        params.nominalMm    = p.value("nominalMm",    0.f);
-        params.toleranceMm  = p.value("toleranceMm",  0.05f);
-
-        return std::make_shared<HeightFromPlaneTool>(params);
+    if (type == "LineFit") {
+        LineFitParams params;
+        std::string feat = p.value("feature", "ridge");
+        if      (feat == "valley") params.feature = LineFeature::Valley;
+        else if (feat == "edge")   params.feature = LineFeature::Edge;
+        else                       params.feature = LineFeature::Ridge;
+        std::string sdir = p.value("scanDir", "lr");
+        if      (sdir == "rl") params.scanDir = LineScanDir::Rl;
+        else if (sdir == "tb") params.scanDir = LineScanDir::Tb;
+        else if (sdir == "bt") params.scanDir = LineScanDir::Bt;
+        else                   params.scanDir = LineScanDir::Lr;
+        params.threshold  = p.value("threshold", 0.f);
+        params.risingEdge = p.value("risingEdge", true);
+        params.fitMethod  = (p.value("fitMethod", std::string("leastSquares")) == "ransac")
+                            ? LineFitMethod::Ransac : LineFitMethod::LeastSquares;
+        params.ransacTolMm = p.value("ransacTolMm", 0.5f);
+        params.ransacIters = p.value("ransacIters", 100);
+        return std::make_shared<LineFitTool>(params);
     }
     if (type == "LineCenter") {
         LineCenterParams params;
-        // rois 배열 → 각각 검색 영역 (xPct/yPct/wPct/hPct/angleDeg)
-        if (p.contains("rois") && p["rois"].is_array()) {
-            for (const auto& r : p["rois"]) {
-                LineCenterParams::ROI roi;
-                roi.xPct = r.value("xPct", 0.f);
-                roi.yPct = r.value("yPct", 0.f);
-                roi.wPct = r.value("wPct", 1.f);
-                roi.hPct = r.value("hPct", 1.f);
-                roi.angleDeg = r.value("angleDeg", 0.f);
-                roi.polarity = (r.value("polarity", "d2l") == "l2d")
-                             ? Polarity::LightToDark : Polarity::DarkToLight;
-                params.rois.push_back(roi);
-            }
-        }
         std::string sdir = p.value("scanDir", "lr");
         if      (sdir == "rl") params.scanDir = ScanDir::Rl;
         else if (sdir == "tb") params.scanDir = ScanDir::Tb;
         else if (sdir == "bt") params.scanDir = ScanDir::Bt;
         else                   params.scanDir = ScanDir::Lr;
-        params.threshold = p.value("threshold", 1.f);
-        params.xRoi = p.value("xRoi", 0);
-        params.yRoi = p.value("yRoi", 0);
+        std::string pol = p.value("polarity", "d2l");
+        params.polarity   = (pol == "l2d") ? Polarity::LightToDark : Polarity::DarkToLight;
+        params.threshold  = p.value("threshold", 1.f);
         return std::make_shared<LineCenterTool>(params);
     }
     if (type == "Align") {
-        return std::make_shared<AlignTool>();
+        AlignParams ap;
+        ap.useX = p.value("useX", true);
+        ap.useY = p.value("useY", true);
+        return std::make_shared<AlignTool>(ap);
     }
     if (type == "CsvWriter") {
         CsvWriterParams params;
@@ -1407,16 +1335,57 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
 
     if (type == "Threshold") {
         ThresholdParams params;
-        params.channel     = p.value("channel", 0);
-        params.thresholdMm = p.value("thresholdMm", 0.f);
-        params.keepAbove   = p.value("keepAbove", true);
+        params.channel      = p.value("channel", 0);
+        params.thresholdMm  = p.value("thresholdMm", 0.f);
+        params.thresholdRaw = p.value("thresholdRaw", 0.f);
+        params.keepAbove    = p.value("keepAbove", true);
+        params.mode = (p.value("thresholdMode", std::string("mm")) == "raw")
+                      ? ThresholdParams::Mode::Raw : ThresholdParams::Mode::Mm;
         return std::make_shared<ThresholdTool>(params);
+    }
+    if (type == "ValidRegion") {
+        ValidRegionParams params;
+        params.channel = p.value("channel", 0);
+        params.invert  = p.value("invert", false);
+        return std::make_shared<ValidRegionTool>(params);
+    }
+    if (type == "Level") {
+        LevelParams params;
+        params.mode        = p.value("mode",        std::string("distance"));
+        params.keepInvalid = p.value("keepInvalid", true);
+        params.offsetMm    = p.value("offsetMm",    0.0);
+        return std::make_shared<LevelTool>(params);
+    }
+    if (type == "SurfaceCrop") {
+        SurfaceCropParams params;
+        params.mode       = p.value("mode",       std::string("rect"));
+        params.outsideNaN = p.value("outsideNaN", true);
+        params.nodeId     = p.value("_nodeId",    std::string());
+        if (p.contains("rect") && p["rect"].is_object()) {
+            const auto& r = p["rect"];
+            params.rect_x = r.value("x", 0);
+            params.rect_y = r.value("y", 0);
+            params.rect_w = r.value("w", 0);
+            params.rect_h = r.value("h", 0);
+        }
+        return std::make_shared<SurfaceCropTool>(params);
+    }
+    if (type == "SurfaceResample") {
+        SurfaceResampleParams params;
+        params.mode         = p.value("mode",         std::string("factor"));
+        params.factor       = p.value("factor",       2);
+        params.targetXResMm = p.value("targetXResMm", 0.f);
+        params.targetYResMm = p.value("targetYResMm", 0.f);
+        params.method       = p.value("method",       std::string("decimate"));
+        params.nodeId       = p.value("_nodeId",      std::string());
+        return std::make_shared<SurfaceResampleTool>(params);
     }
     if (type == "CreateROI") {
         CreateRoiParams params;
         if (p.contains("rois") && p["rois"].is_array()) {
             for (const auto& r : p["rois"]) {
                 CreateRoiParams::ROI roi;
+                roi.id   = r.value("id",   std::string());
                 roi.xPct = r.value("xPct", 0.f);
                 roi.yPct = r.value("yPct", 0.f);
                 roi.wPct = r.value("wPct", 1.f);
@@ -1430,13 +1399,89 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 params.rois.push_back(roi);
             }
         }
+        // 라인 밴드 모드 파라미터
+        params.bandWidthMm  = p.value("bandWidthMm",  5.f);
+        params.bandOffsetMm = p.value("bandOffsetMm", 3.f);
+        params.bandLengthMm = p.value("bandLengthMm", 10.f);
+        const std::string side = p.value("bandSide", std::string("both"));
+        if      (side == "left")  params.bandSide = CreateRoiParams::BandSide::Left;
+        else if (side == "right") params.bandSide = CreateRoiParams::BandSide::Right;
+        else                      params.bandSide = CreateRoiParams::BandSide::Both;
+        const std::string lmode = p.value("bandLenMode", std::string("line"));
+        params.bandLenMode = (lmode == "fixed") ? CreateRoiParams::BandLen::Fixed
+                                                : CreateRoiParams::BandLen::Line;
         return std::make_shared<CreateRoiTool>(params);
     }
     if (type == "ReduceDomain") {
-        return std::make_shared<ReduceDomainTool>();
+        ReduceDomainParams params;
+        params.invert = p.value("invert", false);
+        return std::make_shared<ReduceDomainTool>(params);
     }
     if (type == "RegionMeasure") {
-        return std::make_shared<RegionMeasureTool>();
+        RegionMeasureParams params;
+        params.aggregation = p.value("aggregation", std::string("Mean"));
+        params.highTailPct = p.value("highTailPct", 20.0);
+        params.percentile  = p.value("percentile",  50.0);
+        return std::make_shared<RegionMeasureTool>(params);
+    }
+
+    if (type == "Collect") {
+        return std::make_shared<CollectTool>();
+    }
+    if (type == "SurfaceSubtract") {
+        SurfaceSubtractParams params;
+        params.absolute  = p.value("absolute",  false);
+        params.nanPolicy = p.value("nanPolicy", std::string("propagate"));
+        params.nodeId    = p.value("nodeId",    std::string(""));
+        return std::make_shared<SurfaceSubtractTool>(params);
+    }
+    if (type == "ExtractProfile") {
+        ExtractProfileParams params;
+        params.mode    = p.value("mode",    std::string("axisX"));
+        params.index   = p.value("index",   0);
+        params.span    = p.value("span",    1);
+        params.repeat  = p.value("repeat",  1);
+        params.channel = p.value("channel", 0);
+        params.p0x     = p.value("p0x",     0.0);
+        params.p0y     = p.value("p0y",     0.0);
+        params.p1x     = p.value("p1x",     0.0);
+        params.p1y     = p.value("p1y",     0.0);
+        params.unit    = p.value("unit",    std::string("mm"));
+        params.count   = p.value("count",   0);
+        params.interp  = p.value("interp",  std::string("bilinear"));
+        params.nodeId  = p.value("nodeId",  std::string(""));
+        return std::make_shared<ExtractProfileTool>(params);
+    }
+    if (type == "ProfileFeature") {
+        ProfileFeatureParams params;
+        params.kind         = p.value("kind",         std::string("maxZ"));
+        params.searchFromMm = p.value("searchFromMm", 0.0);
+        params.searchToMm   = p.value("searchToMm",   0.0);
+        params.nth          = p.value("nth",           0);
+        params.percentile   = p.value("percentile",    50.0);
+        params.edgeDir      = p.value("edgeDir",       std::string("any"));
+        params.edgeThresholdMm = p.value("edgeThresholdMm", 0.05);
+        params.smoothWindow = p.value("smoothWindow",  3);
+        return std::make_shared<ProfileFeatureTool>(params);
+    }
+
+    if (type == "Compare") {
+        CompareParams params;
+        params.target    = p.value("target",    std::string(""));
+        params.mode      = p.value("mode",      std::string("tolerance"));
+        params.nominal   = p.value("nominal",   0.0);
+        params.tolerance = p.value("tolerance", 0.05);
+        params.min       = p.value("min",       0.0);
+        params.max       = p.value("max",       0.0);
+        return std::make_shared<CompareTool>(params);
+    }
+
+    if (type == "CombineDecision") {
+        CombineDecisionParams params;
+        params.mode  = p.value("mode",  std::string("all"));
+        params.count = p.value("count", 1);
+        params.name  = p.value("name",  std::string("combined"));
+        return std::make_shared<CombineDecisionTool>(params);
     }
 
     VISION_LOG_WARN("ToolFactory: unknown tool type '{}'", type);

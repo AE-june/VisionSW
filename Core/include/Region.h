@@ -24,6 +24,7 @@ struct Region {
     int height = 0;
     std::vector<uint8_t> mask;   // [row*width + col], 1=내부
     std::string frameId;         // 이 Region이 속한 HeightMap의 프레임 id. "" = 미지정
+    std::string label;           // ROI ID → RegionMeasure 측정값 이름으로 전달. "" = 미지정
 
     bool empty() const { return mask.empty(); }
 

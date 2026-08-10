@@ -27,6 +27,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <future>
 #include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
@@ -80,32 +81,6 @@ struct InputRef {
     int dstPort = 0;
 };
 
-static std::vector<std::string> topoSort(
-    const std::vector<std::string>& nodeIds,
-    const std::vector<Edge>& edges)
-{
-    std::unordered_map<std::string, int> inDeg;
-    std::unordered_map<std::string, std::vector<std::string>> adj;
-
-    for (const auto& id : nodeIds) { inDeg[id] = 0; adj[id] = {}; }
-    for (const auto& e : edges) {
-        adj[e.source].push_back(e.target);
-        inDeg[e.target]++;
-    }
-
-    std::queue<std::string> q;
-    for (const auto& [id, deg] : inDeg)
-        if (deg == 0) q.push(id);
-
-    std::vector<std::string> order;
-    while (!q.empty()) {
-        auto cur = q.front(); q.pop();
-        order.push_back(cur);
-        for (const auto& nb : adj[cur])
-            if (--inDeg[nb] == 0) q.push(nb);
-    }
-    return order;
-}
 
 // ── 노드 결과 캐시 ─────────────────────────────────────────────────────────
 //  개별 노드 실행 시, 파라미터가 바뀌지 않은 상류 노드는 재실행하지 않고 캐시 재사용.
@@ -119,6 +94,19 @@ static std::mutex g_cacheMtx;
 static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     // conn==nullptr 이면 헤드리스 실행 — 이벤트 전송/프리뷰 인코딩 생략, 결과 json만 반환.
     auto emit = [&](const std::string& s){ if (conn) conn->send_text(s); };
+
+    // schemaVersion 검사 — 구 스키마 레시피를 조용히 로드하지 않는다 (ARCH §1)
+    if (!msg.contains("schemaVersion") || msg["schemaVersion"].get<int>() < 2) {
+        const std::string ver = msg.contains("schemaVersion")
+            ? msg["schemaVersion"].dump() : "없음";
+        const std::string errMsg =
+            "이 레시피는 구 스키마입니다. 마이그레이션이 필요합니다. "
+            "(schemaVersion=" + ver + ", 필요=2)";
+        emit(json{{"event","error"},{"message",errMsg}}.dump());
+        std::cerr << "recipe rejected: " << errMsg << "\n";
+        return json{{"ok",false},{"error",errMsg}};
+    }
+
     const bool useCache = msg.value("useCache", false);
     // 배치 검사 등 화면 표시가 필요 없을 때 미리보기(PNG 인코딩+z스캔) 생략 → 대폭 가속
     const bool noPreview = msg.value("noPreview", false);
@@ -170,324 +158,292 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         }
     }
 
-    // Topological order
-    std::vector<std::string> ids;
-    for (const auto& ns : nodeSpecs) ids.push_back(ns.id);
-    auto order = topoSort(ids, edges);
-
     // Which nodes' outputs feed each node (다중 입력 지원)
     // 포트 정보 포함 — 파싱 순서(=엣지 순서) 보존 (제약 C-2: "먼저 온 것이 이김")
     std::unordered_map<std::string, std::vector<InputRef>> inputsFrom;
     for (const auto& e : edges)
         inputsFrom[e.target].push_back(InputRef{e.source, e.sourcePort, e.targetPort});
 
-    // Node outputs (이번 실행 범위) + 재실행 여부(dirty) 추적
-    std::unordered_map<std::string, VisionDataPtr> outputs;
-    std::unordered_map<std::string, bool> dirty;
+    std::vector<std::string> ids;
+    for (const auto& ns : nodeSpecs) ids.push_back(ns.id);
 
     bool pipelinePass = true;
     json results = json::array();
 
-    // Send start event
     const auto pipeStart = std::chrono::steady_clock::now();
     emit(json{{"event","start"}}.dump());
 
-    for (const auto& nodeId : order) {
-        if (nodeIdx.find(nodeId) == nodeIdx.end()) continue;
-        const auto& ns = nodeSpecs[nodeIdx.at(nodeId)];
+    // ── 데이터플로우(actor) 모델 ─────────────────────────────────────────────────
+    // 각 노드를 독립 스레드로 실행. 상류 future가 준비된 즉시 시작 — 레벨 배리어 없음.
+    // g_cacheMtx는 파이프라인 전체를 직렬화(동시 2개 파이프라인 방지), 별도 유지.
+    // 파이프라인 내 공유 상태(emit/frames/results/nodeCache)는 아래 로컬 뮤텍스로 보호.
+    struct NodeResult { VisionDataPtr data; bool dirty = true; };
 
-        // 캐시 키: 파라미터 해시 + 상류 dirty 여부
-        const std::size_t ph = std::hash<std::string>{}(ns.params.dump());
-        bool upstreamDirty = false;
-        if (inputsFrom.count(nodeId))
-            for (const auto& in : inputsFrom.at(nodeId))
-                if (dirty.count(in.source) && dirty[in.source]) { upstreamDirty = true; break; }
-
-        if (useCache && !upstreamDirty && nodeId != forceNode) {
-            auto cit = g_nodeCache.find(nodeId);
-            if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {
-                // 캐시 적중 — 재실행/재전송 없이 출력만 재사용
-                outputs[nodeId] = cit->second.output;
-                // 캐시 적중 시에도 이 노드가 정의한 프레임을 레지스트리에 복원
-                for (const auto& f : cit->second.output->definedFrames)
-                    runFrames->define(f);
-                dirty[nodeId] = false;
-                continue;
-            }
-        }
-        dirty[nodeId] = true;   // 재실행됨 → 하류도 dirty
-
-        // Log tool start
-        emit(json{
-            {"event","log"},{"level","info"},
-            {"msg", "Running " + ns.type + " [" + ns.id + "]"}
-        }.dump());
-
-        auto tool = ToolFactory::create(ns.type, ns.params, noPreview);
-        if (!tool) {
-            emit(json{
-                {"event","log"},{"level","error"},
-                {"msg", "Unknown tool type: " + ns.type}
-            }.dump());
-            pipelinePass = false;
-            continue;
-        }
-
-        // Get input data — 여러 입력 엣지의 출력을 하나로 병합
-        // (예: HeightFromPlane은 HeightMap 소스 + Plane 소스를 함께 받음)
-        VisionDataPtr inputData = nullptr;
-        if (inputsFrom.count(nodeId)) {
-            auto merged = std::make_shared<VisionData>();
-            merged->frames = runFrames;   // 실행 레지스트리 공유 (슬롯 병합 대상 아님)
-            bool any = false;
-
-            // T0-2 P2: 병합을 포트 인덱스 기준으로 전환.
-            //   입력을 (targetPort 오름차순, 그 안에서 엣지 파싱 순서) 로 stable-sort 한 뒤 병합.
-            //   같은 targetPort의 heights/points는 concat, 그 외 타입은 첫 번째 우선(기존 동작 명시 보존).
-            //   타입 슬롯 라우팅이라 RegionMeasure(Region,HeightMap) vs ReduceDomain(HeightMap,Region)
-            //   처럼 선언 순서가 반대여도 순서 무관하게 올바른 슬롯에 들어간다.
-            std::vector<InputRef> ordered = inputsFrom.at(nodeId);
-            std::stable_sort(ordered.begin(), ordered.end(),
-                             [](const InputRef& a, const InputRef& b){ return a.dstPort < b.dstPort; });
-
-            for (const auto& in : ordered) {
-                const auto& src = in.source;
-                VISION_LOG_INFO("[pipeline] edge {}:{} -> {}:{}", src, in.srcPort, nodeId, in.dstPort);
-                auto it = outputs.find(src);
-                if (it == outputs.end() || !it->second) continue;
-                const auto& o = it->second;
-                any = true;
-                if (o->heightmap    && !merged->heightmap)    merged->heightmap    = o->heightmap;
-                if (o->cloud   && !merged->cloud)   merged->cloud   = o->cloud;
-                if (!o->regions.empty() && merged->regions.empty()) merged->regions = o->regions;
-                if (!o->planes.empty()  && merged->planes.empty())  merged->planes  = o->planes;
-                if (o->heights) {   // 여러 입력(예: RefHeight 평균값 + HeightMeasure 측정값들)을 한 행으로 이어붙임
-                    if (!merged->heights) merged->heights = std::make_shared<std::vector<double>>();
-                    merged->heights->insert(merged->heights->end(), o->heights->begin(), o->heights->end());
-                }
-                if (o->points) {   // 여러 입력의 기준점들을 모두 이어붙임
-                    if (!merged->points) merged->points = std::make_shared<std::vector<RefPoint>>();
-                    merged->points->insert(merged->points->end(), o->points->begin(), o->points->end());
-                }
-                if (o->origin  && !merged->origin)  merged->origin  = o->origin;
-                if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
-            }
-            if (any) inputData = merged;
-        }
-
-        // T0-1 P2: 소비자 프레임 불일치 검사 (Phase 2는 경고만 — ToolStatus 불변).
-        //   양쪽 중 하나가 "" (미지정)이면 생략. 헤드리스에서도 보이도록 로그로.
-        if (inputData && inputData->heightmap && !inputData->heightmap->frameId.empty()) {
-            const std::string& hf = inputData->heightmap->frameId;
-            const auto& rgn0 = inputData->region0();
-            const auto& pln0 = inputData->plane0();
-            if (rgn0 && !rgn0->frameId.empty() && rgn0->frameId != hf)
-                VISION_LOG_WARN("[frame] {} [{}]: Region frame '{}' != HeightMap frame '{}'",
-                                ns.type, nodeId, rgn0->frameId, hf);
-            if (pln0 && !pln0->frameId.empty() && pln0->frameId != hf)
-                VISION_LOG_WARN("[frame] {} [{}]: Plane frame '{}' != HeightMap frame '{}'",
-                                ns.type, nodeId, pln0->frameId, hf);
-        }
-
-        // T0-2 P3: 브로드캐스트 실행 루프는 배열 생산 노드(T2-1 ConnectedComponents)가
-        //   생기는 시점에 여기 연결한다. 규칙은 computeBroadcast()(Core/include/Broadcast.h)에
-        //   순수 함수로 있고 단위 테스트로 고정돼 있다. 현재는 배열 입력을 내는 노드가 없어
-        //   N=1 — 아래 단일 실행과 동일하다(동작 변화 0).
-        auto tExec0 = std::chrono::steady_clock::now();
-        auto result = tool->execute(inputData);
-        auto tExec1 = std::chrono::steady_clock::now();
-        double elapsedMs = std::chrono::duration<double, std::milli>(tExec1 - tExec0).count();
-        VISION_LOG_INFO("[pipeline] {} [{:.1f} ms]", ns.type, elapsedMs);
-        if (result.output) {
-            outputs[nodeId] = result.output;
-            g_nodeCache[nodeId] = { result.output, ph };   // 캐시 갱신
-
-            // T0-1 P2: 프레임 부여·전파 (중앙집중 — execute 시그니처 불변).
-            //   frameId는 순수 메타데이터(어떤 툴도 아직 읽지 않음) → 측정값 bit-identical.
-            //   definedFrames에 기록해 캐시 적중 시 레지스트리 복원(§3.4)과 정합.
-            auto& out = *result.output;
-            if (ns.type == "HeightMapLoader" && out.heightmap) {
-                // 소스 로더: 결정론적 프레임 정의 + 부여. parent=world, identity.
-                const std::string fid = "hm:" + nodeId;
-                out.heightmap->frameId = fid;
-                const Frame f{fid, frames::kWorld, Transform2D::identity()};
-                runFrames->define(f);
-                out.definedFrames.push_back(f);
-            } else if (inputData && inputData->heightmap && !inputData->heightmap->frameId.empty()) {
-                // 전파: 입력 HeightMap의 frameId를 출력 iconic/geometry에 복사(비어있을 때만).
-                //   격자를 안 바꾸는 필터/생산자는 같은 프레임을 물려받는다.
-                //   (halfRes 등 분해능 변경 경로는 P3에서 새 프레임 정의 — 현재 레시피엔 없음)
-                const std::string& inFid = inputData->heightmap->frameId;
-                if (out.heightmap && out.heightmap->frameId.empty()) out.heightmap->frameId = inFid;
-                for (auto& rp : out.regions) if (rp && rp->frameId.empty()) rp->frameId = inFid;
-                for (auto& pp : out.planes)  if (pp && pp->frameId.empty()) pp->frameId = inFid;
-                if (out.cloud     && out.cloud->frameId.empty())      out.cloud->frameId     = inFid;
-            }
-        }
-
-        bool ok = (result.status == ToolStatus::Ok);
-        if (!ok) pipelinePass = false;
-
-        // 표시용 heightmap: 출력에 heightmap 있으면 그걸, 없으면(타입화 출력) 입력 heightmap으로 폴백.
-        // → 분석 노드(PlaneFit/HeightMeasure 등)도 자기가 다룬 '입력' 이미지를 결과창에 표시.
-        const HeightMap* dispZ = (result.output && result.output->hasHeightMap()) ? result.output->heightmap.get()
-                          : (inputData && inputData->hasHeightMap()) ? inputData->heightmap.get() : nullptr;
-
-        // Build per-tool result
-        json jr;
-        jr["event"]     = "result";
-        jr["id"]        = nodeId;
-        jr["tool"]      = ns.type;
-        jr["ok"]        = ok;
-        jr["msg"]       = result.message;
-        jr["elapsedMs"] = elapsedMs;
-
-        // 모든 노드: 출력(표시) HeightMap의 치수+좌표원점을 함께 보고 → 하류 ROI 에디터가
-        //  '전파된 원점' 기준으로 ROI를 상대저장하게 한다(중간에 머지/필터가 껴도 원점 유지).
-        //  (예전엔 Align 결과에만 offCol/offRow가 있어, 중간 노드가 끼면 UI 원점이 0이 됐음)
-        if (dispZ) {
-            jr["imgW"]      = dispZ->width;
-            jr["imgH"]      = dispZ->height;
-            jr["originCol"] = dispZ->originCol;   // 전파된 좌표원점(모든 노드) — Align의 offCol/offRow와 별개
-            jr["originRow"] = dispZ->originRow;
-        }
-
-        // Attach measurements for known tool types
-        if (ns.type == "PlaneFit") {
-            auto* m = dynamic_cast<PlaneFitTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["planeA"]        = r.a;
-                jr["planeB"]        = r.b;
-                jr["planeC"]        = r.c;
-                jr["rmse"]          = r.rmse;
-                jr["tiltDeg"]       = r.tiltDeg;
-                jr["refPointCount"] = r.refPointCount;
-                jr["inlierCount"]   = r.inlierCount;
-                json pts = json::array();
-                for (const auto& p : r.cloudPoints)
-                    pts.push_back({ p[0], p[1], p[2] });
-                jr["cloud"] = pts;
-            }
-        }
-        if ((ns.type == "HeightMapToCloud" || ns.type == "ExposureMergeCloud") && result.output && result.output->cloud) {
-            // 3D 미리보기용 서브샘플(최대 ~50k점) — 저장 파일은 전체 해상도(영향 없음)
-            const auto& cpts = result.output->cloud->points;
-            const size_t cap = 50000;
-            const size_t stride = cpts.size() > cap ? (cpts.size() + cap - 1) / cap : 1;
-            json pts = json::array();
-            for (size_t i = 0; i < cpts.size(); i += stride)
-                pts.push_back({ cpts[i].x, cpts[i].y, cpts[i].z });
-            jr["cloud"] = pts;
-            jr["cloudTotal"] = static_cast<long long>(cpts.size());
-        }
-        if (ns.type == "HeightMeasure") {
-            auto* m = dynamic_cast<HeightFromPlaneTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["allPass"]  = r.allPass;
-                json measures = json::array();
-                for (const auto& hm : r.measures) {
-                    measures.push_back({
-                        {"cx", hm.cx}, {"cy", hm.cy}, {"z", hm.z},
-                        {"distance", hm.distance},
-                        {"pointCount", hm.pointCount},
-                        {"pass", hm.pass}
-                    });
-                }
-                jr["measures"] = measures;
-                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
-                if (!r.allPass) pipelinePass = false;
-            }
-        }
-        if (ns.type == "LineCenter") {
-            auto* m = dynamic_cast<LineCenterTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                json arr = json::array();
-                for (const auto& l : m->lastResult().lines) {
-                    arr.push_back({
-                        {"cx", l.cx}, {"cy", l.cy},
-                        {"cxMm", l.cxMm}, {"cyMm", l.cyMm},
-                        {"angleDeg", l.angleDeg},
-                        {"roiIndex", l.roiIndex}, {"pointCount", l.pointCount}
-                    });
-                }
-                jr["lines"] = arr;
-                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
-            }
-        }
-        if (ns.type == "Align") {
-            auto* m = dynamic_cast<AlignTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["offCol"] = r.offCol;
-                jr["offRow"] = r.offRow;
-                jr["offXMm"] = r.offXMm;
-                jr["offYMm"] = r.offYMm;
-                if (dispZ) { jr["imgW"] = dispZ->width; jr["imgH"] = dispZ->height; }
-            }
-        }
-        if (ns.type == "CsvWriter") {
-            auto* m = dynamic_cast<CsvWriterTool*>(tool.get());
-            if (m) {
-                const auto& r = m->lastResult();
-                jr["saved"]   = r.saved;
-                jr["columns"] = r.columns;
-            }
-        }
-        if (ns.type == "RegionMeasure") {
-            auto* m = dynamic_cast<RegionMeasureTool*>(tool.get());
-            if (m && m->lastResult().valid) {
-                const auto& r = m->lastResult();
-                jr["regionAreaPx"] = r.areaPx;
-                if (r.hasHeight) {
-                    jr["regionAreaMm2"] = r.areaMm2;
-                    jr["regionMeanZmm"] = r.meanZmm;
-                }
-                jr["regionCxMm"] = r.cxMm;
-                jr["regionCyMm"] = r.cyMm;
-            }
-        }
-
-        // 프리뷰(base64 PNG). 출력에 Region(마스크) 있으면 우선, 없으면 입력 heightmap 폴백. noPreview면 생략.
-        if (!noPreview) {
-            if (result.output && result.output->hasRegion()) {
-                // Region(마스크) 프리뷰 — 입력 heightmap 폴백보다 우선(Threshold/CreateROI 출력)
-                const auto& rgn = *result.output->region0();
-                jr["preview"] = regionToBase64(rgn);
-                jr["zMin"] = 0.f; jr["zMax"] = 255.f;
-                jr["imgW"] = rgn.width; jr["imgH"] = rgn.height;
-            }
-            else if (dispZ) {
-                // heightmapToBase64가 정규화하며 구한 z범위를 그대로 받음 (중복 스캔 제거)
-                float zMin = 0, zMax = 0; bool hasRange = false;
-                jr["preview"] = heightmapToBase64(*dispZ, &zMin, &zMax, &hasRange);
-                if (hasRange) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
-                jr["xResMm"] = dispZ->xResMm;
-                jr["yResMm"] = dispZ->yResMm;
-            }
-        }
-
-        // 단계별 미리보기(선택) — 결과창 드롭다운용. 각 단계 HeightMap을 개별 인코딩.
-        if (result.output && result.output->stages && !noPreview) {
-            json stages = json::array();
-            for (const auto& st : *result.output->stages) {
-                if (!st.second) continue;
-                float zMin = 0, zMax = 0; bool hasRange = false;
-                json s;
-                s["name"]    = st.first;
-                s["preview"] = heightmapToBase64(*st.second, &zMin, &zMax, &hasRange);
-                if (hasRange) { s["zMin"] = zMin; s["zMax"] = zMax; }
-                s["xResMm"]  = st.second->xResMm;
-                s["yResMm"]  = st.second->yResMm;
-                stages.push_back(s);
-            }
-            jr["stages"] = stages;
-        }
-
-        results.push_back(jr);
-        emit(jr.dump());
+    std::unordered_map<std::string, std::promise<NodeResult>>      nodePromises;
+    std::unordered_map<std::string, std::shared_future<NodeResult>> nodeFutures;
+    for (const auto& nodeId : ids) {
+        nodePromises.emplace(nodeId, std::promise<NodeResult>{});
+        nodeFutures[nodeId] = nodePromises.at(nodeId).get_future().share();
     }
+
+    std::mutex emitMtx, framesMtx, resultsMtx, nodeCacheMtx;
+    std::atomic<bool> pipelinePassA{true};
+
+    auto safeEmit = [&](const std::string& s) {
+        std::lock_guard<std::mutex> lk(emitMtx);
+        emit(s);
+    };
+
+    std::vector<std::future<void>> nodeTasks;
+    for (const auto& nodeId : ids) {
+        if (nodeIdx.find(nodeId) == nodeIdx.end()) continue;
+        nodeTasks.push_back(std::async(std::launch::async, [&, nodeId]() {
+            const int nsI        = nodeIdx.at(nodeId);
+            const auto& ns       = nodeSpecs[nsI];
+            const std::size_t ph = std::hash<std::string>{}(ns.params.dump());
+
+            // 1. 상류 입력 대기 + dirty 집계
+            bool upstreamDirty = false;
+            std::vector<std::pair<InputRef, VisionDataPtr>> upstreamResults;
+            if (inputsFrom.count(nodeId)) {
+                std::vector<InputRef> ordered = inputsFrom.at(nodeId);
+                std::stable_sort(ordered.begin(), ordered.end(),
+                    [](const InputRef& a, const InputRef& b){ return a.dstPort < b.dstPort; });
+                for (const auto& in : ordered) {
+                    auto nr = nodeFutures.at(in.source).get();
+                    if (nr.dirty) upstreamDirty = true;
+                    upstreamResults.push_back({in, nr.data});
+                }
+            }
+
+            // 2. 캐시 체크
+            if (useCache && !upstreamDirty && nodeId != forceNode) {
+                std::lock_guard<std::mutex> lk(nodeCacheMtx);
+                auto cit = g_nodeCache.find(nodeId);
+                if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {
+                    for (const auto& f : cit->second.output->definedFrames) {
+                        std::lock_guard<std::mutex> flk(framesMtx);
+                        runFrames->define(f);
+                    }
+                    nodePromises.at(nodeId).set_value({cit->second.output, false});
+                    return;
+                }
+            }
+
+            safeEmit(json{{"event","log"},{"level","info"},
+                          {"msg","Running " + ns.type + " [" + nodeId + "]"}}.dump());
+
+            // 3. 포트별 입력 라우팅 (Phase 2: 병합 대신 inputs[dstPort]에 상류 출력을 그대로 넣음)
+            VisionDataPtr inputData;
+            if (!upstreamResults.empty()) {
+                auto merged = std::make_shared<VisionData>();
+                merged->frames = runFrames;
+                bool any = false;
+                for (const auto& [in, o] : upstreamResults) {
+                    if (!o) continue;
+                    VISION_LOG_INFO("[pipeline] edge {}:{} -> {}:{}", in.source, in.srcPort, nodeId, in.dstPort);
+                    any = true;
+                    const std::size_t dstPort = static_cast<std::size_t>(std::max(0, in.dstPort));
+                    if (dstPort >= merged->inputs.size()) merged->inputs.resize(dstPort + 1);
+                    if (!merged->inputs[dstPort]) {
+                        merged->inputs[dstPort] = o;
+                    } else {
+                        VISION_LOG_WARN("[pipeline] {} port{} 충돌 — 내용 병합", nodeId, dstPort);
+                        auto combined = std::make_shared<VisionData>(*merged->inputs[dstPort]);
+                        for (auto& hm : o->heightmaps) combined->heightmaps.push_back(hm);
+                        for (auto& rg : o->regions)    combined->regions.push_back(rg);
+                        for (auto& pl : o->planes)     combined->planes.push_back(pl);
+                        for (auto& ln : o->lines)      combined->lines.push_back(ln);
+                        merged->inputs[dstPort] = combined;
+                    }
+                    if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
+                }
+                if (any) inputData = merged;
+            }
+
+            // 4. T0-1 P2: 소비자 프레임 불일치 검사 (경고만) — 포트 0 HeightMap vs 나머지 포트
+            if (inputData) {
+                auto hm0 = inputData->inHeightMap(0);
+                if (hm0 && !hm0->frameId.empty()) {
+                    const std::string& hf = hm0->frameId;
+                    for (std::size_t pi = 1; pi < inputData->inputs.size(); ++pi) {
+                        auto inp = inputData->in(pi);
+                        if (!inp) continue;
+                        for (const auto& rp : inp->regions)
+                            if (rp && !rp->frameId.empty() && rp->frameId != hf)
+                                VISION_LOG_WARN("[frame] {} [{}]: port{} Region frame '{}' != HeightMap frame '{}'",
+                                                ns.type, nodeId, pi, rp->frameId, hf);
+                        for (const auto& pp : inp->planes)
+                            if (pp && !pp->frameId.empty() && pp->frameId != hf)
+                                VISION_LOG_WARN("[frame] {} [{}]: port{} Plane frame '{}' != HeightMap frame '{}'",
+                                                ns.type, nodeId, pi, pp->frameId, hf);
+                    }
+                }
+            }
+
+            // 5. 툴 생성 — 프레임 생성 노드(SurfaceCrop 등)가 고유 frameId를 만들 수 있도록 nodeId 주입
+            auto toolParams = ns.params;
+            toolParams["_nodeId"] = nodeId;
+            auto tool = ToolFactory::create(ns.type, toolParams, noPreview);
+            if (!tool) {
+                safeEmit(json{{"event","log"},{"level","error"},
+                              {"msg","Unknown tool type: " + ns.type}}.dump());
+                pipelinePassA = false;
+                nodePromises.at(nodeId).set_value({nullptr, true});
+                return;
+            }
+
+            // 6. 실행
+            const auto t0 = std::chrono::steady_clock::now();
+            auto result   = tool->execute(inputData);
+            const double elapsedMs = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - t0).count();
+            VISION_LOG_INFO("[pipeline] {} [{:.1f} ms]", ns.type, elapsedMs);
+
+            // 7. 출력·캐시·프레임 전파
+            if (result.output) {
+                {
+                    std::lock_guard<std::mutex> lk(nodeCacheMtx);
+                    g_nodeCache[nodeId] = {result.output, ph};
+                }
+                auto& out = *result.output;
+                auto inHm0 = inputData ? inputData->inHeightMap(0) : std::shared_ptr<HeightMap>{};
+                if (ns.type == "HeightMapLoader" && !out.heightmaps.empty() && out.heightmaps[0]) {
+                    const std::string fid = "hm:" + nodeId;
+                    out.heightmaps[0]->frameId = fid;
+                    const Frame f{fid, frames::kWorld, Transform2D::identity()};
+                    {
+                        std::lock_guard<std::mutex> flk(framesMtx);
+                        runFrames->define(f);
+                    }
+                    out.definedFrames.push_back(f);
+                } else if (inHm0 && !inHm0->frameId.empty()) {
+                    const std::string& inFid = inHm0->frameId;
+                    for (auto& hm : out.heightmaps) if (hm && hm->frameId.empty()) hm->frameId = inFid;
+                    for (auto& rp : out.regions)    if (rp && rp->frameId.empty()) rp->frameId = inFid;
+                    for (auto& pp : out.planes)     if (pp && pp->frameId.empty()) pp->frameId = inFid;
+                    for (auto& c  : out.clouds)     if (c  && c->frameId.empty())  c->frameId  = inFid;
+                }
+            }
+
+            // 8. promise 이행 → 하류 노드 즉시 깨어남
+            nodePromises.at(nodeId).set_value({result.output, true});
+
+            bool ok = (result.status == ToolStatus::Ok);
+            if (!ok) pipelinePassA = false;
+
+            // 9. 결과 JSON 빌드 + emit
+            auto dispHm = (result.output && result.output->heightmap0()) ? result.output->heightmap0()
+                        : (inputData && inputData->inHeightMap(0)) ? inputData->inHeightMap(0)
+                        : std::shared_ptr<HeightMap>{};
+            const HeightMap* dispZ = dispHm ? dispHm.get() : nullptr;
+
+            json jr;
+            jr["event"]     = "result";
+            jr["id"]        = nodeId;
+            jr["tool"]      = ns.type;
+            jr["ok"]        = ok;
+            jr["msg"]       = result.message;
+            jr["elapsedMs"] = elapsedMs;
+
+            if (dispZ) {
+                jr["imgW"]      = dispZ->width;
+                jr["imgH"]      = dispZ->height;
+                jr["originCol"] = dispZ->originCol;
+                jr["originRow"] = dispZ->originRow;
+                jr["xResMm"]    = dispZ->xResMm;   // Region 출력 툴도 mm 환산 가능하도록 항상 제공
+                jr["yResMm"]    = dispZ->yResMm;
+            }
+
+            // ── Generic: measurements ───────────────────────────────────────
+            if (result.output && !result.output->measurements.empty()) {
+                json meas = json::array();
+                for (const auto& m : result.output->measurements)
+                    meas.push_back({{"name",m.name},{"value",m.value},{"unit",m.unit},{"valid",m.valid}});
+                jr["measurements"] = meas;
+            }
+            // ── Generic: decisions (+ allPass → pipelinePassA) ─────────────
+            if (result.output && !result.output->decisions.empty()) {
+                json decs = json::array();
+                for (const auto& d : result.output->decisions) {
+                    decs.push_back({{"name",d.name},{"pass",d.pass},{"reason",d.reason},
+                                    {"measured",d.measured},{"nominal",d.nominal},{"tolerance",d.tolerance}});
+                    if (d.name == "allPass" && !d.pass) pipelinePassA = false;
+                }
+                jr["decisions"] = decs;
+            }
+            // ── Generic: overlays (Cloud → jr["cloud"], Lines → jr["lines"]) ─
+            if (result.output) {
+                for (const auto& ov : result.output->overlays) {
+                    if (ov.kind == Overlay::Kind::Cloud && !ov.cloudPoints.empty()) {
+                        json pts = json::array();
+                        for (const auto& p : ov.cloudPoints) pts.push_back({p[0], p[1], p[2]});
+                        jr["cloud"] = pts;
+                    }
+                    if (ov.kind == Overlay::Kind::Lines && !ov.lines.empty()) {
+                        json arr = json::array();
+                        for (const auto& l : ov.lines)
+                            arr.push_back({{"cx",l.cx},{"cy",l.cy},{"cxMm",l.cxMm},{"cyMm",l.cyMm},
+                                           {"angleDeg",l.angleDeg},{"roiIndex",l.roiIndex},{"pointCount",l.pointCount},
+                                           {"p0x",l.p0x},{"p0y",l.p0y},{"p1x",l.p1x},{"p1y",l.p1y}});
+                        jr["lines"] = arr;
+                    }
+                }
+            }
+            // ── PointCloud3D output (HeightMapToCloud, ExposureMergeCloud 등) ─
+            if (result.output && result.output->cloud0() && !result.output->cloud0()->empty()) {
+                const auto& cpts = result.output->cloud0()->points;
+                const size_t cap = 50000;
+                const size_t stride = cpts.size() > cap ? (cpts.size() + cap - 1) / cap : 1;
+                json pts = json::array();
+                for (size_t i = 0; i < cpts.size(); i += stride)
+                    pts.push_back({cpts[i].x, cpts[i].y, cpts[i].z});
+                jr["cloud"] = pts;
+                jr["cloudTotal"] = static_cast<long long>(cpts.size());
+            }
+
+            if (!noPreview) {
+                if (result.output && result.output->hasRegion()) {
+                    const auto& rgn = *result.output->region0();
+                    jr["preview"] = regionToBase64(rgn);
+                    jr["zMin"] = 0.f; jr["zMax"] = 255.f;
+                    jr["imgW"] = rgn.width; jr["imgH"] = rgn.height;
+                }
+                else if (dispZ) {
+                    float zMin = 0, zMax = 0; bool hasRange = false;
+                    jr["preview"] = heightmapToBase64(*dispZ, &zMin, &zMax, &hasRange);
+                    if (hasRange) { jr["zMin"] = zMin; jr["zMax"] = zMax; }
+                    jr["xResMm"] = dispZ->xResMm;
+                    jr["yResMm"] = dispZ->yResMm;
+                }
+            }
+
+            if (result.output && result.output->stages && !noPreview) {
+                json stages = json::array();
+                for (const auto& st : *result.output->stages) {
+                    if (!st.second) continue;
+                    float zMin = 0, zMax = 0; bool hasRange = false;
+                    json s;
+                    s["name"]    = st.first;
+                    s["preview"] = heightmapToBase64(*st.second, &zMin, &zMax, &hasRange);
+                    if (hasRange) { s["zMin"] = zMin; s["zMax"] = zMax; }
+                    s["xResMm"]  = st.second->xResMm;
+                    s["yResMm"]  = st.second->yResMm;
+                    stages.push_back(s);
+                }
+                jr["stages"] = stages;
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(resultsMtx);
+                results.push_back(jr);
+            }
+            safeEmit(jr.dump());
+        }));
+    }
+
+    for (auto& f : nodeTasks) f.get();
+    pipelinePass = pipelinePassA.load();
 
     if (batchMode && !heightmapPathsUsed.empty()) {
         std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
@@ -510,7 +466,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
 }
 
 // ── [검증용] 반복성 분석 헤드리스 러너 (feat/repeatability 브랜치) ──────────────
-//   레시피를 폴더의 모든 HeightMap에 적용해 HeightMeasure 영역별 높이/PlaneFit 파라미터를
+//   레시피를 폴더의 모든 HeightMap에 적용해 RegionMeasure 영역별 높이/PlaneFit 파라미터를
 //   수집하고, 영역별 반복성(σ, range)을 산출한다.
 static double vstd(const std::vector<double>& v, double& mean) {
     if (v.empty()) { mean = 0; return 0; }
@@ -524,6 +480,15 @@ static int repeatAnalyze(const std::string& recipePath, const std::string& folde
     if (!rf) { std::cerr << "recipe open fail: " << recipePath << "\n"; return 1; }
     json recipe; try { rf >> recipe; } catch (const std::exception& e) { std::cerr << "recipe parse: " << e.what() << "\n"; return 1; }
 
+    // schemaVersion 검사 — 구 스키마 레시피를 조용히 로드하지 않는다 (ARCH §1)
+    if (!recipe.contains("schemaVersion") || recipe["schemaVersion"].get<int>() < 2) {
+        const std::string ver = recipe.contains("schemaVersion")
+            ? recipe["schemaVersion"].dump() : "없음";
+        std::cerr << "recipe rejected: 이 레시피는 구 스키마입니다. 마이그레이션이 필요합니다. "
+                     "(schemaVersion=" << ver << ", 필요=2)\n";
+        return 1;
+    }
+
     std::vector<std::string> files;
     for (const auto& e : fs::directory_iterator(folder)) {
         auto ext = e.path().extension().string();
@@ -533,12 +498,37 @@ static int repeatAnalyze(const std::string& recipePath, const std::string& folde
     if (files.empty()) { std::cerr << "no png in " << folder << "\n"; return 1; }
     std::cout << "[repeat-analyze] recipe=" << recipePath << " files=" << files.size() << "\n";
 
+    // 파이프라인 실행 중 다음 이미지를 미리 로딩하기 위한 해상도 파라미터
+    float pfX = 1.f, pfY = 1.f, pfZ = 0.001f;
+    for (const auto& n : recipe["nodes"])
+        if (n.value("type", "") == "HeightMapLoader") {
+            pfX = n["params"].value("xResMm", 1.f);
+            pfY = n["params"].value("yResMm", 1.f);
+            pfZ = n["params"].value("zResMm", 0.001f);
+            break;
+        }
+
     std::ofstream csv(outCsv);
     std::vector<std::vector<double>> dist, npts;   // [region][sample]
     std::vector<double> planeA, planeB, planeC, rmseV, tiltV;
     bool header = false;
 
     for (size_t fi = 0; fi < files.size(); ++fi) {
+        // 다음 파일을 백그라운드에서 미리 로딩 — 현재 파일 compute(~1600ms)에 I/O(~800ms) 숨김
+        if (fi + 1 < files.size()) {
+            std::string nxt = files[fi + 1];
+            std::thread([nxt, pfX, pfY, pfZ]() {
+                {
+                    std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+                    if (g_heightmapFileCache.count(nxt)) return;
+                }
+                auto hm = loadHeightMapFromFile(nxt, pfX, pfY, pfZ);
+                if (!hm) return;
+                std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
+                heightmapCachePut(nxt, hm);
+            }).detach();
+        }
+
         json msg = recipe;
         msg["cmd"] = "run"; msg["noPreview"] = true; msg["useCache"] = false; msg["batch"] = true;
         for (auto& n : msg["nodes"])
@@ -547,12 +537,27 @@ static int repeatAnalyze(const std::string& recipePath, const std::string& folde
 
         std::vector<double> d, np;
         for (const auto& r : done["results"]) {
-            if (r.value("tool", "") == "HeightMeasure" && r.contains("measures")) {
-                for (const auto& m : r["measures"]) { d.push_back(m.value("distance", 0.0)); np.push_back(m.value("pointCount", 0.0)); }
+            if (r.value("tool", "") == "RegionMeasure" && r.contains("measurements")) {
+                for (const auto& m : r["measurements"]) {
+                    const std::string name = m.value("name", "");
+                    const double val = m.value("value", 0.0);
+                    const bool valid = m.value("valid", false);
+                    if (name == "zMm" && valid)
+                        d.push_back(val);
+                    else if (name == "areaPx")
+                        np.push_back(val);
+                }
             }
-            if (r.value("tool", "") == "PlaneFit") {
-                planeA.push_back(r.value("planeA", 0.0)); planeB.push_back(r.value("planeB", 0.0));
-                planeC.push_back(r.value("planeC", 0.0)); rmseV.push_back(r.value("rmse", 0.0)); tiltV.push_back(r.value("tiltDeg", 0.0));
+            if (r.value("tool", "") == "PlaneFit" && r.contains("measurements")) {
+                for (const auto& m : r["measurements"]) {
+                    const std::string name = m.value("name", "");
+                    const double val = m.value("value", 0.0);
+                    if      (name == "planeA")  planeA.push_back(val);
+                    else if (name == "planeB")  planeB.push_back(val);
+                    else if (name == "planeC")  planeC.push_back(val);
+                    else if (name == "rmse")    rmseV.push_back(val);
+                    else if (name == "tiltDeg") tiltV.push_back(val);
+                }
             }
         }
         if (!header) {

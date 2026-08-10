@@ -1,7 +1,12 @@
 add_library(VisionTools STATIC
+    src/Aggregate.cpp
+    src/CompareTool.cpp
+    src/CombineDecisionTool.cpp
+    src/ExtractProfileTool.cpp
+    src/ProfileFeatureTool.cpp
     src/NoiseFilter.cpp
     src/PlaneFitTool.cpp
-    src/HeightFromPlaneTool.cpp
+    src/LineFitTool.cpp
     src/CsvWriterTool.cpp
     src/LineCenterTool.cpp
     src/AlignTool.cpp
@@ -9,6 +14,11 @@ add_library(VisionTools STATIC
     src/CreateRoiTool.cpp
     src/ReduceDomainTool.cpp
     src/RegionMeasureTool.cpp
+    src/ValidRegionTool.cpp
+    src/LevelTool.cpp
+    src/SurfaceCropTool.cpp
+    src/SurfaceResampleTool.cpp
+    src/SurfaceSubtractTool.cpp
 )
 
 target_include_directories(VisionTools

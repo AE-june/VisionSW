@@ -9,9 +9,12 @@ namespace vision {
 //  HALCON의 threshold 개념. 유효(비-NaN) 픽셀만 후보.
 // ─────────────────────────────────────────────────────────────────────
 struct ThresholdParams {
-    int   channel     = 0;     // 임계 대상 채널 (기본 0=height)
-    float thresholdMm = 0.f;   // 기준 높이 (mm, zMm 기준)
-    bool  keepAbove   = true;  // true: z>=thr, false: z<=thr
+    enum class Mode { Mm, Raw };  // 기준값 단위: mm(zMm) 또는 raw 픽셀값
+    int   channel      = 0;       // 임계 대상 채널 (기본 0=height)
+    Mode  mode         = Mode::Mm;
+    float thresholdMm  = 0.f;     // mm 모드 기준 높이 (zMm 기준)
+    float thresholdRaw = 0.f;     // raw 모드 기준 픽셀값 (rawAt 직접 비교)
+    bool  keepAbove    = true;    // true: 값>=thr, false: 값<=thr
 };
 
 class ThresholdTool : public IAlgorithmTool {

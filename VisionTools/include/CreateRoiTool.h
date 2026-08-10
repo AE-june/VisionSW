@@ -6,19 +6,30 @@
 namespace vision {
 
 // ─────────────────────────────────────────────────────────────────────
-//  CreateRoiTool — (HeightMap) → Region
-//  사각/원(내접타원)/폴리곤 ROI(들)을 래스터화해 이진 마스크(Region)를 생산.
-//  입력 HeightMap은 마스크 크기(W×H)와 %→px 변환 기준. 여러 ROI는 합집합(OR).
-//  (좌표계: HeightFromPlaneTool과 동일하게 originCol/Row 오프셋 적용.)
+//  CreateRoiTool — (HeightMap) → Region[]
+//  ROI 하나당 Region 하나씩 출력 (Aurora Sequence<Region> 개념).
+//  출력 Region.label = ROI.id → RegionMeasure 측정값 이름으로 전달.
+//  PlaneFit 등 단수 Region만 받는 도구는 regions[0]만 사용하거나 union.
 // ─────────────────────────────────────────────────────────────────────
 struct CreateRoiParams {
     struct ROI {
+        std::string id;                               // ROI 식별자 → Region.label
         float xPct = 0.f, yPct = 0.f, wPct = 1.f, hPct = 1.f;
-        float angleDeg = 0.f;                         // 중심 기준 회전(도, 시계방향). 사각/타원에 적용
-        bool  isCircle = false;                       // true면 사각에 내접하는 타원
-        std::vector<std::array<float, 2>> poly;       // 폴리곤 꼭짓점(pct). 있으면 폴리곤 우선
+        float angleDeg = 0.f;
+        bool  isCircle = false;
+        std::vector<std::array<float, 2>> poly;
     };
     std::vector<ROI> rois;
+
+    // ── 라인 밴드 모드 — 포트1에 Line(LineModel) 연결 시 활성 ──────────
+    //   라인 좌/우로 회전 사각형 밴드 ROI 생성. 정적 rois 대신 사용.
+    enum class BandSide { Left, Right, Both };
+    enum class BandLen  { Line, Fixed };
+    float    bandWidthMm  = 5.f;              // 각 밴드 폭(라인 수직 방향)
+    float    bandOffsetMm = 3.f;              // 라인 중심~밴드 중심 거리(수직)
+    BandSide bandSide     = BandSide::Both;
+    BandLen  bandLenMode  = BandLen::Line;    // 길이: 라인 실제 / 고정
+    float    bandLengthMm = 10.f;             // Fixed일 때
 };
 
 class CreateRoiTool : public IAlgorithmTool {

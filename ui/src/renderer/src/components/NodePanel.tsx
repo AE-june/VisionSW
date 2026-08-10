@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import ParamPanel from './ParamPanel'
+import ParamPanel, { NumField } from './ParamPanel'
 import { getViewState, patchViewState } from './viewStore'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
 import HeightFromPlaneEditor, { type HeightFromPlaneSettings } from './HeightFromPlaneEditor'
@@ -13,35 +13,33 @@ import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
 import RoiCanvas, { type Roi } from './RoiCanvas'
 
+interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean }
+interface NodeDecision { name: string; pass: boolean; reason: string; measured?: number; nominal?: number; tolerance?: number }
+
+// HeightMeasure 오버레이 렌더용 내부 표현
 interface HeightMeasure {
-  cx: number; cy: number; z: number
+  cx: number; cy: number
   distance: number; pointCount: number; pass: boolean
 }
 
 interface NodeResult {
   preview?: string
-  heightDiff?: number
-  thicknessMm?: number
-  minMm?: number
-  maxMm?: number
-  pass?: boolean
   ok?: boolean
   msg?: string
-  // PlaneFit
-  planeA?: number; planeB?: number; planeC?: number
-  rmse?: number; tiltDeg?: number; refPointCount?: number; inlierCount?: number
+  // Generic named measurements / decisions
+  measurements?: NodeMeasurement[]
+  decisions?: NodeDecision[]
+  // 3D 포인트클라우드 (PlaneFit overlay, HeightMapToCloud, ExposureMergeCloud)
   cloud?: [number, number, number][]
-  // HeightFromPlane
-  measures?: HeightMeasure[]; allPass?: boolean
-  // LineCenter — 찾은 모든 라인
-  lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number }[]
+  // LineCenter — 찾은 모든 라인 (overlay에서 직렬화)
+  lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number;
+            p0x?: number; p0y?: number; p1x?: number; p1y?: number }[]
   imgW?: number; imgH?: number
-  // Align (좌표정렬)
-  offCol?: number; offRow?: number; offXMm?: number; offYMm?: number
-  // HeightMap 실제 z 범위 + 분해능
+  originCol?: number; originRow?: number
+  // HeightMap z 범위 + 분해능
   zMin?: number; zMax?: number
   xResMm?: number; yResMm?: number
-  // 단계별 미리보기 (ExposureMerge 등) — 결과창 드롭다운으로 선택 조회
+  // 단계별 미리보기
   stages?: { name: string; preview: string; zMin?: number; zMax?: number; xResMm?: number; yResMm?: number }[]
   elapsedMs?: number
 }
@@ -68,6 +66,32 @@ interface Props {
   onClose: () => void
 }
 
+// ── 헬퍼: measurements/decisions 이름 조회 ───────────────────────────────
+function getMeas(measurements: NodeMeasurement[] | undefined, name: string): number | undefined {
+  return measurements?.find(m => m.name === name)?.value
+}
+function getDec(decisions: NodeDecision[] | undefined, name: string): boolean | undefined {
+  return decisions?.find(d => d.name === name)?.pass
+}
+function extractHeightMeasures(
+  measurements: NodeMeasurement[] | undefined,
+  decisions: NodeDecision[] | undefined
+): HeightMeasure[] {
+  const result: HeightMeasure[] = []
+  for (let i = 1; ; i++) {
+    const cx = getMeas(measurements, `d${i}_cx`)
+    if (cx === undefined) break
+    result.push({
+      cx,
+      cy:         getMeas(measurements, `d${i}_cy`) ?? 0,
+      distance:   getMeas(measurements, `d${i}_distance`) ?? 0,
+      pointCount: Math.round(getMeas(measurements, `d${i}_pointCount`) ?? 0),
+      pass:       getDec(decisions, `d${i}_pass`) ?? true,
+    })
+  }
+  return result
+}
+
 function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow, viewKey }: {
   toolType: string; result?: NodeResult; rois?: Roi[]
   nodeId: string; params: Record<string, unknown>
@@ -75,7 +99,6 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   originCol?: number; originRow?: number; viewKey?: string
 }) {
   const [stageIdx, setStageIdx] = useState(0)
-  // cloud 출력 노드: 3D↔2D를 드롭다운으로 전환. HeightMapToCloud는 3D, PlaneFit은 2D를 기본으로.
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
   const zMin = result?.zMin
   const zMax = result?.zMax
@@ -83,11 +106,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
     return <div className="param-empty">실행 후 결과가 여기에 표시됩니다</div>
   }
 
-  // cloud를 가진 모든 노드(PlaneFit/HeightMapToCloud 등)에서 이미지/3D를 드롭다운으로 전환 (따로 쌓지 않음)
   const hasCloud = !!result.cloud && result.cloud.length > 0
   const showCloud = hasCloud && cloudView
 
-  // 단계별 미리보기가 있으면 선택된 단계를, 없으면 기본 결과 프리뷰를 표시
   const stages = result.stages
   const sel = stages && stages.length ? stages[Math.min(stageIdx, stages.length - 1)] : null
   const dispPreview = sel ? sel.preview : result.preview
@@ -96,15 +117,11 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   const dispResX = sel ? sel.xResMm : result.xResMm
   const dispResY = sel ? sel.yResMm : result.yResMm
 
-  // HeightFromPlane: 측정 ROI(읽기전용) 위에 거리 치수를 오버레이.
-  // 저장 좌표는 Align 원점 기준 상대값이므로, 미리보기(절대 좌표) 위에 그릴 땐 원점을 더한다.
   const oPctX = originCol != null && result.imgW ? originCol / result.imgW : 0
   const oPctY = originRow != null && result.imgH ? originRow / result.imgH : 0
   const measureRois = (rois ?? []).filter(r => r.type === 'measure')
     .map(r => ({ ...r, xPct: r.xPct + oPctX, yPct: r.yPct + oPctY }))
 
-  // LineCenter 결과: 찾은 라인 + 중심(십자가)만 표시 (ROI 박스/화살표 없음)
-  // 라인을 검색 ROI로 클리핑하기 위해 roiIndex로 해당 ROI 참조 (그리진 않음)
   const searchRois = (rois ?? []).filter(r => r.type === 'search')
   const lineOverlay = toolType === 'LineCenter' && result.imgW && result.lines
     ? <>{result.lines.map((l, i) => (
@@ -114,25 +131,50 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
       ))}</>
     : undefined
 
-  // Align: 검출된 기준점(=새 원점)을 십자선으로 표시
-  const alignOverlay = toolType === 'Align' && result.imgW && result.offCol !== undefined
+  // LineFit: 검출 라인 세그먼트(끝점 p0→p1) + 중심점 그리기
+  const lineFitOverlay = toolType === 'LineFit' && result.imgW && result.imgH && result.lines && result.lines.length
+    ? <svg viewBox={`0 0 ${result.imgW} ${result.imgH}`} preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+        {result.lines.map((l, i) => {
+          const hasEnds = l.p0x !== undefined && (l.p0x !== 0 || l.p0y !== 0 || l.p1x !== 0 || l.p1y !== 0)
+          const r = Math.max(2, Math.min(result.imgW!, result.imgH!) * 0.012)
+          return (
+            <g key={i}>
+              {hasEnds && (
+                <line x1={l.p0x} y1={l.p0y} x2={l.p1x} y2={l.p1y}
+                  stroke="#00e676" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              )}
+              <line x1={l.cx - r} y1={l.cy} x2={l.cx + r} y2={l.cy} stroke="#ff5252" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              <line x1={l.cx} y1={l.cy - r} x2={l.cx} y2={l.cy + r} stroke="#ff5252" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            </g>
+          )
+        })}
+      </svg>
+    : undefined
+
+  // Align 오버레이: measurements에서 offCol/offRow 조회
+  const offCol = getMeas(result.measurements, 'offCol')
+  const offRow = getMeas(result.measurements, 'offRow')
+  const alignOverlay = toolType === 'Align' && result.imgW && offCol !== undefined
     ? <svg viewBox={`0 0 ${result.imgW} ${result.imgH!}`} preserveAspectRatio="none"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-        <line x1={0} y1={result.offRow} x2={result.imgW} y2={result.offRow}
+        <line x1={0} y1={offRow!} x2={result.imgW} y2={offRow!}
           stroke="#ffca28" strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-        <line x1={result.offCol} y1={0} x2={result.offCol} y2={result.imgH!}
+        <line x1={offCol} y1={0} x2={offCol} y2={result.imgH!}
           stroke="#ffca28" strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-        <circle cx={result.offCol} cy={result.offRow} r={Math.max(3, Math.min(result.imgW, result.imgH!) * 0.012)}
+        <circle cx={offCol} cy={offRow!} r={Math.max(3, Math.min(result.imgW, result.imgH!) * 0.012)}
           fill="none" stroke="#ffca28" strokeWidth={2} vectorEffect="non-scaling-stroke" />
       </svg>
     : undefined
 
-  // HeightMeasure: 각 ROI에서 실제 측정된 대표 점 위치를 십자 마커로 표시.
-  // cx,cy는 원점 기준 상대 mm → 픽셀(원점 오프셋 더함)로 변환.
-  const measureOverlay = toolType === 'HeightMeasure' && result.imgW && result.measures && dispResX && dispResY
+  // HeightMeasure 오버레이: measurements/decisions에서 ROI별 데이터 추출
+  const heightMeasures = toolType === 'HeightMeasure'
+    ? extractHeightMeasures(result.measurements, result.decisions)
+    : undefined
+  const measureOverlay = toolType === 'HeightMeasure' && result.imgW && heightMeasures && heightMeasures.length > 0 && dispResX && dispResY
     ? <svg viewBox={`0 0 ${result.imgW} ${result.imgH!}`} preserveAspectRatio="none"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-        {result.measures.map((m, i) => {
+        {heightMeasures.map((m, i) => {
           if (m.pointCount === 0) return null
           const px = m.cx / dispResX! + (originCol ?? 0)
           const py = m.cy / dispResY! + (originRow ?? 0)
@@ -147,6 +189,11 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         })}
       </svg>
     : undefined
+
+  // PlaneFit 평면 파라미터
+  const planeA = getMeas(result.measurements, 'planeA')
+  const planeB = getMeas(result.measurements, 'planeB')
+  const planeC = getMeas(result.measurements, 'planeC')
 
   return (
     <div className="node-result-view">
@@ -170,8 +217,8 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         </div>
       )}
       {showCloud && (
-        toolType === 'PlaneFit'
-          ? <PlaneView3D a={result.planeA!} b={result.planeB!} c={result.planeC!} points={result.cloud!} />
+        toolType === 'PlaneFit' && planeA !== undefined
+          ? <PlaneView3D a={planeA} b={planeB!} c={planeC!} points={result.cloud!} />
           : <PlaneView3D points={result.cloud!} showPlane={false} />
       )}
       {dispPreview && !showCloud && (
@@ -199,9 +246,9 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               canvasHeight={360}
               rois={toolType === 'HeightMeasure' ? measureRois : undefined}
               roiTypeLabel={() => 'ROI'}
-              overlay={lineOverlay ?? alignOverlay ?? measureOverlay}
+              overlay={lineOverlay ?? alignOverlay ?? measureOverlay ?? lineFitOverlay}
               overlayFor={(_roi, idx) => {
-                const m = result.measures?.[idx]
+                const m = heightMeasures?.[idx]
                 return m ? (
                   <span className={`pfe-roi-result ${m.pass ? 'pass' : 'fail'}`}>
                     {m.pointCount === 0 ? '빈 ROI' : `${m.distance.toFixed(4)} mm`}
@@ -213,23 +260,22 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         </div>
       )}
 
-      {toolType === 'PlaneFit' && result.planeA !== undefined && (
+      {toolType === 'PlaneFit' && planeA !== undefined && (
         <div className="node-result-measures">
           <div className="node-result-row">
             <span className="node-result-label">평면식</span>
-            <span className="node-result-val">z = {result.planeA.toFixed(5)}·x + {result.planeB!.toFixed(5)}·y + {result.planeC!.toFixed(4)}</span>
+            <span className="node-result-val">z = {planeA.toFixed(5)}·x + {planeB!.toFixed(5)}·y + {planeC!.toFixed(4)}</span>
           </div>
           <div className="node-result-row">
             <span className="node-result-label">RMSE</span>
-            <span className="node-result-val">{result.rmse?.toFixed(4)} mm</span>
+            <span className="node-result-val">{getMeas(result.measurements, 'rmse')?.toFixed(4)} mm</span>
           </div>
           <div className="node-result-row">
             <span className="node-result-label">기울기</span>
-            <span className="node-result-val">{result.tiltDeg?.toFixed(3)}°</span>
+            <span className="node-result-val">{getMeas(result.measurements, 'tiltDeg')?.toFixed(3)}°</span>
           </div>
         </div>
       )}
-
 
       {toolType === 'LineCenter' && searchRois.length > 0 && (() => {
         const found = result.lines ?? []
@@ -278,22 +324,22 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         )
       })()}
 
-      {toolType === 'Align' && result.offCol !== undefined && (
+      {toolType === 'Align' && offCol !== undefined && (
         <div className="node-result-measures">
           <div className="node-result-row">
             <span className="node-result-label">원점 (px)</span>
-            <span className="node-result-val">({result.offCol.toFixed(1)}, {result.offRow?.toFixed(1) ?? '—'})</span>
+            <span className="node-result-val">({offCol.toFixed(1)}, {offRow?.toFixed(1) ?? '—'})</span>
           </div>
           <div className="node-result-row">
             <span className="node-result-label">이동량 (mm)</span>
-            <span className="node-result-val">({result.offXMm?.toFixed(3) ?? '—'}, {result.offYMm?.toFixed(3) ?? '—'})</span>
+            <span className="node-result-val">({getMeas(result.measurements, 'offXMm')?.toFixed(3) ?? '—'}, {getMeas(result.measurements, 'offYMm')?.toFixed(3) ?? '—'})</span>
           </div>
         </div>
       )}
 
-      {toolType === 'HeightMeasure' && result.measures && result.measures.length > 0 && (
+      {toolType === 'HeightMeasure' && heightMeasures && heightMeasures.length > 0 && (
         <div className="node-result-measures">
-          {result.measures.map((m, i) => (
+          {heightMeasures.map((m, i) => (
             <div className="node-result-row" key={i}>
               <span className="node-result-label">ROI {i + 1}</span>
               <span className={`node-result-val ${m.pass ? '' : 'fail-val'}`}>
@@ -305,6 +351,51 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
           ))}
         </div>
       )}
+
+      {/* 라인 밴드 모드 — 런타임 생성 ROI 목록 (result.lines 외곽선 기반). 정적 ROI와 동일 형식 + mm/px 병기 */}
+      {toolType === 'CreateROI' && (() => {
+        const bandLines = result.lines ?? []
+        if (bandLines.length === 0) return null
+        const idxs = Array.from(new Set(bandLines.map(l => l.roiIndex))).sort((a, b) => a - b)
+        const side = (params.bandSide as string) ?? 'both'
+        const labels = side === 'left' ? ['left'] : side === 'right' ? ['right'] : ['left', 'right']
+        const rx = result.xResMm ?? upstreamResX ?? 1
+        const ry = result.yResMm ?? upstreamResY ?? 1
+        const oc = result.originCol ?? upstreamOriginCol ?? 0
+        const or = result.originRow ?? upstreamOriginRow ?? 0
+        const dist = (ax: number, ay: number, bx: number, by: number) => Math.hypot(bx - ax, by - ay)
+        return (
+          <div className="node-result-measures">
+            <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+              <span className="node-result-label">라인 밴드 ROI</span>
+              <span className="node-result-val">{idxs.length}개</span>
+            </div>
+            {idxs.map((ri, k) => {
+              const es = bandLines.filter(l => l.roiIndex === ri && l.p0x !== undefined)
+              if (es.length < 4) return null
+              // 코너 px (c0,c1,c2,c3 순). c0-c1=폭변, c1-c2=길이변.
+              const cpx = es.slice(0, 4).map(e => ({ x: e.p0x!, y: e.p0y! }))
+              const cenPx = { x: cpx.reduce((s, p) => s + p.x, 0) / 4, y: cpx.reduce((s, p) => s + p.y, 0) / 4 }
+              const lenPx = dist(cpx[1].x, cpx[1].y, cpx[2].x, cpx[2].y)
+              const widPx = dist(cpx[0].x, cpx[0].y, cpx[1].x, cpx[1].y)
+              const angPx = Math.atan2(cpx[2].y - cpx[1].y, cpx[2].x - cpx[1].x) * 180 / Math.PI
+              // mm (코너를 mm로 변환 후 계산 — 비등방 정확)
+              const cmm = cpx.map(p => ({ x: (p.x - oc) * rx, y: (p.y - or) * ry }))
+              const cenMm = { x: cmm.reduce((s, p) => s + p.x, 0) / 4, y: cmm.reduce((s, p) => s + p.y, 0) / 4 }
+              const lenMm = dist(cmm[1].x, cmm[1].y, cmm[2].x, cmm[2].y)
+              const widMm = dist(cmm[0].x, cmm[0].y, cmm[1].x, cmm[1].y)
+              const angMm = Math.atan2(cmm[2].y - cmm[1].y, cmm[2].x - cmm[1].x) * 180 / Math.PI
+              return (
+                <div className="node-result-row" key={ri} style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                  <span className="node-result-label">{k + 1}. {labels[k] ?? `밴드${ri}`} · {angMm.toFixed(1)}°</span>
+                  <span className="node-result-val">중심({cenMm.x.toFixed(2)}, {cenMm.y.toFixed(2)})mm · {lenMm.toFixed(2)}×{widMm.toFixed(2)}mm</span>
+                  <span className="node-result-val" style={{ opacity: 0.6, fontSize: 10 }}>중심({cenPx.x.toFixed(0)}, {cenPx.y.toFixed(0)})px · {lenPx.toFixed(0)}×{widPx.toFixed(0)}px · {angPx.toFixed(1)}°</span>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       {toolType === 'CreateROI' && (() => {
         const roiList = (params.rois as Roi[]) ?? []
@@ -342,6 +433,21 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         )
       })()}
 
+      {/* 범용 측정값 테이블 — 커스텀 렌더 없는 툴(RegionMeasure, LineFit 등) */}
+      {result.measurements && result.measurements.length > 0
+        && !['PlaneFit', 'Align', 'HeightMeasure'].includes(toolType) && (
+        <div className="node-result-measures">
+          {result.measurements.map((m, i) => (
+            <div className={`node-result-row ${m.valid ? '' : 'fail-val'}`} key={`${m.name}-${i}`}>
+              <span className="node-result-label">{m.name}</span>
+              <span className="node-result-val">
+                {Number.isFinite(m.value) ? m.value.toFixed(4) : '—'}{m.unit ? ` ${m.unit}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {result.msg && <div className="node-result-msg">{result.msg}</div>}
     </div>
   )
@@ -349,7 +455,6 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 
 export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>(() => getViewState(nodeId).tab ?? 'params')
-  // 선택 탭을 노드별로 세션 유지 (패널 토글·노드 전환에도 복원)
   useEffect(() => { patchViewState(nodeId, { tab }) }, [nodeId, tab])
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
 
@@ -359,8 +464,7 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
 
     const onMove = (ev: MouseEvent) => {
       if (!dragStartRef.current) return
-      const dx = dragStartRef.current.mx - ev.clientX   // drag left = wider
-      // 최대 폭: 창 너비에서 최소 여백(160px)만 남기고 최대한 넓게
+      const dx = dragStartRef.current.mx - ev.clientX
       const maxW = Math.max(600, window.innerWidth - 160)
       onWidthChange(Math.max(220, Math.min(maxW, dragStartRef.current.w + dx)))
     }
@@ -461,7 +565,9 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
           ) : toolType === 'Threshold' ? (
             <ThresholdEditor
               channel={(params.channel as number) ?? 0}
+              thresholdMode={(params.thresholdMode as 'mm' | 'raw') ?? 'mm'}
               thresholdMm={(params.thresholdMm as number) ?? 0}
+              thresholdRaw={(params.thresholdRaw as number) ?? 0}
               keepAbove={(params.keepAbove as boolean) ?? true}
               preview={upstreamPreview ?? result?.preview}
               zMin={upstreamZMin ?? result?.zMin}
@@ -472,18 +578,65 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               onChange={(next: ThresholdSettings) => onParamChange(nodeId, { ...params, ...next })}
             />
           ) : toolType === 'CreateROI' ? (
-            <CreateRoiEditor
-              rois={(params.rois as Roi[]) ?? []}
-              preview={upstreamPreview ?? result?.preview}
-              zMin={upstreamZMin ?? result?.zMin}
-              zMax={upstreamZMax ?? result?.zMax}
-              resXMm={upstreamResX ?? result?.xResMm}
-              resYMm={upstreamResY ?? result?.yResMm}
-              originCol={upstreamOriginCol}
-              originRow={upstreamOriginRow}
-              viewKey={nodeId}
-              onChange={(next: CreateRoiSettings) => onParamChange(nodeId, { ...params, ...next })}
-            />
+            <>
+              <div className="node-result-measures" style={{ marginBottom: 8 }}>
+                <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+                  라인 밴드 (포트1 Line 연결 시)
+                </div>
+                <NumField label="폭(mm)" step={0.5}
+                  value={(params.bandWidthMm as number) ?? 5}
+                  onChange={v => onParamChange(nodeId, { ...params, bandWidthMm: v })} />
+                <NumField label="오프셋(mm)" step={0.5}
+                  value={(params.bandOffsetMm as number) ?? 3}
+                  onChange={v => onParamChange(nodeId, { ...params, bandOffsetMm: v })} />
+                <div className="param-row">
+                  <span className="param-label">방향</span>
+                  <select className="param-select" value={(params.bandSide as string) ?? 'both'}
+                    onChange={e => onParamChange(nodeId, { ...params, bandSide: e.target.value })}>
+                    <option value="both">both</option>
+                    <option value="left">left</option>
+                    <option value="right">right</option>
+                  </select>
+                </div>
+                <div className="param-row">
+                  <span className="param-label">길이</span>
+                  <select className="param-select" value={(params.bandLenMode as string) ?? 'line'}
+                    onChange={e => onParamChange(nodeId, { ...params, bandLenMode: e.target.value })}>
+                    <option value="line">라인 실제</option>
+                    <option value="fixed">고정</option>
+                  </select>
+                </div>
+                {(params.bandLenMode as string) === 'fixed' && (
+                  <NumField label="고정길이(mm)" step={1}
+                    value={(params.bandLengthMm as number) ?? 10}
+                    onChange={v => onParamChange(nodeId, { ...params, bandLengthMm: v })} />
+                )}
+              </div>
+              <CreateRoiEditor
+                rois={(params.rois as Roi[]) ?? []}
+                preview={upstreamPreview ?? result?.preview}
+                zMin={upstreamZMin ?? result?.zMin}
+                zMax={upstreamZMax ?? result?.zMax}
+                resXMm={upstreamResX ?? result?.xResMm}
+                resYMm={upstreamResY ?? result?.yResMm}
+                originCol={upstreamOriginCol}
+                originRow={upstreamOriginRow}
+                viewKey={nodeId}
+                overlay={result?.lines && result.lines.length && result.imgW && result.imgH ? (
+                  <svg viewBox={`0 0 ${result.imgW} ${result.imgH}`} preserveAspectRatio="none"
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+                    {result.lines.map((l, i) => (
+                      (l.p0x !== undefined && l.p1x !== undefined) ? (
+                        <line key={i} x1={l.p0x} y1={l.p0y} x2={l.p1x} y2={l.p1y}
+                          stroke={l.roiIndex === 0 ? '#00e5ff' : '#ffca28'} strokeWidth={2}
+                          vectorEffect="non-scaling-stroke" />
+                      ) : null
+                    ))}
+                  </svg>
+                ) : undefined}
+                onChange={(next: CreateRoiSettings) => onParamChange(nodeId, { ...params, ...next })}
+              />
+            </>
           ) : toolType === 'NoiseFilter' ? (
             <NoiseFilterEditor
               params={params}
@@ -498,8 +651,6 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               onChange={(next) => onParamChange(nodeId, next)}
             />
           ) : toolType === 'RowStretch' ? (
-            // 설정 뷰는 항상 원본(입력) 이미지 위에 밴드를 그린다. 자기 출력(늘어난 이미지)로
-            // 폴백하면 크기가 달라져 ROI 위치가 어긋나므로 upstream만 사용(없으면 빈 화면).
             <RowStretchEditor
               params={params}
               preview={upstreamPreview}

@@ -40,14 +40,23 @@ function Tip({ text }: { text?: string }) {
   return <span className="param-tip" data-tip={text}>ⓘ</span>
 }
 
-function NumField({ label, value, onChange, step = 1, tooltip }: {
+export function NumField({ label, value, onChange, step = 1, tooltip }: {
   label: string; value: number; onChange: (v: number) => void; step?: number; tooltip?: string
 }) {
+  // 로컬 문자열 상태 — 비우거나 입력 중간('', '-', '1.')을 허용. 유효 숫자일 때만 커밋.
+  const [raw, setRaw] = useState(String(value))
+  useEffect(() => { setRaw(String(value)) }, [value])
   return (
     <div className="param-row">
       <span className="param-label">{label}<Tip text={tooltip} /></span>
-      <input className="param-input" type="number" value={value} step={step}
-        onChange={e => onChange(parseFloat(e.target.value) || 0)} />
+      <input className="param-input" type="number" value={raw} step={step}
+        onChange={e => {
+          const s = e.target.value
+          setRaw(s)
+          if (s === '' || s === '-' || s === '.' || s === '-.' || s.endsWith('.')) return
+          const n = parseFloat(s)
+          if (!Number.isNaN(n)) onChange(n)
+        }} />
     </div>
   )
 }
@@ -479,6 +488,143 @@ function CloudSaverParams({ params, onChange }: { params: Record<string, unknown
   </>
 }
 
+
+function LineFitParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const feature = (params.feature as string) ?? 'ridge'
+  return <>
+    <div className="param-section">라인 검출</div>
+    <SelectField label="특징" value={feature} options={['ridge', 'valley', 'edge']}
+      onChange={v => set('feature', v)}
+      tooltip="ridge=높이 최대(능선) · valley=높이 최소(골) · edge=임계 교차(계단 엣지)" />
+    <SelectField label="스캔방향" value={(params.scanDir as string) ?? 'lr'} options={['lr', 'rl', 'tb', 'bt']}
+      onChange={v => set('scanDir', v)}
+      tooltip="캘리퍼 스캔축. lr/rl=행마다 좌→우/우→좌 (세로 라인 검출) · tb/bt=열마다 위→아래/아래→위 (가로 라인 검출)" />
+    {feature === 'edge' && <>
+      <NumField label="임계값(raw)" value={(params.threshold as number) ?? 0} step={1}
+        onChange={v => set('threshold', v)}
+        tooltip="raw 높이 임계. 이 값 교차 지점을 엣지로 검출" />
+      <CheckField label="상승엣지" value={(params.risingEdge as boolean) ?? true}
+        onChange={v => set('risingEdge', v)}
+        tooltip="on=낮→높 교차 · off=높→낮 교차" />
+    </>}
+    <SelectField label="피팅 방식" value={(params.fitMethod as string) ?? 'leastSquares'}
+      options={['leastSquares', 'ransac']} onChange={v => set('fitMethod', v)}
+      tooltip="leastSquares=PCA 총최소제곱(빠름, 이상점 약함) · ransac=인라이어 기반(이상점 강함)" />
+    {(params.fitMethod as string) === 'ransac' && <>
+      <NumField label="RANSAC 허용(mm)" value={(params.ransacTolMm as number) ?? 0.5} step={0.1}
+        onChange={v => set('ransacTolMm', v)}
+        tooltip="인라이어 판정 수직거리 허용치(mm). 이 이내 점만 피팅에 사용" />
+      <NumField label="RANSAC 반복" value={(params.ransacIters as number) ?? 100} step={10}
+        onChange={v => set('ransacIters', v)}
+        tooltip="무작위 표본 반복수. 클수록 안정, 느림. 시드 고정(반복성 보장)" />
+    </>}
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Line(각도·중심) · 측정값 angleDeg/cxMm/cyMm/straightness/pointCount</div>
+  </>
+}
+
+function ReduceDomainParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">처리 범위 제한</div>
+    <CheckField label="제외 모드(invert)" value={(params.invert as boolean) ?? false}
+      onChange={v => set('invert', v)}
+      tooltip="off=Region 안쪽만 유지(포함) · on=Region 안쪽을 NaN 처리(검사 제외 마스크)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      포트0=HeightMap · 포트1=Region. NaN은 하류 측정툴이 자동 제외.
+      제외영역 여러 개면 ReduceDomain(invert) 여러 번 체인.
+    </div>
+  </>
+}
+
+function RegionMeasureParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const ag = (params.aggregation as string) ?? 'Mean'
+  return <>
+    <div className="param-section">Z 집계 방식</div>
+    <SelectField label="aggregation" value={ag}
+      options={['Mean', 'Median', 'Max', 'Min', 'StdDev', 'HighTail', 'Percentile']}
+      onChange={v => set('aggregation', v)}
+      tooltip="Region 내 유효 Z값 집계. Mean/Median/Max/Min/StdDev · HighTail=상위 %평균 · Percentile=백분위" />
+    {ag === 'HighTail' && (
+      <NumField label="highTail %" step={1} value={(params.highTailPct as number) ?? 20}
+        onChange={v => set('highTailPct', v)} tooltip="상위 몇 % 평균을 zMm으로" />
+    )}
+    {ag === 'Percentile' && (
+      <NumField label="percentile" step={1} value={(params.percentile as number) ?? 50}
+        onChange={v => set('percentile', v)} tooltip="백분위(0~100). 50=중앙값" />
+    )}
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      포트0=Region[](필수) · 포트1=HeightMap(선택, 없으면 px 측정만).
+      출력: area·cxMm·cyMm·bbox·orient·zMm·volume·flatness
+    </div>
+  </>
+}
+
+function ValidRegionParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">유효 픽셀 필터</div>
+    <NumField label="Channel" value={(params.channel as number) ?? 0} step={1} onChange={v => set('channel', v)}
+      tooltip="검사할 채널 인덱스. 0=기본 채널" />
+    <CheckField label="Invert" value={(params.invert as boolean) ?? false} onChange={v => set('invert', v)}
+      tooltip="true=NaN 픽셀을 유효로 반전 (유효 픽셀을 마스크 아웃)" />
+  </>
+}
+
+function LevelNodeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'distance'
+  return <>
+    <div className="param-section">평탄화</div>
+    <SelectField label="Mode" value={mode} options={['distance', 'flatten']} onChange={v => set('mode', v)}
+      tooltip="distance=Plane까지 부호 있는 수직 거리(mm), flatten=수직 투영(z 성분만 제거)" />
+    <CheckField label="Keep Invalid" value={(params.keepInvalid as boolean) ?? true} onChange={v => set('keepInvalid', v)}
+      tooltip="true=입력 NaN 픽셀을 NaN으로 유지. false=0으로 채움" />
+    <NumField label="Offset (mm)" value={(params.offsetMm as number) ?? 0} step={0.01} onChange={v => set('offsetMm', v)}
+      tooltip="출력 전체에 더할 오프셋(mm). 기준면 위로 올리거나 내릴 때 사용" />
+  </>
+}
+
+function SurfaceCropNodeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'rect'
+  const rect = (params.rect as { x: number; y: number; w: number; h: number }) ?? { x: 0, y: 0, w: 0, h: 0 }
+  return <>
+    <div className="param-section">잘라내기</div>
+    <SelectField label="Mode" value={mode} options={['rect', 'region']} onChange={v => set('mode', v)}
+      tooltip="rect=사각형 픽셀 좌표 크롭, region=입력 Region 경계 박스 크롭" />
+    {mode === 'rect' && (
+      <RoiField label="Rect (px)" value={rect} onChange={v => set('rect', v)}
+        tooltip="잘라낼 픽셀 좌표 (x=좌, y=상, w=폭, h=높이). w=0이면 끝까지" />
+    )}
+    <CheckField label="Outside NaN" value={(params.outsideNaN as boolean) ?? true} onChange={v => set('outsideNaN', v)}
+      tooltip="region 모드: 영역 밖 픽셀을 NaN으로 채움. false=원본값 유지" />
+  </>
+}
+
+function SurfaceResampleNodeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'factor'
+  return <>
+    <div className="param-section">다운샘플</div>
+    <SelectField label="Mode" value={mode} options={['factor', 'resolution']} onChange={v => set('mode', v)}
+      tooltip="factor=배율로 축소, resolution=목표 분해능(mm)으로 배율 자동 계산" />
+    {mode === 'factor' ? (
+      <NumField label="Factor" value={(params.factor as number) ?? 2} step={1} onChange={v => set('factor', v)}
+        tooltip="축소 배율. 2=가로세로 각 2배 축소(1/4 픽셀)" />
+    ) : <>
+      <NumField label="Target X Res (mm)" value={(params.targetXResMm as number) ?? 0} step={0.001} onChange={v => set('targetXResMm', v)}
+        tooltip="목표 X 분해능(mm). 현재 xResMm보다 커야 함" />
+      <NumField label="Target Y Res (mm)" value={(params.targetYResMm as number) ?? 0} step={0.001} onChange={v => set('targetYResMm', v)}
+        tooltip="목표 Y 분해능(mm). 현재 yResMm보다 커야 함" />
+    </>}
+    <SelectField label="Method" value={(params.method as string) ?? 'decimate'} options={['decimate', 'meanValid']} onChange={v => set('method', v)}
+      tooltip="decimate=stride 샘플(빠름·NaN 포함), meanValid=블록 유효값 평균(NaN 제외)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>측정 경로 비권장 — 프리뷰·정렬 전용</div>
+  </>
+}
+
 export default function ParamPanel({ nodeId, toolType, label, params, onParamChange, onClose, embedded }: Props) {
   const def = TOOL_DEF_MAP[toolType]
   if (!def) return null
@@ -501,6 +647,13 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
+        {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
+        {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceCrop'      && <SurfaceCropNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceResample'  && <SurfaceResampleNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'LineFit'          && <LineFitParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -525,6 +678,13 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
+        {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
+        {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceCrop'      && <SurfaceCropNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceResample'  && <SurfaceResampleNodeParams params={params} onChange={handleChange} />}
+        {toolType === 'LineFit'          && <LineFitParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
       </div>
     </div>
   )
