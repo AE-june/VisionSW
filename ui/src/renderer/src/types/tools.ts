@@ -1,4 +1,4 @@
-export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Line' | 'Profile' | 'Measurements' | 'Decisions' | 'PointCloud3D' | 'Point' | 'Any'
+export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Line' | 'Geometry' | 'Profile' | 'Measurements' | 'Decisions' | 'PointCloud3D' | 'Point' | 'Any'
 
 // T0-2 P3: 포트 다중성. isArray=true면 배열 포트(엔진이 원소별 브로드캐스트).
 // 기존 노드 정의는 PortType 문자열 그대로 두고, 배열 포트만 { type, isArray } 로 적는다.
@@ -26,6 +26,7 @@ export const PORT_COLORS: Record<PortType, string> = {
   Region:       '#66bb6a',
   Plane:        '#26a69a',
   Line:         '#ab47bc',
+  Geometry:     '#7e57c2',   // 보라 계열 — Plane/Line 통합 기하
   Profile:      '#ff8f00',   // 주황 — 기존 7색과 구분
   Measurements: '#ffc107',
   Decisions:    '#ff7043',

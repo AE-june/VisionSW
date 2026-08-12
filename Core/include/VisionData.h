@@ -84,6 +84,53 @@ struct RefPoint {
 };
 
 // ─────────────────────────────────────────────
+//  Geometry — 피팅 기하 프리미티브 1급 타입 (B4).
+//  kind 태그 단일 타입으로 Point/Line/Circle/Plane 통합 (§3.0 설계).
+//  기존 PlaneModel·LineModel·RefPoint를 점진 흡수 — fromXxx 변환 헬퍼 제공.
+//  좌표는 px·mm 둘 다 보유(가능한 것). 미사용 필드는 0.
+// ─────────────────────────────────────────────
+enum class GeoKind { Point, Line, Circle, Plane };
+
+struct Geometry {
+    GeoKind kind = GeoKind::Point;
+    bool    valid = false;
+    std::string frameId;
+
+    // 위치 — Point/Line 중심/Circle 중심 (px & mm)
+    double cx = 0, cy = 0, cxMm = 0, cyMm = 0;
+    double angleDeg = 0;              // Point/Line 방향 (deg)
+
+    // Line 끝점 + 길이
+    double p0x = 0, p0y = 0, p1x = 0, p1y = 0;             // px
+    double p0xMm = 0, p0yMm = 0, p1xMm = 0, p1yMm = 0;     // mm
+    double lengthMm = 0;
+
+    double radiusMm = 0;             // Circle 반지름
+    double a = 0, b = 0, c = 0;      // Plane: z = a*x + b*y + c
+
+    double residualMm = 0;           // 피팅 잔차 (직진도/평면 rmse 등)
+    int    roiIndex = -1;
+
+    // ── 기존 타입 → Geometry 변환 (B4 이행용) ──
+    static Geometry fromPlane(const PlaneModel& p) {
+        Geometry g; g.kind = GeoKind::Plane; g.valid = p.valid; g.frameId = p.frameId;
+        g.a = p.a; g.b = p.b; g.c = p.c; return g;
+    }
+    static Geometry fromLine(const LineModel& l) {
+        Geometry g; g.kind = GeoKind::Line; g.valid = l.valid; g.frameId = l.frameId;
+        g.cx = l.cx; g.cy = l.cy; g.cxMm = l.cxMm; g.cyMm = l.cyMm; g.angleDeg = l.angleDeg;
+        g.p0x = l.p0x; g.p0y = l.p0y; g.p1x = l.p1x; g.p1y = l.p1y;
+        g.p0xMm = l.p0xMm; g.p0yMm = l.p0yMm; g.p1xMm = l.p1xMm; g.p1yMm = l.p1yMm;
+        g.lengthMm = l.lengthMm; g.residualMm = l.straightnessMm; return g;
+    }
+    static Geometry fromPoint(const RefPoint& r) {
+        Geometry g; g.kind = GeoKind::Point; g.valid = r.valid; g.frameId = "";
+        g.cx = r.cx; g.cy = r.cy; g.cxMm = r.cxMm; g.cyMm = r.cyMm;
+        g.angleDeg = r.angleDeg; g.roiIndex = r.roiIndex; return g;
+    }
+};
+
+// ─────────────────────────────────────────────
 //  Universal container passed through pipeline
 //
 //  Phase 2 규약:
@@ -101,6 +148,7 @@ struct VisionData {
     std::vector<std::shared_ptr<Region>>       regions;
     std::vector<std::shared_ptr<PlaneModel>>   planes;
     std::vector<std::shared_ptr<LineModel>>    lines;
+    std::vector<std::shared_ptr<Geometry>>     geometries;   // B4: 통합 기하 프리미티브
     std::vector<std::shared_ptr<Profile>>      profiles;
     std::vector<RefPoint>                      points;
     std::vector<Measurement>                   measurements;
@@ -178,6 +226,22 @@ struct VisionData {
     std::shared_ptr<LineModel> inLine(std::size_t port, std::size_t idx = 0) const {
         auto p = in(port);
         return (p && idx < p->lines.size()) ? p->lines[idx] : nullptr;
+    }
+    // ── Geometry (B4) 헬퍼 ──
+    std::shared_ptr<Geometry> geo0() const {
+        return geometries.empty() ? nullptr : geometries.front();
+    }
+    void setGeometry(std::shared_ptr<Geometry> g) {
+        geometries.clear(); if (g) geometries.push_back(std::move(g));
+    }
+    std::shared_ptr<Geometry> inGeometry(std::size_t port, std::size_t idx = 0) const {
+        auto p = in(port);
+        return (p && idx < p->geometries.size()) ? p->geometries[idx] : nullptr;
+    }
+    const std::vector<std::shared_ptr<Geometry>>& inGeometries(std::size_t port) const {
+        static const std::vector<std::shared_ptr<Geometry>> kEmpty;
+        auto p = in(port);
+        return p ? p->geometries : kEmpty;
     }
     std::shared_ptr<HeightMap> heightmap0() const {
         return heightmaps.empty() ? nullptr : heightmaps.front();
