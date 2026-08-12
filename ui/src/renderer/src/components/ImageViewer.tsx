@@ -245,6 +245,7 @@ export default function ImageViewer({
   const panStartRef = useRef<{ mx: number; my: number; sl: number; st: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)   // 스크롤 박스(좌표 기준 & 클리핑)
   const contentRef = useRef<HTMLDivElement>(null)     // 이미지 크기의 콘텐츠(스크롤 대상)
+  const overlayWrapRef = useRef<HTMLDivElement>(null) // 오버레이 SVG 래퍼(캡처 대상)
   // 휠 줌 후 커서 고정을 위해 적용할 스크롤 위치를 layout 단계에서 반영
   const pendingScrollRef = useRef<{ sl: number; st: number } | null>(null)
   const boxRef = useRef({ w: 0, h: 0 })
@@ -252,6 +253,57 @@ export default function ImageViewer({
 
   // zoom을 state + ref 동시 적용
   const applyZoom = useCallback((z: number) => { zoomRef.current = z; setZoom(z) }, [])
+
+  // 결과 이미지 + 오버레이(SVG) 합성 → PNG 저장. 베이스 canvas는 네이티브 해상도.
+  const captureAndSave = useCallback(async () => {
+    const base = canvasRef.current
+    if (!base || !base.width || !base.height) return
+    const W = base.width, H = base.height
+    const off = document.createElement('canvas'); off.width = W; off.height = H
+    const octx = off.getContext('2d'); if (!octx) return
+    octx.drawImage(base, 0, 0)   // 베이스(컬러맵 적용된 상태 그대로)
+
+    // 오버레이 래퍼 내부 SVG를 네이티브 해상도로 래스터해 겹침 (viewBox=이미지 px → 1:1)
+    // stroke는 화면에선 non-scaling-stroke라 2px. 네이티브 래스터에선 그대로면 실오라기처럼
+    // 얇아지므로, 화면 대비 확대비만큼 굵기를 키우고 non-scaling 제거해 보이던 비율 유지.
+    // 화면 대비 확대비 — 너무 두꺼워지지 않게 상한(2.5x)
+    const strokeScale = Math.min(2.5, base.clientWidth > 0 ? (W / base.clientWidth) : 1)
+    // 오버레이에 어두운 후광 — 배경과 대비돼 어떤 컬러맵/높이 위에서도 보임 (얇게)
+    octx.shadowColor = 'rgba(0,0,0,0.9)'
+    octx.shadowBlur = 1
+    const svgs = overlayWrapRef.current
+      ? Array.from(overlayWrapRef.current.querySelectorAll('svg'))
+      : []
+    for (const svg of svgs) {
+      const clone = svg.cloneNode(true) as SVGSVGElement
+      clone.setAttribute('width', String(W))
+      clone.setAttribute('height', String(H))
+      clone.querySelectorAll<SVGElement>('*').forEach(el => {
+        const sw = el.getAttribute('stroke-width')
+        if (sw) el.setAttribute('stroke-width', String(parseFloat(sw) * strokeScale))
+        if (el.getAttribute('vector-effect') === 'non-scaling-stroke')
+          el.removeAttribute('vector-effect')
+      })
+      const xml = new XMLSerializer().serializeToString(clone)
+      const url = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)))
+      await new Promise<void>(resolve => {
+        const img = new Image()
+        img.onload = () => { octx.drawImage(img, 0, 0, W, H); resolve() }
+        img.onerror = () => resolve()
+        img.src = url
+      })
+    }
+
+    const dataURL = off.toDataURL('image/png')
+    const api = (window as Window & {
+      electronAPI?: { saveImage?: (name: string, data: string) => Promise<string | null> }
+    }).electronAPI
+    if (!api?.saveImage) return
+    const n = new Date()
+    const p = (v: number) => String(v).padStart(2, '0')
+    const stamp = `${n.getFullYear()}${p(n.getMonth() + 1)}${p(n.getDate())}_${p(n.getHours())}${p(n.getMinutes())}${p(n.getSeconds())}`
+    await api.saveImage(`overlay_${stamp}.png`, dataURL)
+  }, [])
 
   // 전체보기 배율: 이미지 전체가 박스에 들어오는 native 스케일 (100%=원본 1:1)
   const fitZoom = (box: { w: number; h: number }, img: { w: number; h: number }) =>
@@ -560,6 +612,12 @@ export default function ImageViewer({
         {toolbarLeft}
         <div className="pfe-toolbar-right">
           <button
+            className="pfe-btn"
+            onClick={captureAndSave}
+            disabled={!preview}
+            title="결과 이미지 저장 (오버레이 포함, 원본 해상도 PNG)"
+          >💾</button>
+          <button
             className={`pfe-btn${colormap ? ' active' : ''}`}
             onClick={() => setColormap(v => !v)}
             title="컬러맵(높이) 토글"
@@ -657,7 +715,10 @@ export default function ImageViewer({
 
             {/* 오버레이(라인/중심/화살표)는 콘텐츠(이미지)에 정렬. 함수면 현재 zoom 전달(크기 고정용) */}
             {overlay && (
-              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+              <div ref={overlayWrapRef}
+                style={{ position: 'absolute', inset: 0, pointerEvents: 'none',
+                  // 어떤 배경(컬러맵/높이)에서도 보이도록 어두운 후광
+                  filter: 'drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000)' }}>
                 {typeof overlay === 'function' ? overlay(zoom) : overlay}
               </div>
             )}

@@ -127,6 +127,18 @@ ipcMain.handle('recipe:load', async (_event, filePath: string) => {
   return await readFile(filePath, 'utf-8')
 })
 
+// 결과 이미지(오버레이 합성 PNG) 저장 — 저장 다이얼로그 + dataURL 디코드 후 쓰기
+ipcMain.handle('image:save', async (_event, defaultName: string, dataURL: string) => {
+  const result = await dialog.showSaveDialog({
+    defaultPath: defaultName,
+    filters: [{ name: 'PNG', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
+  })
+  if (result.canceled || !result.filePath) return null
+  const base64 = dataURL.replace(/^data:image\/\w+;base64,/, '')
+  await writeFile(result.filePath, Buffer.from(base64, 'base64'))
+  return result.filePath
+})
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.smartray.visionsw')
 

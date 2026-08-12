@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadRecipe: (path: string) =>
     ipcRenderer.invoke('recipe:load', path),
 
+  // 결과 이미지(오버레이 합성 PNG) 저장 — 저장 다이얼로그 후 파일 쓰기. 저장 경로 반환(취소 시 null)
+  saveImage: (defaultName: string, dataURL: string) =>
+    ipcRenderer.invoke('image:save', defaultName, dataURL),
+
   // 네이티브 메뉴(File) 클릭 액션 구독 — 'openRecipe' | 'saveRecipe' | 'saveRecipeAs'
   onMenuAction: (cb: (action: string) => void) => {
     const handler = (_: Electron.IpcRendererEvent, action: string) => cb(action)
