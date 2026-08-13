@@ -3,6 +3,9 @@
 #include "NoiseFilter.h"
 #include "PlaneFitTool.h"
 #include "LineFitTool.h"
+#include "HeightMapToCloudTool.h"
+#include "RowStretchTool.h"
+#include "GapFillTool.h"
 #include "CsvWriterTool.h"
 #include "LineCenterTool.h"
 #include "AlignTool.h"
@@ -275,70 +278,7 @@ public:
     }
 };
 
-// ── RowStretch (행 늘리기): Region 포트(포트 1, 선택)가 지정한 행을 scale배 선형보간 업샘플.
-//    A5-4: rois 파라미터 제거 → Region 포트. 없으면 전체 이미지 행 × scale.
-//    Region이 있으면 해당 행(Region 내 픽셀이 1개 이상 있는 행)만 늘리고 나머지는 × 1.
-class RowStretchTool : public IAlgorithmTool {
-    int m_scale;
-public:
-    explicit RowStretchTool(int scale) : m_scale(std::max(1, scale)) {}
-    std::string name() const override { return "RowStretch"; }
-
-    ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->inHeightMap(0))
-            return { ToolStatus::Fail, "RowStretch: HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->inHeightMap(0);
-        const int w = zm.width, h = zm.height;
-        if (w <= 0 || h <= 0) return { ToolStatus::Fail, "RowStretch: 빈 HeightMap" };
-        const float NaN = std::numeric_limits<float>::quiet_NaN();
-        const auto region = input->inRegion(1);
-
-        std::vector<int> rowScale((size_t)h, 1);
-        if (region && !region->empty()) {
-            const int rh = region->height, rw = region->width;
-            for (int r = 0; r < h && r < rh; ++r)
-                for (int c = 0; c < w && c < rw; ++c)
-                    if (region->contains(c, r)) { rowScale[r] = m_scale; break; }
-        } else {
-            std::fill(rowScale.begin(), rowScale.end(), m_scale);
-        }
-
-        size_t outH = 0; for (int r = 0; r < h; ++r) outH += (size_t)rowScale[r];
-        auto z = std::make_shared<HeightMap>();
-        z->width=w; z->height=(int)outH;
-        z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
-        z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-        z->originCol=zm.originCol; z->originRow=zm.originRow;
-        z->data.assign((size_t)outH*w, NaN);
-
-        auto at=[&](int r, int c){ return zm.data[(size_t)r*w+c]; };
-        size_t outRow=0;
-        for (int r=0; r<h; ++r) {
-            const int s=rowScale[r];
-            for (int k=0; k<s; ++k) {
-                float* dst=&z->data[outRow*w];
-                if (k==0 || r+1>=h) {
-                    std::copy(&zm.data[(size_t)r*w], &zm.data[(size_t)r*w+w], dst);
-                } else {
-                    const float t=(float)k/s;
-                    for (int c=0; c<w; ++c) {
-                        float a=at(r,c), b=at(r+1,c);
-                        if (!std::isnan(a)&&!std::isnan(b)) dst[c]=a*(1.f-t)+b*t;
-                        else if (!std::isnan(a)) dst[c]=a;
-                        else dst[c]=b;
-                    }
-                }
-                ++outRow;
-            }
-        }
-
-        auto data=std::make_shared<VisionData>();
-        data->setHeightMap(z);
-        data->sourceId=input->sourceId;
-        VISION_LOG_INFO("RowStretch: {}x{} → {}x{} (scale={})", w, h, w, (int)outH, m_scale);
-        return { ToolStatus::Ok, "", data };
-    }
-};
+// RowStretchTool → VisionTools/RowStretchTool.{h,cpp} 로 이동 (A2)
 
 // ── DualExposureMerge (이중노출 머지, 재구현): 인터리브 홀짝 → 오프셋보정 →
 //    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
@@ -818,37 +758,6 @@ public:
     }
 };
 
-// ── HeightMapToCloud: HeightMap(높이맵) → PointCloud3D. 유효 픽셀마다 (x,y,z)mm 점 생성. ──
-//   x = (col-originCol)*xRes, y = (row-originRow)*yRes, z = (raw-zZero)*zRes (mm)
-//   step으로 서브샘플(대용량 클라우드 감축). NaN(무효) 픽셀은 건너뜀.
-class HeightMapToCloudTool : public IAlgorithmTool {
-    int m_step;
-public:
-    explicit HeightMapToCloudTool(int step) : m_step(std::max(1, step)) {}
-    std::string name() const override { return "HeightMapToCloud"; }
-
-    ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->inHeightMap(0))
-            return { ToolStatus::Fail, "HeightMap→Cloud: HeightMap 입력이 필요합니다" };
-        const HeightMap& zm = *input->inHeightMap(0);
-        auto cloud = std::make_shared<PointCloud3D>();
-        cloud->frameId = input->sourceId;
-        cloud->points.reserve((size_t)(zm.width / m_step + 1) * (zm.height / m_step + 1));
-        for (int row = 0; row < zm.height; row += m_step)
-            for (int col = 0; col < zm.width; col += m_step) {
-                if (!zm.valid(col, row)) continue;   // NaN 제외
-                cloud->points.push_back({ zm.xMm(col), zm.yMm(row), zm.zMm(col, row) });
-            }
-        // 타입화 출력: 클라우드만 전달(다운스트림 저장/처리용). 결과창 이미지는 입력 heightmap으로 폴백.
-        auto out = std::make_shared<VisionData>();
-        out->setCloud(cloud);
-        out->sourceId = input->sourceId;
-        VISION_LOG_INFO("HeightMapToCloud: {} points (step={}, {}x{})",
-                        cloud->points.size(), m_step, zm.width, zm.height);
-        return { ToolStatus::Ok, "", out };
-    }
-};
-
 // ── CloudSaver: PointCloud3D → 파일 저장. .xyz(텍스트) / .ply(ascii, 기본). ────
 //   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
 class CloudSaverTool : public IAlgorithmTool {
@@ -918,11 +827,8 @@ public:
     }
 };
 
-// ── GapFill: HeightMap의 결측(NaN) 픽셀을 보간해 메움. ───────────────────────────
-//   가장 가까운 유효 픽셀까지 거리 ≤ maxGap 인 결측만 채우고, 그보다 큰 구멍(중앙)은
-//   NaN으로 남긴다(검사에서 가짜 표면을 지어내지 않기 위함).
-//   method: neighbor(반복 이웃) / laplace(PDE) / nearest(최근접) / idw(역거리) / linear(행·열 선형)
-//   출력 단계: 1.메운 결과 / 2.원본 / 3.메운 영역(마스크)
+// GapFillTool → VisionTools/GapFillTool.{h,cpp} 로 이동 (A2)
+#if 0
 class GapFillTool : public IAlgorithmTool {
 public:
     enum class Method { Neighbor, Median, Laplace, Nearest, Idw, Linear, Anisotropic };
@@ -1150,6 +1056,7 @@ public:
         return { ToolStatus::Ok, "", vd };
     }
 };
+#endif
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

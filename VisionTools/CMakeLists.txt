@@ -7,6 +7,9 @@ add_library(VisionTools STATIC
     src/NoiseFilter.cpp
     src/PlaneFitTool.cpp
     src/LineFitTool.cpp
+    src/HeightMapToCloudTool.cpp
+    src/RowStretchTool.cpp
+    src/GapFillTool.cpp
     src/CsvWriterTool.cpp
     src/LineCenterTool.cpp
     src/AlignTool.cpp
