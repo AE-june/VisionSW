@@ -11,6 +11,7 @@ import CreateRoiEditor, { type CreateRoiSettings } from './CreateRoiEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
+import ProfileChart from './ProfileChart'
 import RoiCanvas, { type Roi } from './RoiCanvas'
 
 interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean }
@@ -31,6 +32,9 @@ interface NodeResult {
   decisions?: NodeDecision[]
   // 3D 포인트클라우드 (PlaneFit overlay, HeightMapToCloud, ExposureMergeCloud)
   cloud?: [number, number, number][]
+  // 행별 Profile (CloudToProfiles, ExtractProfile) — 형상 차트/카운트용
+  profileCount?: number
+  profiles?: { label: string; n: number; x: number[]; z: (number | null)[] }[]
   // LineCenter — 찾은 모든 라인 (overlay에서 직렬화)
   lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number;
             p0x?: number; p0y?: number; p1x?: number; p1y?: number }[]
@@ -100,6 +104,8 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 }) {
   const [stageIdx, setStageIdx] = useState(0)
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
+  const [profRow, setProfRow] = useState(0)
+  const [profMode, setProfMode] = useState<'line' | 'points'>('points')
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
@@ -429,6 +435,40 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
                 </div>
               )
             })}
+          </div>
+        )
+      })()}
+
+      {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) */}
+      {result.profiles && result.profiles.length > 0 && (() => {
+        const idx = Math.min(profRow, result.profiles.length - 1)
+        const p = result.profiles[idx]
+        return (
+          <div className="node-result-measures">
+            <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+              <span className="node-result-label">프로파일</span>
+              <span className="node-result-val">{result.profileCount ?? result.profiles.length}개</span>
+            </div>
+            <div className="param-row">
+              <span className="param-label">행</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                <input type="range" min={0} max={result.profiles!.length - 1} step={1} value={idx}
+                  style={{ flex: 1 }}
+                  onChange={e => setProfRow(parseInt(e.target.value))} />
+                <span className="node-result-val" style={{ whiteSpace: 'nowrap', minWidth: 92, textAlign: 'right' }}>
+                  {p.label || `#${idx}`} ({p.n}점)
+                </span>
+              </div>
+            </div>
+            <div className="param-row">
+              <span className="param-label">표시</span>
+              <select className="param-select" value={profMode}
+                onChange={e => setProfMode(e.target.value as 'line' | 'points')}>
+                <option value="points">점</option>
+                <option value="line">선</option>
+              </select>
+            </div>
+            <ProfileChart x={p.x} z={p.z} mode={profMode} />
           </div>
         )
       })()}

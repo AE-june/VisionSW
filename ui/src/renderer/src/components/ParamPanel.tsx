@@ -538,18 +538,58 @@ function CloudToProfilesParams({ params, onChange }: { params: Record<string, un
   const reduce = (params.reduce as string) ?? 'none'
   return <>
     <div className="param-section">행별 Profile 추출</div>
-    <NumField label="yStep(mm)" step={0.05} value={(params.yStepMm as number) ?? 0.1}
-      onChange={v => set('yStepMm', v)} tooltip="행(Y bin) 크기. 이 간격마다 한 행" />
-    <SelectField label="컬럼 축약" value={reduce} options={['none', 'max', 'min', 'mean']}
+    <SelectField label="스캔축" value={(params.scanAxis as string) ?? 'x'} options={['x', 'y']}
+      onChange={v => set('scanAxis', v)}
+      tooltip="프로파일이 늘어선 방향(스캔). 이 축으로 행을 나눔. 프로파일 내부=나머지(횡)축. 예: 스캔=x → x고정 y단면" />
+    <NumField label="스캔 step(mm)" step={0.05} value={(params.scanStepMm as number) ?? 0.1}
+      onChange={v => set('scanStepMm', v)} tooltip="스캔축 bin(행 간격)" />
+    <SelectField label="횡 축약" value={reduce} options={['none', 'max', 'min', 'mean']}
       onChange={v => set('reduce', v)}
-      tooltip="none: 컬럼당 다중 Z 전부 보존 · max/min/mean: X-bin으로 컬럼당 대표값 1개(정규 1D)" />
+      tooltip="none: 횡 위치당 다중 Z 전부 보존 · max/min/mean: 횡축 bin으로 대표값 1개(정규 1D)" />
     {reduce !== 'none' && (
-      <NumField label="xStep(mm)" step={0.05} value={(params.xStepMm as number) ?? 0.1}
-        onChange={v => set('xStepMm', v)} tooltip="컬럼(X bin) 크기 (축약 모드에서만)" />
+      <NumField label="횡 step(mm)" step={0.05} value={(params.latStepMm as number) ?? 0.1}
+        onChange={v => set('latStepMm', v)} tooltip="횡(lateral)축 bin 크기 (축약 모드에서만)" />
     )}
     <NumField label="최소 점수" step={1} value={(params.minPoints as number) ?? 1}
       onChange={v => set('minPoints', v)} tooltip="이보다 점 적은 행은 스킵" />
-    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (label row:N). ProfileFeature로 행별 분석.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (label row:N). 차트=횡축 vs Z. ProfileFeature로 행별 분석.</div>
+  </>
+}
+
+function NotchMeasureParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const method = (params.method as string) ?? 'flat'
+  return <>
+    <div className="param-section">프로파일 머지</div>
+    <NumField label="avgProfiles" step={1} value={(params.avgProfiles as number) ?? 1}
+      onChange={v => set('avgProfiles', v)} tooltip="측정 전 합칠 연속 스캔 프로파일 수 (1=개별 측정, N=N개 머지 후 1회 측정)" />
+    <SelectField label="머지 방식" value={(params.avgMethod as string) ?? 'mean'} options={['mean', 'median']}
+      onChange={v => set('avgMethod', v)}
+      tooltip="N개 프로파일을 열(column)별로 합치는 방식" />
+    <div className="param-section">바닥 검출</div>
+    <SelectField label="바닥 방식" value={method} options={['flat', 'corner']}
+      onChange={v => set('method', v)}
+      tooltip="flat: 평탄도 최소 창 탐색 · corner: 기울기 변화점(실패 시 flat 폴백)" />
+    <SelectField label="바닥 집계" value={(params.floorAgg as string) ?? 'median'} options={['median', 'mean']}
+      onChange={v => set('floorAgg', v)}
+      tooltip="바닥 창 안 포인트 집계 방식 (median: 이상값 강건, mean: 전체 평균)" />
+    <NumField label="notchTrigUm(µm)" step={10} value={(params.notchTrigUm as number) ?? -150}
+      onChange={v => set('notchTrigUm', v)} tooltip="노치 개구 트리거 임계값(음수=아래, 기본 -150µm)" />
+    <NumField label="landTolUm(µm)" step={5} value={(params.landTolUm as number) ?? 30}
+      onChange={v => set('landTolUm', v)} tooltip="랜드 분류 허용 편차 ±µm" />
+    {method === 'flat' && (
+      <NumField label="floorWinUm(µm)" step={10} value={(params.floorWinUm as number) ?? 150}
+        onChange={v => set('floorWinUm', v)} tooltip="바닥 탐색 창 폭 µm (flat 방식)" />
+    )}
+    {method === 'corner' && (
+      <NumField label="smoothCols" step={1} value={(params.smoothCols as number) ?? 3}
+        onChange={v => set('smoothCols', v)} tooltip="기울기 계산 이동평균 폭(3~5, corner 방식)" />
+    )}
+    <div className="param-section" style={{ fontSize: 10, opacity: 0.7 }}>센서 기하</div>
+    <NumField label="transportRes(mm)" step={0.0001} value={(params.transportResMm as number) ?? 0.003998}
+      onChange={v => set('transportResMm', v)} tooltip="스캔방향 피치 mm" />
+    <NumField label="lateralPitch(mm)" step={0.0001} value={(params.lateralPitchMm as number) ?? 0.0063}
+      onChange={v => set('lateralPitchMm', v)} tooltip="횡방향 피치 mm" />
   </>
 }
 
@@ -686,6 +726,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
+        {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -719,6 +760,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
+        {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
       </div>
     </div>
   )

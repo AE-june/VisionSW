@@ -177,9 +177,9 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'CsvWriter', label: 'CSV Writer', category: '출력',
-    inputs: ['Measurements'], outputs: [],
+    inputs: [{ type: 'Any' }], outputs: [],
     defaultParams: { path: '', label: '' },
-    description: '측정값(Measurements)을 CSV 파일로 저장',
+    description: '측정값(Measurements) 또는 Profile[]을 CSV 파일로 저장',
   },
   {
     type: 'HeightMapSaver', label: 'HeightMap Saver', category: '출력',
@@ -208,8 +208,21 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'CloudToProfiles', label: 'Cloud to Profiles', category: '변환',
     inputs: ['PointCloud3D'], outputs: [{ type: 'Profile', isArray: true }],
-    defaultParams: { yStepMm: 0.1, reduce: 'none', xStepMm: 0.1, minPoints: 1 },
-    description: '포인트클라우드를 행(Y bin)별 Profile[]로 분해. reduce=none이면 컬럼당 다중 Z 전부 보존',
+    defaultParams: { scanAxis: 'x', scanStepMm: 0.1, reduce: 'none', latStepMm: 0.1, minPoints: 1 },
+    description: '포인트클라우드를 스캔축(기본 X) bin별 Profile[]로 분해. 프로파일 내부=횡축. reduce=none이면 다중 Z 전부 보존',
+  },
+  {
+    type: 'NotchMeasure', label: 'Notch Measure', category: '측정',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D', { type: 'Profile', isArray: true }],
+    defaultParams: {
+      method: 'flat',
+      transportResMm: 0.003998, lateralPitchMm: 0.0063,
+      avgProfiles: 1, avgMethod: 'mean',
+      floorAgg: 'median',
+      notchTrigUm: -150, landTolUm: 30,
+      floorWinUm: 150, smoothCols: 3, floorTolUm: 40,
+    },
+    description: '배터리 캔캡 노치 깊이 측정. 출력: 필터링Cloud + 청크별 깊이Profile[] + valid_chunks',
   },
   {
     type: 'Collect', label: 'Collect', category: '축약',

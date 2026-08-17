@@ -20,6 +20,7 @@
 #include "SurfaceCropTool.h"
 #include "SurfaceResampleTool.h"
 #include "SurfaceSubtractTool.h"
+#include "NotchMeasureTool.h"
 #include "ExtractProfileTool.h"
 #include "ProfileFeatureTool.h"
 #include "CompareTool.h"
@@ -779,7 +780,7 @@ public:
         if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
 
         const auto& pts = input->inCloud(0)->points;
-        std::ofstream ofs(savePath, std::ios::binary);
+        std::ofstream ofs(std::filesystem::u8path(savePath), std::ios::binary);
         if (!ofs) return { ToolStatus::Fail, "CloudSaver: 파일을 열 수 없습니다: " + savePath };
 
         if (ext == "bin") {                       // 생 바이너리: float32 x,y,z 연속(헤더 없음). 점수=파일크기/12.
@@ -1143,9 +1144,11 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "CloudToProfiles") {
         CloudToProfilesTool::Params cp;
-        cp.yStepMm   = p.value("yStepMm", 0.1);
-        cp.xStepMm   = p.value("xStepMm", 0.1);
-        cp.minPoints = p.value("minPoints", 1);
+        cp.scanAxis   = (p.value("scanAxis", std::string("x")) == "y")
+                        ? CloudToProfilesTool::Axis::Y : CloudToProfilesTool::Axis::X;
+        cp.scanStepMm = p.value("scanStepMm", 0.1);
+        cp.latStepMm  = p.value("latStepMm", 0.1);
+        cp.minPoints  = p.value("minPoints", 1);
         std::string rd = p.value("reduce", std::string("none"));
         if      (rd == "max")  cp.reduce = CloudToProfilesTool::Reduce::Max;
         else if (rd == "min")  cp.reduce = CloudToProfilesTool::Reduce::Min;
@@ -1406,6 +1409,29 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.count = p.value("count", 1);
         params.name  = p.value("name",  std::string("combined"));
         return std::make_shared<CombineDecisionTool>(params);
+    }
+
+    if (type == "NotchMeasure") {
+        NotchMeasureParams np;
+        np.transportResMm  = p.value("transportResMm",  0.003998);
+        np.lateralPitchMm  = p.value("lateralPitchMm",  0.0063);
+        np.landFitIters    = p.value("landFitIters",     4);
+        np.landTolUm       = p.value("landTolUm",        30.0);
+        np.notchTrigUm     = p.value("notchTrigUm",     -150.0);
+        np.notchMaxGapUm   = p.value("notchMaxGapUm",   50.0);
+        np.notchMinCols    = p.value("notchMinCols",     20);
+        np.method          = p.value("method",           std::string("flat"));
+        np.floorWinUm      = p.value("floorWinUm",       150.0);
+        np.floorMinPts     = p.value("floorMinPts",      12);
+        np.smoothCols      = p.value("smoothCols",       3);
+        np.slopeDrop       = p.value("slopeDrop",        0.35);
+        np.cornerSearchUm  = p.value("cornerSearchUm",   500.0);
+        np.floorAgg        = p.value("floorAgg",         std::string("median"));
+        np.floorTolUm      = p.value("floorTolUm",       40.0);
+        np.dupMergeUm      = p.value("dupMergeUm",       10.0);
+        np.avgProfiles     = p.value("avgProfiles",      1);
+        np.avgMethod       = p.value("avgMethod",        std::string("mean"));
+        return std::make_shared<NotchMeasureTool>(np);
     }
 
     VISION_LOG_WARN("ToolFactory: unknown tool type '{}'", type);

@@ -401,6 +401,27 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["cloud"] = pts;
                 jr["cloudTotal"] = static_cast<long long>(cpts.size());
             }
+            // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 차트/카운트용
+            if (result.output && !result.output->profiles.empty()) {
+                const auto& profs = result.output->profiles;
+                jr["profileCount"] = static_cast<long long>(profs.size());
+                const size_t maxProf = 500;   // 행 상한(초과 시 등간격 샘플)
+                const size_t pstride = profs.size() > maxProf ? (profs.size() + maxProf - 1) / maxProf : 1;
+                json arr = json::array();
+                for (size_t pi = 0; pi < profs.size(); pi += pstride) {
+                    const auto& pr = *profs[pi];
+                    const size_t cap = 400;   // 샘플 상한
+                    const size_t ss = pr.size() > cap ? (pr.size() + cap - 1) / cap : 1;
+                    json xs = json::array(), zs = json::array();
+                    for (size_t i = 0; i < pr.size(); i += ss) {
+                        xs.push_back(pr.x[i]);
+                        zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
+                    }
+                    arr.push_back({{"label", pr.label}, {"n", (long long)pr.size()},
+                                   {"x", xs}, {"z", zs}});
+                }
+                jr["profiles"] = arr;
+            }
 
             if (!noPreview) {
                 if (result.output && result.output->hasRegion()) {
