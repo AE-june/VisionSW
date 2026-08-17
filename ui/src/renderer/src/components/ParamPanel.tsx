@@ -523,6 +523,36 @@ function LineFitParams({ params, onChange }: { params: Record<string, unknown>; 
   </>
 }
 
+function CloudLoaderParams({ params, onChange, toolType }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void; toolType?: string }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">포인트클라우드 로드</div>
+    <PathField label="파일 (ply/xyz/bin)" value={(params.path as string) ?? ''}
+      onChange={v => set('path', v)} toolType={toolType} />
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: PointCloud3D. CloudSaver 포맷과 대칭.</div>
+  </>
+}
+
+function CloudToProfilesParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const reduce = (params.reduce as string) ?? 'none'
+  return <>
+    <div className="param-section">행별 Profile 추출</div>
+    <NumField label="yStep(mm)" step={0.05} value={(params.yStepMm as number) ?? 0.1}
+      onChange={v => set('yStepMm', v)} tooltip="행(Y bin) 크기. 이 간격마다 한 행" />
+    <SelectField label="컬럼 축약" value={reduce} options={['none', 'max', 'min', 'mean']}
+      onChange={v => set('reduce', v)}
+      tooltip="none: 컬럼당 다중 Z 전부 보존 · max/min/mean: X-bin으로 컬럼당 대표값 1개(정규 1D)" />
+    {reduce !== 'none' && (
+      <NumField label="xStep(mm)" step={0.05} value={(params.xStepMm as number) ?? 0.1}
+        onChange={v => set('xStepMm', v)} tooltip="컬럼(X bin) 크기 (축약 모드에서만)" />
+    )}
+    <NumField label="최소 점수" step={1} value={(params.minPoints as number) ?? 1}
+      onChange={v => set('minPoints', v)} tooltip="이보다 점 적은 행은 스킵" />
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (label row:N). ProfileFeature로 행별 분석.</div>
+  </>
+}
+
 function ReduceDomainParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
@@ -654,6 +684,8 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'LineFit'          && <LineFitParams params={params} onChange={handleChange} />}
         {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -685,6 +717,8 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'LineFit'          && <LineFitParams params={params} onChange={handleChange} />}
         {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
       </div>
     </div>
   )

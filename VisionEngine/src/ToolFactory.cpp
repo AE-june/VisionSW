@@ -4,6 +4,8 @@
 #include "PlaneFitTool.h"
 #include "LineFitTool.h"
 #include "HeightMapToCloudTool.h"
+#include "CloudLoaderTool.h"
+#include "CloudToProfilesTool.h"
 #include "RowStretchTool.h"
 #include "GapFillTool.h"
 #include "CsvWriterTool.h"
@@ -1135,6 +1137,21 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "HeightMapToCloud") {
         return std::make_shared<HeightMapToCloudTool>(p.value("step", 1));
+    }
+    if (type == "CloudLoader") {
+        return std::make_shared<CloudLoaderTool>(p.value("path", std::string()));
+    }
+    if (type == "CloudToProfiles") {
+        CloudToProfilesTool::Params cp;
+        cp.yStepMm   = p.value("yStepMm", 0.1);
+        cp.xStepMm   = p.value("xStepMm", 0.1);
+        cp.minPoints = p.value("minPoints", 1);
+        std::string rd = p.value("reduce", std::string("none"));
+        if      (rd == "max")  cp.reduce = CloudToProfilesTool::Reduce::Max;
+        else if (rd == "min")  cp.reduce = CloudToProfilesTool::Reduce::Min;
+        else if (rd == "mean") cp.reduce = CloudToProfilesTool::Reduce::Mean;
+        else                   cp.reduce = CloudToProfilesTool::Reduce::None;
+        return std::make_shared<CloudToProfilesTool>(cp);
     }
     if (type == "GapFill") {
         std::string ms = p.value("method", "neighbor");

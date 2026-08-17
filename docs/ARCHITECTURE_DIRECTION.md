@@ -201,10 +201,16 @@ Image2D와 HeightMap을 **하나의 N채널 Image 타입**으로 통합 (HALCON 
 |---|---|
 | **Image** | ■NoiseFilter ■GapFill ■RowStretch ■EdgeDetector · ＋Threshold(→Region) ＋ChannelSelect/Merge ＋ImageMath ＋Crop/Resample · Gradient/Morphology |
 | **Region** | ＋CreateROI(Rect/Circle/Polygon→Region) ＋Morphology ＋Boolean(∪∩−) ＋ConnectedComponents(→Region[]) ＋RegionMeasure(면적/무게중심/BBox→Control) |
-| **PointCloud3D** | ■HeightMapToCloud ■ThicknessMeasure ＋CloudCrop ·Downsample ·CloudToImage |
+| **PointCloud3D** | ■HeightMapToCloud ■ThicknessMeasure ＋CloudLoader(파일→Cloud) ＋CloudToProfiles(행별 Profile[], 다중Z 보존) ＋CloudCrop ·Downsample ·CloudToImage |
 | **Geometry** | ■PlaneFit ＋FitLine/FitCircle(Region/Points→Geometry) ＋Intersect/Distance/Angle(→Control) |
-| **Profile** | ＋ExtractProfile(Image+Line→Profile) ＋ProfileEdge/Peak(→Point/Scalar) |
+| **Profile** | ＋ExtractProfile(Image+Line→Profile) ＋CloudToProfiles(Cloud→행별 Profile[]) ＋ProfileFeature(Profile[] 순회→Control) ＋ProfileEdge/Peak(→Point/Scalar) |
 | **Control** | ■RefHeight ■HeightMeasure ＋Compare(값 vs 공칭±공차→Decision) ＋ScalarMath ＋CombineDecision |
+
+> **Cloud 직접 분석 경로 (설계 확장, 2026-08):** 초기 설계는 HeightMap 중심(픽셀당 Z 1개)이라
+> Cloud 분석을 `CloudToImage → 이미지 툴`로 상정했으나, **한 컬럼에 여러 Z가 있는 클라우드**(벽/오버행/
+> 다중반사)는 HeightMap으로 표현 불가. 이를 위해 `CloudLoader`(파일→Cloud) + `CloudToProfiles`
+> (행=Y bin별 Profile[], reduce=none 시 다중 Z 전부 보존) + `ProfileFeature`(Profile[] 순회)로
+> **Cloud를 HeightMap 거치지 않고 직접 행별 분석**하는 경로를 추가했다.
 
 ### Layer 2 — 제어흐름 (F1)
 ＋ForEach(Region[]/Cloud/Array 순회) · ＋Condition/Branch · ＋Merge/Collect · ＋Select/Filter

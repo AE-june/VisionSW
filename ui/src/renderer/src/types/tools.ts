@@ -200,6 +200,18 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '3D 포인트클라우드를 PLY 등 파일 형식으로 저장',
   },
   {
+    type: 'CloudLoader', label: 'Cloud Loader', category: '입력',
+    inputs: [], outputs: ['PointCloud3D'],
+    defaultParams: { path: '' },
+    description: '포인트클라우드 파일(ply/xyz/bin) → PointCloud3D 로드',
+  },
+  {
+    type: 'CloudToProfiles', label: 'Cloud to Profiles', category: '변환',
+    inputs: ['PointCloud3D'], outputs: [{ type: 'Profile', isArray: true }],
+    defaultParams: { yStepMm: 0.1, reduce: 'none', xStepMm: 0.1, minPoints: 1 },
+    description: '포인트클라우드를 행(Y bin)별 Profile[]로 분해. reduce=none이면 컬럼당 다중 Z 전부 보존',
+  },
+  {
     type: 'Collect', label: 'Collect', category: '축약',
     inputs: [{ type: 'Any', isArray: true }], outputs: [{ type: 'Any' }],
     defaultParams: {},
@@ -238,7 +250,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'ProfileFeature', label: 'Profile Feature', category: '측정',
-    inputs: ['Profile'], outputs: ['Measurements'],
+    inputs: [{ type: 'Profile', isArray: true }], outputs: ['Measurements'],
     defaultParams: {
       kind: 'maxZ', searchFromMm: 0, searchToMm: 0, nth: 0, percentile: 50,
       edgeDir: 'any', edgeThresholdMm: 0.05, smoothWindow: 3,

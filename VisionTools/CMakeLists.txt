@@ -8,6 +8,8 @@ add_library(VisionTools STATIC
     src/PlaneFitTool.cpp
     src/LineFitTool.cpp
     src/HeightMapToCloudTool.cpp
+    src/CloudLoaderTool.cpp
+    src/CloudToProfilesTool.cpp
     src/RowStretchTool.cpp
     src/GapFillTool.cpp
     src/CsvWriterTool.cpp

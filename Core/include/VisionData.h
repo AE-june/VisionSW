@@ -188,6 +188,12 @@ struct VisionData {
         auto p = in(port);
         return (p && idx < p->profiles.size()) ? p->profiles[idx] : nullptr;
     }
+    // 포트의 Profile 배열 전체 반환 (여러 행 프로파일). 없으면 빈 벡터.
+    const std::vector<std::shared_ptr<Profile>>& inProfiles(std::size_t port) const {
+        static const std::vector<std::shared_ptr<Profile>> kEmpty;
+        auto p = in(port);
+        return p ? p->profiles : kEmpty;
+    }
     // 포트의 Region 배열 전체 반환 (Aurora Sequence<Region> 개념). 없으면 빈 벡터.
     const std::vector<std::shared_ptr<Region>>& inRegions(std::size_t port) const {
         static const std::vector<std::shared_ptr<Region>> kEmpty;

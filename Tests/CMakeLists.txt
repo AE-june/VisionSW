@@ -23,6 +23,7 @@ add_executable(ToolsTests
     Tools/LineFitTest.cpp
     Tools/CreateRoiBandTest.cpp
     Tools/ReduceDomainTest.cpp
+    Tools/CloudToProfilesTest.cpp
     Tools/NoiseFilterRegionTest.cpp
     Tools/AggregateTest.cpp
     Tools/ExtractProfileTest.cpp

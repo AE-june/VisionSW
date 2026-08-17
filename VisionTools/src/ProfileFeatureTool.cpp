@@ -165,10 +165,44 @@ static std::vector<P6Candidate> detectCorners(
 // ── execute ──────────────────────────────────────────────────────────
 
 ToolResult ProfileFeatureTool::execute(VisionDataPtr input) {
-    if (!input || !input->inProfile(0))
+    if (!input) return {ToolStatus::Fail, "ProfileFeature: 입력이 없습니다."};
+    const auto& profs = input->inProfiles(0);
+    if (profs.empty())
         return {ToolStatus::Fail, "ProfileFeature: Profile(포트 0)이 없습니다."};
 
-    const Profile& prof = *input->inProfile(0);
+    auto out = std::make_shared<VisionData>();
+    out->sourceId = input->sourceId;
+    out->frames   = input->frames;
+
+    // 여러 행 Profile → 순회 분석 (RegionMeasure 패턴). 이름에 label 프리픽스.
+    const bool multi = profs.size() > 1;
+    int okCount = 0;
+    std::string lastErr;
+    for (std::size_t pi = 0; pi < profs.size(); ++pi) {
+        if (!profs[pi] || profs[pi]->empty()) continue;
+        std::string prefix;
+        if (multi) {
+            const std::string& lbl = profs[pi]->label;
+            prefix = (lbl.empty() ? std::to_string(pi) : lbl) + ".";
+        }
+        ToolResult r = analyzeOne(*profs[pi]);
+        if (r.status != ToolStatus::Ok || !r.output) { lastErr = r.message; continue; }
+        ++okCount;
+        for (auto& m : r.output->measurements)
+            out->measurements.push_back({ prefix + m.name, m.value, m.unit, m.valid });
+        for (auto& pt : r.output->points)
+            out->points.push_back(pt);
+    }
+    if (okCount == 0)
+        return {ToolStatus::Fail, lastErr.empty() ? "ProfileFeature: 분석 실패" : lastErr};
+
+    VISION_LOG_INFO("ProfileFeature: kind={} profiles={} → {} measurements",
+        m_params.kind, profs.size(), out->measurements.size());
+    return {ToolStatus::Ok, "", out};
+}
+
+// 단일 Profile 분석 — 원본 로직. prefix 없이 측정값/점 생성(execute가 병합 시 프리픽스).
+ToolResult ProfileFeatureTool::analyzeOne(const Profile& prof) const {
     if (prof.empty())
         return {ToolStatus::Fail, "ProfileFeature: Profile이 비어있습니다."};
 
@@ -179,8 +213,6 @@ ToolResult ProfileFeatureTool::execute(VisionDataPtr input) {
     const std::string& kind = m_params.kind;
 
     auto out = std::make_shared<VisionData>();
-    out->sourceId = input->sourceId;
-    out->frames   = input->frames;
 
     auto addMeas = [&](const std::string& name, double value,
                        const std::string& unit = "mm") {

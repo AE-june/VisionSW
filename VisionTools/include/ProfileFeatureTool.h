@@ -26,6 +26,8 @@ public:
 
 private:
     ProfileFeatureParams m_params;
+    // 단일 Profile 분석 → measurements/points 담은 ToolResult. execute가 label 프리픽스 붙여 병합.
+    ToolResult analyzeOne(const Profile& prof) const;
 };
 
 } // namespace vision
