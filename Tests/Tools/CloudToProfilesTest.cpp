@@ -37,8 +37,8 @@ static double findMeas(const std::vector<Measurement>& ms, const std::string& na
 }
 
 TEST(CloudToProfilesTest, NoneKeepsAllPoints) {
-    // reduce=None → 행별 모든 점 보존. row0 = 4샘플(다중Z 포함).
-    CloudToProfilesTool tool({ 1.0, CloudToProfilesTool::Reduce::None, 0.1, 1 });
+    // reduce=None → 행별 모든 점 보존. row0 = 4샘플(다중Z 포함). scanAxis=Y(행=Y bin), 횡=X.
+    CloudToProfilesTool tool({ CloudToProfilesTool::Axis::Y, 1.0, CloudToProfilesTool::Reduce::None, 0.1, 1 });
     auto res = tool.execute(makeInputCloud());
     ASSERT_EQ(res.status, ToolStatus::Ok);
     ASSERT_EQ(res.output->profiles.size(), 3u);
@@ -52,8 +52,8 @@ TEST(CloudToProfilesTest, NoneKeepsAllPoints) {
 }
 
 TEST(CloudToProfilesTest, MaxReducesColumn) {
-    // reduce=Max, xStep=1 → 컬럼 x=1 대표값 = max(5,9)=9.
-    CloudToProfilesTool tool({ 1.0, CloudToProfilesTool::Reduce::Max, 1.0, 1 });
+    // reduce=Max, 횡(X) step=1 → 횡 x=1 대표값 = max(5,9)=9. scanAxis=Y.
+    CloudToProfilesTool tool({ CloudToProfilesTool::Axis::Y, 1.0, CloudToProfilesTool::Reduce::Max, 1.0, 1 });
     auto res = tool.execute(makeInputCloud());
     ASSERT_EQ(res.status, ToolStatus::Ok);
     ASSERT_EQ(res.output->profiles.size(), 3u);
@@ -67,7 +67,7 @@ TEST(CloudToProfilesTest, MaxReducesColumn) {
 
 TEST(CloudToProfilesTest, ProfileFeatureIteratesRows) {
     // CloudToProfiles(Max) → ProfileFeature(maxZ) 가 행별 라벨 프리픽스로 측정.
-    CloudToProfilesTool ctp({ 1.0, CloudToProfilesTool::Reduce::Max, 1.0, 1 });
+    CloudToProfilesTool ctp({ CloudToProfilesTool::Axis::Y, 1.0, CloudToProfilesTool::Reduce::Max, 1.0, 1 });
     auto cres = ctp.execute(makeInputCloud());
     ASSERT_EQ(cres.status, ToolStatus::Ok);
 

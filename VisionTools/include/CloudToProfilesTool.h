@@ -10,11 +10,13 @@ namespace vision {
 class CloudToProfilesTool : public IAlgorithmTool {
 public:
     enum class Reduce { None, Max, Min, Mean };
+    enum class Axis   { X, Y };
     struct Params {
-        double yStepMm   = 0.1;   // 행(Y bin) 크기
-        Reduce reduce    = Reduce::None;
-        double xStepMm   = 0.1;   // reduce!=None 일 때 컬럼(X bin) 크기
-        int    minPoints = 1;     // 행 채택 최소 점수
+        Axis   scanAxis   = Axis::X;   // 프로파일이 늘어선 방향(스캔축). 행 = 이 축 bin.
+        double scanStepMm = 0.1;       // 스캔축 bin(행 간격)
+        Reduce reduce     = Reduce::None;
+        double latStepMm  = 0.1;       // reduce!=None 시 횡(lateral)축 bin
+        int    minPoints  = 1;         // 행 채택 최소 점수
     };
 
     explicit CloudToProfilesTool(Params p = {}) : m_p(p) {}
