@@ -11,6 +11,7 @@ namespace vision {
 struct CsvWriterParams {
     std::string path;        // 출력 CSV 경로
     std::string label;       // (선택) 행 첫 컬럼에 기록할 라벨 — 폴더검사 시 소스 파일명
+    bool addTimestamp = false;  // true면 파일명 앞에 yyMMdd-HHmmfff_ 접두사 추가 (실행 시각 기준)
 };
 
 struct CsvWriterResult {

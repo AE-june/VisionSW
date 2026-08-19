@@ -25,6 +25,8 @@ add_library(VisionTools STATIC
     src/SurfaceResampleTool.cpp
     src/SurfaceSubtractTool.cpp
     src/NotchMeasureTool.cpp
+    src/NotchMeasureV2Tool.cpp
+    src/ProfileToCloudTool.cpp
 )
 
 target_include_directories(VisionTools

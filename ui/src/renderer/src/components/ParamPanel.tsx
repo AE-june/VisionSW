@@ -93,6 +93,8 @@ function PathField({ label, value, onChange, toolType }: {
     if (!api) return
     const filters = (toolType === 'HeightMapLoader' || toolType === 'ExposureMerge')
       ? [{ name: 'HeightMap (PNG)', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
+      : toolType === 'CloudLoader'
+      ? [{ name: 'Point Cloud', extensions: ['ply', 'xyz', 'asc', 'pcd', 'bin'] }, { name: 'All Files', extensions: ['*'] }]
       : [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tiff'] }, { name: 'All Files', extensions: ['*'] }]
     const path = await api.openFile(filters)
     if (path) onChange(path)
@@ -147,6 +149,17 @@ export function NoiseFilterParams({ params, onChange }: { params: Record<string,
   </>
 }
 
+function ProfileToCloudParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">스캔축 좌표 스냅</div>
+    <NumField label="Transport Res(mm)" step={0.001} value={(params.transportResMm as number) ?? 0}
+      onChange={v => set('transportResMm', v)}
+      tooltip="0=사용 안 함(profile에 저장된 값 그대로). >0이면 스캔축 좌표를 이 값의 배수로 스냅 — Cloud to Profiles의 스캔 step(mm)과 동일하게 맞추면 부동소수점 오차 없이 NotchMeasure의 transportResMm 재그룹핑과 정확히 맞물림" />
+    <div className="param-empty" style={{ fontSize: 10 }}>입력: Profile[]. Cloud to Profiles의 역변환</div>
+  </>
+}
+
 function CsvWriterParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const path = params.path as string ?? ''
@@ -168,7 +181,10 @@ function CsvWriterParams({ params, onChange }: { params: Record<string, unknown>
       <button className="btn-browse" onClick={handleSave}>📁 폴더/파일 선택</button>
       {path && <div className="param-path-display" title={path}>{path}</div>}
     </div>
-    <div className="param-empty" style={{ fontSize: 10 }}>실행할 때마다 한 행씩 추가됩니다</div>
+    <CheckField label="파일명에 저장 시각 추가" value={(params.addTimestamp as boolean) ?? false}
+      onChange={v => set('addTimestamp', v)}
+      tooltip="켜면 실행 시각(yyMMdd-HHmmfff)을 파일명 앞에 붙여 매번 새 파일로 저장. Profile[] 저장(스냅샷)엔 적합하지만, 측정값 append(반복성 로그) 모드에서 켜면 실행마다 새 파일이 생겨 누적되지 않음" />
+    <div className="param-empty" style={{ fontSize: 10 }}>실행할 때마다 한 행씩 추가됩니다 (저장 시각 추가 옵션이 꺼져 있을 때)</div>
   </>
 }
 
@@ -527,8 +543,11 @@ function CloudLoaderParams({ params, onChange, toolType }: { params: Record<stri
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   return <>
     <div className="param-section">포인트클라우드 로드</div>
-    <PathField label="파일 (ply/xyz/bin)" value={(params.path as string) ?? ''}
+    <PathField label="파일 (ply/xyz/asc/pcd/bin)" value={(params.path as string) ?? ''}
       onChange={v => set('path', v)} toolType={toolType} />
+    <CheckField label="X/Y 반전 로드 (Keyence)" value={(params.swapXY as boolean) ?? false}
+      onChange={v => set('swapXY', v)}
+      tooltip="켜면 로드한 점의 X/Y를 맞바꿈. SmartRay는 x=스캔(transport)/y=레이저라인(lateral)인데 Keyence는 반대(스캔=Y, 레이저라인=X)이므로 켜서 파이프라인 축 관례에 맞춤" />
     <div className="param-empty" style={{ fontSize: 10 }}>출력: PointCloud3D. CloudSaver 포맷과 대칭.</div>
   </>
 }
@@ -575,11 +594,19 @@ function NotchMeasureParams({ params, onChange }: { params: Record<string, unkno
       tooltip="바닥 창 안 포인트 집계 방식 (median: 이상값 강건, mean: 전체 평균)" />
     <NumField label="notchTrigUm(µm)" step={10} value={(params.notchTrigUm as number) ?? -150}
       onChange={v => set('notchTrigUm', v)} tooltip="노치 개구 트리거 임계값(음수=아래, 기본 -150µm)" />
+    <NumField label="notchMinCols" step={1} value={(params.notchMinCols as number) ?? 20}
+      onChange={v => set('notchMinCols', v)} tooltip="노치로 인정할 최소 연속 컬럼 수(횡 피치 단위). 너무 크면 실제 노치가 폭 부족으로 통째로 무효 처리되어 profile이 비어보임 — 그럴 땐 이 값을 낮춰보세요" />
+    <NumField label="notchMaxGapUm(µm)" step={5} value={(params.notchMaxGapUm as number) ?? 50}
+      onChange={v => set('notchMaxGapUm', v)} tooltip="노치 연속구간 판정 시 허용 gap(횡 방향, µm)" />
     <NumField label="landTolUm(µm)" step={5} value={(params.landTolUm as number) ?? 30}
       onChange={v => set('landTolUm', v)} tooltip="랜드 분류 허용 편차 ±µm" />
     {method === 'flat' && (
-      <NumField label="floorWinUm(µm)" step={10} value={(params.floorWinUm as number) ?? 150}
-        onChange={v => set('floorWinUm', v)} tooltip="바닥 탐색 창 폭 µm (flat 방식)" />
+      <>
+        <NumField label="floorWinUm(µm)" step={10} value={(params.floorWinUm as number) ?? 150}
+          onChange={v => set('floorWinUm', v)} tooltip="바닥 탐색 창 폭 µm (flat 방식)" />
+        <NumField label="floorMinPts" step={1} value={(params.floorMinPts as number) ?? 12}
+          onChange={v => set('floorMinPts', v)} tooltip="바닥 탐색 창 안 최소 점 개수" />
+      </>
     )}
     {method === 'corner' && (
       <NumField label="smoothCols" step={1} value={(params.smoothCols as number) ?? 3}
@@ -590,6 +617,88 @@ function NotchMeasureParams({ params, onChange }: { params: Record<string, unkno
       onChange={v => set('transportResMm', v)} tooltip="스캔방향 피치 mm" />
     <NumField label="lateralPitch(mm)" step={0.0001} value={(params.lateralPitchMm as number) ?? 0.0063}
       onChange={v => set('lateralPitchMm', v)} tooltip="횡방향 피치 mm" />
+  </>
+}
+
+function NotchMeasureV2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const method = (params.method as string) ?? 'flat'
+  return <>
+    <div className="param-section">프로파일 머지 (V1과 동일)</div>
+    <NumField label="avgProfiles" step={1} value={(params.avgProfiles as number) ?? 1}
+      onChange={v => set('avgProfiles', v)} tooltip="측정 전 합칠 연속 스캔 프로파일 수 (1=개별 측정, N=N개 머지 후 1회 측정)" />
+    <SelectField label="머지 방식" value={(params.avgMethod as string) ?? 'mean'} options={['mean', 'median']}
+      onChange={v => set('avgMethod', v)}
+      tooltip="N개 프로파일을 컬럼별로 합치는 방식" />
+    <div className="param-section">Land 기준선 피팅</div>
+    <NumField label="landFitIters" step={1} value={(params.landFitIters as number) ?? 4}
+      onChange={v => set('landFitIters', v)} tooltip="3차 다항식 강건 피팅 반복 횟수(이상치 ±3σ 제거)" />
+    <div className="param-section">Notch 개구 검출</div>
+    <NumField label="notchTrigUm(µm)" step={10} value={(params.notchTrigUm as number) ?? -150}
+      onChange={v => set('notchTrigUm', v)} tooltip="land 기준선 대비 이 값(부호 있음)보다 낮아지면 notch 후보. 보통 음수" />
+    <NumField label="notchMaxGapUm(µm)" step={5} value={(params.notchMaxGapUm as number) ?? 50}
+      onChange={v => set('notchMaxGapUm', v)} tooltip="notch 연속구간 판정 시 허용 gap(y방향)" />
+    <NumField label="notchMinCols" step={1} value={(params.notchMinCols as number) ?? 20}
+      onChange={v => set('notchMinCols', v)} tooltip="노치로 인정할 최소 연속 컬럼 수. 너무 크면 실제 노치가 폭 부족으로 통째로 무효 처리되어 profile이 비어보임 — 그럴 땐 이 값을 낮춰보세요" />
+    <div className="param-section">바닥 검출</div>
+    <SelectField label="바닥 방식" value={method} options={['flat', 'corner']}
+      onChange={v => set('method', v)}
+      tooltip="flat: 평탄도 최소 창 탐색(전체 notch 범위) · corner: 기울기 변화점(실패 시 flat 폴백)" />
+    <SelectField label="바닥 집계" value={(params.floorAgg as string) ?? 'median'} options={['median', 'mean']}
+      onChange={v => set('floorAgg', v)}
+      tooltip="바닥 창 안 포인트 집계 방식 (median: 이상값 강건, mean: 전체 평균)" />
+    {method === 'flat' && (
+      <>
+        <NumField label="floorWinUm(µm)" step={10} value={(params.floorWinUm as number) ?? 150}
+          onChange={v => set('floorWinUm', v)} tooltip="바닥 탐색 창 폭 µm (flat 방식)" />
+        <NumField label="floorMinPts" step={1} value={(params.floorMinPts as number) ?? 12}
+          onChange={v => set('floorMinPts', v)} tooltip="탐색 창 안 최소 점 개수" />
+        <NumField label="floorSearchFrac" step={0.05} value={(params.floorSearchFrac as number) ?? 1.0}
+          onChange={v => set('floorSearchFrac', v)} tooltip="창 중심 후보를 notch 폭의 가운데 이 비율(0~1)로 제한. 1.0=V1과 동일(전체 범위 탐색). 낮출수록 중심부만 탐색해 경계 shelf 오탐 방지" />
+      </>
+    )}
+    {method === 'corner' && (
+      <>
+        <NumField label="smoothCols" step={1} value={(params.smoothCols as number) ?? 3}
+          onChange={v => set('smoothCols', v)} tooltip="기울기 계산 이동평균 폭(3~5)" />
+        <NumField label="slopeDrop" step={0.05} value={(params.slopeDrop as number) ?? 0.35}
+          onChange={v => set('slopeDrop', v)} tooltip="기울기가 이 비율 이하로 급감하면 코너로 판정" />
+        <NumField label="cornerSearchUm(µm)" step={50} value={(params.cornerSearchUm as number) ?? 500}
+          onChange={v => set('cornerSearchUm', v)} tooltip="코너 탐색 범위" />
+      </>
+    )}
+    <div className="param-section">Land 대표값</div>
+    <CheckField label="평탄도 필터 사용(V1과 동일)" value={(params.landFlatFilter as boolean) ?? false}
+      onChange={v => set('landFlatFilter', v)}
+      tooltip="켜면 |상대높이| < landTolUm인 평탄한 점만 사용(V1과 동일, landMaxDistMm과 좁게 겹치면 점이 하나도 없어 NaN 가능). 끄면(기본) 평탄도 필터 없이 구간 내 전체 점을 Land 집계 방식으로 집계 — median과 함께 쓰면 이상치에 강건하면서도 NaN이 생기지 않음" />
+    {(params.landFlatFilter as boolean) === true && (
+      <NumField label="landTolUm(µm)" step={5} value={(params.landTolUm as number) ?? 30}
+        onChange={v => set('landTolUm', v)} tooltip="notch 밖 영역에서 |상대높이| < 이 값(µm)인 점만 land로 사용" />
+    )}
+    <NumField label="landMaxDistMm" step={0.5} value={(params.landMaxDistMm as number) ?? 0}
+      onChange={v => set('landMaxDistMm', v)}
+      tooltip="notch 경계에서부터 이 거리(mm) 이내 점만 land로 참조. 0=제한 없음(V1과 동일, notch 밖 전체 영역 사용) — 기존 V2의 landSampleMm과 같은 취지, 노치와 먼 land 변동에 덜 흔들리게 하고 싶을 때 사용" />
+    <SelectField label="Land 집계" value={(params.landAgg as string) ?? 'median'} options={['mean', 'median']}
+      onChange={v => set('landAgg', v)}
+      tooltip="median(기본)=이상치에 강건, 평탄도 필터 꺼도 안정적 · mean=V1과 동일(평탄도 필터 켬과 조합 권장)" />
+    <div className="param-section">안정화 (이웃 chunk 이동중앙값)</div>
+    <NumField label="안정화 반경(chunk)" step={5} value={(params.floorStabilizeHalf as number) ?? 25}
+      onChange={v => set('floorStabilizeHalf', v)} tooltip="바닥값 이동중앙값 반경(chunk 개수). 0이면 안정화 비활성. 무효 chunk도 이 반경 안 이웃으로 채움" />
+    <NumField label="안정화 허용치-위치(µm)" step={5} value={(params.floorStabilizeCenterTolUm as number) ?? 50}
+      onChange={v => set('floorStabilizeCenterTolUm', v)} tooltip="바닥 중심위치가 이웃 이동중앙값과 이 값(µm) 넘게 차이나면 스냅" />
+    <NumField label="안정화 허용치-높이(µm)" step={5} value={(params.floorStabilizeZTolUm as number) ?? 60}
+      onChange={v => set('floorStabilizeZTolUm', v)} tooltip="바닥 상대높이가 이웃 이동중앙값과 이 값(µm) 넘게 차이나면 스냅" />
+    <div className="param-section">출력 PointCloud3D (land/floor 필터링)</div>
+    <NumField label="floorTolUm(µm)" step={5} value={(params.floorTolUm as number) ?? 40}
+      onChange={v => set('floorTolUm', v)} tooltip="바닥 점 판정 허용치: |상대높이 - floorZRel| < 이 값(µm)인 점만 출력 클라우드에 포함" />
+    <NumField label="landMarginMm" step={0.005} value={(params.landMarginMm as number) ?? 0.020}
+      onChange={v => set('landMarginMm', v)} tooltip="notch 안팎 판정 마진(mm) — notch 경계 바로 바깥까지는 land 판정에서 제외" />
+    <div className="param-section" style={{ fontSize: 10, opacity: 0.7 }}>센서 기하</div>
+    <NumField label="Lateral Res(mm)" step={0.0001} value={(params.lateralResMm as number) ?? 0.0063}
+      onChange={v => set('lateralResMm', v)} tooltip="y(lateral) 컬럼 binning 간격" />
+    <NumField label="Transport Res(mm)" step={0.0001} value={(params.transportResMm as number) ?? 0.008}
+      onChange={v => set('transportResMm', v)} tooltip="x(transport) profile 그룹핑 간격" />
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (depth_left/right/combined_um, notch_floor_z/land_left_z/land_right_z_mm) + valid_count + land/floor로 분류된 PointCloud3D</div>
   </>
 }
 
@@ -726,7 +835,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'NotchMeasureV2'   && <NotchMeasureV2Params params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -760,7 +871,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'NotchMeasureV2'   && <NotchMeasureV2Params params={params} onChange={handleChange} />}
       </div>
     </div>
   )

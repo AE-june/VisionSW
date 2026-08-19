@@ -12,6 +12,7 @@ import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
 import ProfileChart from './ProfileChart'
+import NotchProfileChart from './NotchProfileChart'
 import RoiCanvas, { type Roi } from './RoiCanvas'
 
 interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean }
@@ -439,8 +440,30 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         )
       })()}
 
+      {/* Notch Measure V2 — 노치 바닥 + 좌/우 land 절대 Z를 scan 위치 기준 겹쳐 그림 */}
+      {toolType === 'NotchMeasureV2' && result.profiles && result.profiles.length > 0 && (() => {
+        const byLabel = (label: string) => result.profiles!.find(p => p.label === label)
+        const floorZ = byLabel('notch_floor_z_mm')
+        const landLeftZ = byLabel('land_left_z_mm')
+        const landRightZ = byLabel('land_right_z_mm')
+        if (!floorZ || !landLeftZ || !landRightZ) return null
+        return (
+          <div className="node-result-measures">
+            <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+              <span className="node-result-label">Notch floor Z — profile view</span>
+              <span className="node-result-val">{result.profileCount ?? floorZ.n}개 profile</span>
+            </div>
+            <NotchProfileChart series={[
+              { label: 'notch floor z', x: floorZ.x, z: floorZ.z, color: '#3987e5', bold: true },
+              { label: 'land left z', x: landLeftZ.x, z: landLeftZ.z, color: '#eb6834' },
+              { label: 'land right z', x: landRightZ.x, z: landRightZ.z, color: '#1baf7a' },
+            ]} />
+          </div>
+        )
+      })()}
+
       {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) */}
-      {result.profiles && result.profiles.length > 0 && (() => {
+      {toolType !== 'NotchMeasureV2' && result.profiles && result.profiles.length > 0 && (() => {
         const idx = Math.min(profRow, result.profiles.length - 1)
         const p = result.profiles[idx]
         return (

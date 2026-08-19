@@ -178,7 +178,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'CsvWriter', label: 'CSV Writer', category: '출력',
     inputs: [{ type: 'Any' }], outputs: [],
-    defaultParams: { path: '', label: '' },
+    defaultParams: { path: '', label: '', addTimestamp: false },
     description: '측정값(Measurements) 또는 Profile[]을 CSV 파일로 저장',
   },
   {
@@ -202,14 +202,20 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'CloudLoader', label: 'Cloud Loader', category: '입력',
     inputs: [], outputs: ['PointCloud3D'],
-    defaultParams: { path: '' },
-    description: '포인트클라우드 파일(ply/xyz/bin) → PointCloud3D 로드',
+    defaultParams: { path: '', swapXY: false },
+    description: '포인트클라우드 파일(ply/xyz/asc/pcd/bin) → PointCloud3D 로드. swapXY=true면 X/Y를 맞바꿔 로드(예: Keyence — 스캔방향 Y, 레이저라인 X)',
   },
   {
     type: 'CloudToProfiles', label: 'Cloud to Profiles', category: '변환',
     inputs: ['PointCloud3D'], outputs: [{ type: 'Profile', isArray: true }],
     defaultParams: { scanAxis: 'x', scanStepMm: 0.1, reduce: 'none', latStepMm: 0.1, minPoints: 1 },
     description: '포인트클라우드를 스캔축(기본 X) bin별 Profile[]로 분해. 프로파일 내부=횡축. reduce=none이면 다중 Z 전부 보존',
+  },
+  {
+    type: 'ProfileToCloud', label: 'Profile to Cloud', category: '변환',
+    inputs: [{ type: 'Profile', isArray: true }], outputs: ['PointCloud3D'],
+    defaultParams: { transportResMm: 0 },
+    description: 'Profile[] 샘플(x,y,z mm)을 그대로 3D 점으로 펼쳐 PointCloud3D로 변환. Cloud to Profiles의 역변환',
   },
   {
     type: 'NotchMeasure', label: 'Notch Measure', category: '측정',
@@ -219,10 +225,27 @@ export const TOOL_DEFS: ToolDef[] = [
       transportResMm: 0.003998, lateralPitchMm: 0.0063,
       avgProfiles: 1, avgMethod: 'mean',
       floorAgg: 'median',
-      notchTrigUm: -150, landTolUm: 30,
-      floorWinUm: 150, smoothCols: 3, floorTolUm: 40,
+      notchTrigUm: -150, notchMaxGapUm: 50, notchMinCols: 20, landTolUm: 30,
+      floorWinUm: 150, floorMinPts: 12, smoothCols: 3, floorTolUm: 40,
     },
     description: '배터리 캔캡 노치 깊이 측정. 출력: 필터링Cloud + 청크별 깊이Profile[] + valid_chunks',
+  },
+  {
+    type: 'NotchMeasureV2', label: 'Notch Measure V2', category: '측정',
+    inputs: ['PointCloud3D'], outputs: [{ type: 'Profile', isArray: true }, 'PointCloud3D'],
+    outputLabels: ['Profile[]', 'PointCloud3D(land/floor)'],
+    defaultParams: {
+      lateralResMm: 0.0063, transportResMm: 0.008,
+      avgProfiles: 1, avgMethod: 'mean', landFitIters: 4,
+      notchTrigUm: -150, notchMaxGapUm: 50, notchMinCols: 20,
+      method: 'flat', floorAgg: 'median',
+      floorWinUm: 150, floorMinPts: 12, floorSearchFrac: 1.0,
+      smoothCols: 3, slopeDrop: 0.35, cornerSearchUm: 500,
+      landFlatFilter: false, landTolUm: 30, landAgg: 'median', landMaxDistMm: 0,
+      floorStabilizeHalf: 25, floorStabilizeCenterTolUm: 50, floorStabilizeZTolUm: 60,
+      floorTolUm: 40, landMarginMm: 0.020,
+    },
+    description: 'V1과 동일한 검출 알고리즘(chunk 머지+3차 다항식 강건 피팅+flat/corner 바닥 탐색+이웃 안정화)을 V2 출력 스키마로 포팅. 출력: Profile[](깊이+절대높이 6종) + land/floor로 분류된 필터링 PointCloud3D',
   },
   {
     type: 'Collect', label: 'Collect', category: '축약',
