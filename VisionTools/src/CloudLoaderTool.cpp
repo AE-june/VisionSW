@@ -30,6 +30,21 @@ bool loadXyz(std::istream& in, PointCloud3D& cloud) {
     return true;
 }
 
+// .asc 텍스트: 줄마다 "x y z [...]" 또는 "x,y,z[,...]". 첫 3열만 사용.
+bool loadAsc(std::istream& in, PointCloud3D& cloud) {
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#' || line[0] == '/' || line[0] == '!') continue;
+        // 쉼표를 공백으로 교체하여 통일
+        for (auto& ch : line) if (ch == ',') ch = ' ';
+        std::istringstream ss(line);
+        Point3f p;
+        if (ss >> p.x >> p.y >> p.z) cloud.points.push_back(p);
+    }
+    return true;
+}
+
 // .bin: 생 float32 x,y,z 연속
 bool loadBin(std::istream& in, PointCloud3D& cloud) {
     Point3f p;
@@ -123,9 +138,10 @@ ToolResult CloudLoaderTool::execute(VisionDataPtr /*input*/) {
     const std::string ext = lowerExt(m_path);
     bool ok = false;
     if      (ext == "xyz") ok = loadXyz(in, *cloud);
+    else if (ext == "asc") ok = loadAsc(in, *cloud);
     else if (ext == "bin") ok = loadBin(in, *cloud);
     else if (ext == "ply") ok = loadPly(in, *cloud);
-    else return { ToolStatus::Fail, "CloudLoader: 지원 안 하는 확장자: ." + ext + " (ply/xyz/bin)" };
+    else return { ToolStatus::Fail, "CloudLoader: 지원 안 하는 확장자: ." + ext + " (ply/xyz/asc/bin)" };
 
     if (!ok || cloud->empty())
         return { ToolStatus::Fail, "CloudLoader: 점을 읽지 못했습니다: " + m_path };

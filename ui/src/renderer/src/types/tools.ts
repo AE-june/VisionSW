@@ -203,7 +203,7 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'CloudLoader', label: 'Cloud Loader', category: '입력',
     inputs: [], outputs: ['PointCloud3D'],
     defaultParams: { path: '' },
-    description: '포인트클라우드 파일(ply/xyz/bin) → PointCloud3D 로드',
+    description: '포인트클라우드 파일(ply/xyz/asc/bin) → PointCloud3D 로드',
   },
   {
     type: 'CloudToProfiles', label: 'Cloud to Profiles', category: '변환',

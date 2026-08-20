@@ -89,6 +89,10 @@ struct CachedNode { VisionDataPtr output; std::size_t paramHash; };
 static std::unordered_map<std::string, CachedNode> g_nodeCache;
 static std::mutex g_cacheMtx;
 
+// 프로파일 온디맨드 조회용 캐시 (run → fetchProfile)
+static std::unordered_map<std::string, std::vector<std::shared_ptr<Profile>>> g_profileCache;
+static std::mutex g_profileCacheMtx; // 병렬 노드 쓰기 + fetchProfile 읽기 동기화
+
 // ── Pipeline execution ───────────────────────────────────────────────────
 
 static json runPipeline(const json& msg, crow::websocket::connection* conn) {
@@ -401,26 +405,20 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["cloud"] = pts;
                 jr["cloudTotal"] = static_cast<long long>(cpts.size());
             }
-            // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 차트/카운트용
+            // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 메타만 전송, x/z는 fetchProfile로
             if (result.output && !result.output->profiles.empty()) {
                 const auto& profs = result.output->profiles;
                 jr["profileCount"] = static_cast<long long>(profs.size());
-                const size_t maxProf = 500;   // 행 상한(초과 시 등간격 샘플)
-                const size_t pstride = profs.size() > maxProf ? (profs.size() + maxProf - 1) / maxProf : 1;
-                json arr = json::array();
-                for (size_t pi = 0; pi < profs.size(); pi += pstride) {
-                    const auto& pr = *profs[pi];
-                    const size_t cap = 400;   // 샘플 상한
-                    const size_t ss = pr.size() > cap ? (pr.size() + cap - 1) / cap : 1;
-                    json xs = json::array(), zs = json::array();
-                    for (size_t i = 0; i < pr.size(); i += ss) {
-                        xs.push_back(pr.x[i]);
-                        zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
-                    }
-                    arr.push_back({{"label", pr.label}, {"n", (long long)pr.size()},
-                                   {"x", xs}, {"z", zs}});
+                // 캐시에 저장 (shared_ptr 복사라 메모리 추가 없음, 병렬 쓰기 보호)
+                {
+                    std::lock_guard<std::mutex> lk(g_profileCacheMtx);
+                    g_profileCache[nodeId] = std::vector<std::shared_ptr<Profile>>(profs.begin(), profs.end());
                 }
-                jr["profiles"] = arr;
+                // 메타만 전송 — x/z 없음
+                json meta = json::array();
+                for (const auto& pr : profs)
+                    meta.push_back({{"label", pr->label}, {"n", (long long)pr->size()}});
+                jr["profileMeta"] = meta;
             }
 
             if (!noPreview) {
@@ -884,6 +882,29 @@ int main(int argc, char** argv) {
                         VISION_LOG_INFO("preload: {} files cached from {}", loaded, folder);
                         conn.send_text(json{{"event","preloadDone"},{"loaded",loaded}}.dump());
                     }
+                    return;
+                }
+                if (cmd == "fetchProfile") {
+                    std::string nid = msg.value("nodeId", "");
+                    int idx = msg.value("profileIdx", 0);
+                    std::lock_guard<std::mutex> lk(g_profileCacheMtx);
+                    auto it = g_profileCache.find(nid);
+                    if (it == g_profileCache.end() || idx < 0 || idx >= (int)it->second.size()) {
+                        conn.send_text(json{{"event","profileData"},{"nodeId",nid},{"profileIdx",idx},{"error","not found"}}.dump());
+                        return;
+                    }
+                    const auto& pr = *it->second[idx];
+                    const size_t cap = 600;
+                    const size_t ss = pr.size() > cap ? (pr.size() + cap - 1) / cap : 1;
+                    json xs = json::array(), zs = json::array();
+                    for (size_t i = 0; i < pr.size(); i += ss) {
+                        xs.push_back(pr.x[i]);
+                        zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
+                    }
+                    conn.send_text(json{
+                        {"event","profileData"},{"nodeId",nid},{"profileIdx",idx},
+                        {"label",pr.label},{"n",(long long)pr.size()},{"x",xs},{"z",zs}
+                    }.dump());
                     return;
                 }
                 conn.send_text(json{{"event","error"},{"msg","unknown cmd: " + cmd}}.dump());

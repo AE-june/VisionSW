@@ -32,9 +32,10 @@ interface NodeResult {
   decisions?: NodeDecision[]
   // 3D 포인트클라우드 (PlaneFit overlay, HeightMapToCloud, ExposureMergeCloud)
   cloud?: [number, number, number][]
-  // 행별 Profile (CloudToProfiles, ExtractProfile) — 형상 차트/카운트용
+  // 행별 Profile (CloudToProfiles, ExtractProfile)
   profileCount?: number
-  profiles?: { label: string; n: number; x: number[]; z: (number | null)[] }[]
+  profileMeta?: { label: string; n: number }[]  // 온디맨드 로딩용 메타
+  profiles?: { label: string; n: number; x: number[]; z: (number | null)[] }[] // 구형 호환
   // LineCenter — 찾은 모든 라인 (overlay에서 직렬화)
   lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number;
             p0x?: number; p0y?: number; p1x?: number; p1y?: number }[]
@@ -106,6 +107,38 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
   const [profRow, setProfRow] = useState(0)
   const [profMode, setProfMode] = useState<'line' | 'points'>('points')
+  const [profData, setProfData] = useState<{ x: number[]; z: (number | null)[]; label: string; n: number } | null>(null)
+  const [profLoading, setProfLoading] = useState(false)
+
+  const meta = result?.profileMeta
+  const metaLen = meta?.length ?? 0
+
+  // profileMeta가 있으면 온디맨드 fetch
+  useEffect(() => {
+    if (!meta || metaLen === 0) return
+    const clampedRow = Math.min(profRow, metaLen - 1)
+    const api = window.electronAPI
+    if (!api?.engineFetchProfile) return
+    setProfLoading(true)
+    // profData는 null로 안 내림 — ProfileChart 마운트 유지해서 zoom/pan 상태 보존
+    api.engineFetchProfile(nodeId, clampedRow)
+  }, [profRow, meta, metaLen, nodeId])
+
+  // profileData 이벤트 수신
+  useEffect(() => {
+    if (!meta || metaLen === 0) return
+    const api = window.electronAPI
+    if (!api?.onEngineEvent) return
+    const unsub = api.onEngineEvent((raw: unknown) => {
+      const d = raw as { event?: string; nodeId?: string; profileIdx?: number; x?: number[]; z?: (number | null)[]; label?: string; n?: number; error?: string }
+      if (d.event !== 'profileData' || d.nodeId !== nodeId) return
+      setProfLoading(false)
+      if (d.error) { setProfData(null); return }
+      setProfData({ x: d.x ?? [], z: d.z ?? [], label: d.label ?? '', n: d.n ?? 0 })
+    })
+    return unsub
+  }, [meta, metaLen, nodeId])
+
   const zMin = result?.zMin
   const zMax = result?.zMax
   if (!result) {
@@ -440,23 +473,52 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
       })()}
 
       {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) */}
-      {result.profiles && result.profiles.length > 0 && (() => {
-        const idx = Math.min(profRow, result.profiles.length - 1)
-        const p = result.profiles[idx]
+      {/* 행별 Profile — profileMeta(온디맨드) 또는 구형 profiles */}
+      {(() => {
+        const useMeta = meta && metaLen > 0
+        const useOld = !useMeta && result.profiles && result.profiles.length > 0
+        if (!useMeta && !useOld) return null
+
+        const totalRows = useMeta ? metaLen : result.profiles!.length
+        const idx = Math.min(profRow, totalRows - 1)
+        const curMeta = useMeta ? meta![idx] : { label: result.profiles![idx].label, n: result.profiles![idx].n }
+        const chartData = useMeta ? profData : result.profiles![idx]
+
         return (
           <div className="node-result-measures">
             <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
               <span className="node-result-label">프로파일</span>
-              <span className="node-result-val">{result.profileCount ?? result.profiles.length}개</span>
+              <span className="node-result-val">{result.profileCount ?? totalRows}개</span>
             </div>
             <div className="param-row">
               <span className="param-label">행</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                <input type="range" min={0} max={result.profiles!.length - 1} step={1} value={idx}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+                <button
+                  style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
+                  disabled={idx === 0}
+                  onClick={() => setProfRow(idx - 1)}
+                >◀</button>
+                <input type="range" min={0} max={totalRows - 1} step={1} value={idx}
                   style={{ flex: 1 }}
                   onChange={e => setProfRow(parseInt(e.target.value))} />
-                <span className="node-result-val" style={{ whiteSpace: 'nowrap', minWidth: 92, textAlign: 'right' }}>
-                  {p.label || `#${idx}`} ({p.n}점)
+                <button
+                  style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
+                  disabled={idx === totalRows - 1}
+                  onClick={() => setProfRow(idx + 1)}
+                >▶</button>
+                <input
+                  type="number"
+                  min={0}
+                  max={totalRows - 1}
+                  value={idx}
+                  style={{ width: 52, fontSize: 12, textAlign: 'center', flexShrink: 0 }}
+                  onChange={e => {
+                    const v = parseInt(e.target.value)
+                    if (!isNaN(v)) setProfRow(Math.max(0, Math.min(totalRows - 1, v)))
+                  }}
+                />
+                <span className="node-result-val" style={{ whiteSpace: 'nowrap', minWidth: 72, textAlign: 'right' }}>
+                  {curMeta.label || ''} ({curMeta.n}점)
                 </span>
               </div>
             </div>
@@ -468,7 +530,8 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
                 <option value="line">선</option>
               </select>
             </div>
-            <ProfileChart x={p.x} z={p.z} mode={profMode} />
+            {profLoading && <div className="param-empty" style={{ fontSize: 11 }}>로딩 중…</div>}
+            {chartData && <ProfileChart x={chartData.x} z={chartData.z} mode={profMode} />}
           </div>
         )
       })()}

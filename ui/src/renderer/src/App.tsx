@@ -36,6 +36,9 @@ declare global {
       ) => Promise<{ ok?: boolean; error?: string }>
       batchRespawn: (workerId: number) => Promise<{ ok?: boolean; error?: string }>
       onBatchEvent: (cb: (data: unknown) => void) => () => void
+      enginePreload: (folder: string, xResMm: number, yResMm: number, zResMm: number) => Promise<{ ok?: boolean; error?: string }>
+      engineFetchProfile: (nodeId: string, profileIdx: number) => Promise<{ ok?: boolean; error?: string }>
+      saveImage: (defaultName: string, dataURL: string) => Promise<string | null>
     }
   }
 }

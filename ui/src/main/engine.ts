@@ -135,4 +135,10 @@ export function registerEngineIpc() {
     ws.send(JSON.stringify({ cmd: 'preload', folder, xResMm, yResMm, zResMm }))
     return { ok: true }
   })
+
+  ipcMain.handle('engine:fetchProfile', async (_event, nodeId: string, profileIdx: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'fetchProfile', nodeId, profileIdx }))
+    return { ok: true }
+  })
 }
