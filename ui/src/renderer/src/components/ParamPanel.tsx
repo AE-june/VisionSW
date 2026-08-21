@@ -681,6 +681,12 @@ function NotchMeasureV2Params({ params, onChange }: { params: Record<string, unk
     <SelectField label="Land 집계" value={(params.landAgg as string) ?? 'median'} options={['mean', 'median']}
       onChange={v => set('landAgg', v)}
       tooltip="median(기본)=이상치에 강건, 평탄도 필터 꺼도 안정적 · mean=V1과 동일(평탄도 필터 켬과 조합 권장)" />
+    <NumField label="edge 탐색 기울기(µm/mm)" step={5} value={(params.edgeSlopeTolUmPerMm as number) ?? 30}
+      onChange={v => set('edgeSlopeTolUmPerMm', v)}
+      tooltip="노치 경계 바깥으로 나가며 기울기가 이 값(µm/mm) 미만이 되는 첫 지점을 edge land로 판정. 작을수록 엄격(완전 평탄 구간만), 클수록 느슨(경사 시작점)" />
+    <NumField label="edge 윈도우(pts)" step={1} value={(params.edgeSlopeWindowPts as number) ?? 5}
+      onChange={v => set('edgeSlopeWindowPts', Math.max(1, Math.round(v)))}
+      tooltip="기울기 산출 시 몇 점 간격으로 볼지. 1=인접 2점(노이즈 민감), 클수록 더 넓은 구간 평균 기울기(노이즈 억제). 권장 5~20" />
     <div className="param-section">안정화 (이웃 chunk 이동중앙값)</div>
     <NumField label="안정화 반경(chunk)" step={5} value={(params.floorStabilizeHalf as number) ?? 25}
       onChange={v => set('floorStabilizeHalf', v)} tooltip="바닥값 이동중앙값 반경(chunk 개수). 0이면 안정화 비활성. 무효 chunk도 이 반경 안 이웃으로 채움" />
@@ -698,7 +704,7 @@ function NotchMeasureV2Params({ params, onChange }: { params: Record<string, unk
       onChange={v => set('lateralResMm', v)} tooltip="y(lateral) 컬럼 binning 간격" />
     <NumField label="Transport Res(mm)" step={0.0001} value={(params.transportResMm as number) ?? 0.008}
       onChange={v => set('transportResMm', v)} tooltip="x(transport) profile 그룹핑 간격" />
-    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (depth_left/right/combined_um, notch_floor_z/land_left_z/land_right_z_mm) + valid_count + land/floor로 분류된 PointCloud3D</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Profile[] (depth_left/right/combined_um, depth_left/right_edge_um, notch_floor_z/land_left_z/land_right_z_mm) + valid_count + land/floor로 분류된 PointCloud3D</div>
   </>
 }
 
