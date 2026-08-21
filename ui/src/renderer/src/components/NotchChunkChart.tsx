@@ -60,6 +60,12 @@ export default function NotchChunkChart({
   const sx = (v: number) => padL + ((v - xMin) / xr) * (W - padL - padR)
   const sy = (v: number) => padT + (1 - (v - zMin) / zr) * (H - padT - padB)
 
+  // 줌 비율에 따라 점 크기 조절 — 축소 시 작게, 확대 시 크게
+  const xrAuto = xMaxAuto - xMinAuto || 1
+  const dotScale = Math.sqrt(xrAuto / xr)
+  const envDotR  = Math.max(0.5, Math.min(3,   1.5 * dotScale))
+  const edgeDotR = Math.max(2,   Math.min(8,   5   * dotScale))
+
   // envelope 선분 (NaN 없어서 끊기 없음)
   const envPts = x.map((xi, i) => `${sx(xi).toFixed(1)},${sy(z[i]).toFixed(1)}`).join(' ')
 
@@ -160,6 +166,12 @@ export default function NotchChunkChart({
         onMouseUp={handleMouseUp} onMouseLeave={handleMouseLeave}
         onWheel={handleWheel} onContextMenu={e => e.preventDefault()}>
 
+        <defs>
+          <clipPath id="plotClip">
+            <rect x={padL} y={padT} width={W - padL - padR} height={H - padT - padB} />
+          </clipPath>
+        </defs>
+
         {/* 축 */}
         <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke="#555" strokeWidth={1} />
         <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="#555" strokeWidth={1} />
@@ -169,69 +181,75 @@ export default function NotchChunkChart({
         <text x={padL} y={H - 8} fill="#777" fontSize={9}>{xMin.toFixed(2)}</text>
         <text x={W - padR} y={H - 8} fill="#777" fontSize={9} textAnchor="end">{xMax.toFixed(2)} mm</text>
 
-        {/* notch 영역 하이라이트 */}
-        {sxLoY > padL && sxHiY < W - padR && (
+        {/* 데이터 요소 — 플롯 영역 밖 클리핑 */}
+        <g clipPath="url(#plotClip)">
+          {/* notch 영역 하이라이트 */}
           <rect x={sxLoY} y={padT} width={sxHiY - sxLoY} height={H - padT - padB}
             fill="#1a2a1a" opacity={0.5} />
-        )}
 
-        {/* notch 경계 수직선 */}
-        {sxLoY >= padL && sxLoY <= W - padR && (
+          {/* notch 경계 수직선 */}
           <line x1={sxLoY} y1={padT} x2={sxLoY} y2={H - padB} stroke="#4caf50" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
-        )}
-        {sxHiY >= padL && sxHiY <= W - padR && (
           <line x1={sxHiY} y1={padT} x2={sxHiY} y2={H - padB} stroke="#4caf50" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
-        )}
-        {/* floor 중심 수직선 */}
-        {sxFloor >= padL && sxFloor <= W - padR && (
+
+          {/* floor 중심 수직선 */}
           <line x1={sxFloor} y1={padT} x2={sxFloor} y2={H - padB} stroke="#ffeb3b" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-        )}
-        {/* 바닥 z 수평선 */}
-        {(() => {
-          const syFloor = sy(floorZmm)
-          if (syFloor < padT || syFloor > H - padB) return null
-          return (
-            <>
-              <line x1={padL} y1={syFloor} x2={W - padR} y2={syFloor} stroke="#ff5722" strokeWidth={1} strokeDasharray="5 3" opacity={0.8} />
-              <text x={padL + 2} y={syFloor - 2} fill="#ff5722" fontSize={8} opacity={0.9}>floor</text>
-            </>
-          )
-        })()}
 
-        {/* 좌 land edge — 정확한 (y, z) 위치에 점 */}
-        {leftEdgeZmm !== undefined && leftEdgeYmm !== undefined && (() => {
-          const cx = sx(leftEdgeYmm), cy = sy(leftEdgeZmm)
-          if (cy < padT || cy > H - padB || cx < padL || cx > W - padR) return null
-          return (
-            <>
-              <circle cx={cx} cy={cy} r={5} fill="#ffeb3b" stroke="#14161a" strokeWidth={1.5} opacity={0.95} />
-              <text x={cx - 6} y={cy - 6} fill="#ffeb3b" fontSize={8} textAnchor="middle" opacity={0.9}>L</text>
-            </>
-          )
-        })()}
-        {/* 우 land edge — 정확한 (y, z) 위치에 점 */}
-        {rightEdgeZmm !== undefined && rightEdgeYmm !== undefined && (() => {
-          const cx = sx(rightEdgeYmm), cy = sy(rightEdgeZmm)
-          if (cy < padT || cy > H - padB || cx < padL || cx > W - padR) return null
-          return (
-            <>
-              <circle cx={cx} cy={cy} r={5} fill="#ffeb3b" stroke="#14161a" strokeWidth={1.5} opacity={0.95} />
-              <text x={cx + 6} y={cy - 6} fill="#ffeb3b" fontSize={8} textAnchor="middle" opacity={0.9}>R</text>
-            </>
-          )
-        })()}
+          {/* 바닥 z 수평선 */}
+          {(() => {
+            const syFloor = sy(floorZmm)
+            return (
+              <>
+                <line x1={padL} y1={syFloor} x2={W - padR} y2={syFloor} stroke="#ff5722" strokeWidth={1} strokeDasharray="5 3" opacity={0.8} />
+                <text x={padL + 2} y={syFloor - 2} fill="#ff5722" fontSize={8} opacity={0.9}>floor</text>
+              </>
+            )
+          })()}
 
-        {/* land fit curve (주황) */}
-        {fitSegs.map((pts, i) => (
-          <polyline key={i} points={pts} fill="none" stroke="#ff9800" strokeWidth={1.5} opacity={0.9} />
-        ))}
+          {/* land fit curve (주황) */}
+          {fitSegs.map((pts, i) => (
+            <polyline key={i} points={pts} fill="none" stroke="#ff9800" strokeWidth={1.5} opacity={0.9} />
+          ))}
 
-        {/* envelope (파랑) */}
-        {mode === 'line'
-          ? <polyline points={envPts} fill="none" stroke="#00e5ff" strokeWidth={1.5} />
-          : x.map((xi, i) => (
-              <circle key={i} cx={sx(xi)} cy={sy(z[i])} r={1.5} fill="#00e5ff" />
-            ))}
+          {/* envelope (파랑) */}
+          {mode === 'line'
+            ? <polyline points={envPts} fill="none" stroke="#00e5ff" strokeWidth={1.5} />
+            : x.map((xi, i) => (
+                <circle key={i} cx={sx(xi)} cy={sy(z[i])} r={envDotR} fill="#00e5ff" />
+              ))}
+
+          {/* 좌 land edge */}
+          {leftEdgeZmm !== undefined && leftEdgeYmm !== undefined && (() => {
+            const cx = sx(leftEdgeYmm), cy = sy(leftEdgeZmm)
+            return (
+              <>
+                <circle cx={cx} cy={cy} r={edgeDotR} fill="#ffeb3b" stroke="#14161a" strokeWidth={1.5} opacity={0.95} />
+                <text x={cx - 6} y={cy - 6} fill="#ffeb3b" fontSize={8} textAnchor="middle" opacity={0.9}>L</text>
+              </>
+            )
+          })()}
+
+          {/* 우 land edge */}
+          {rightEdgeZmm !== undefined && rightEdgeYmm !== undefined && (() => {
+            const cx = sx(rightEdgeYmm), cy = sy(rightEdgeZmm)
+            return (
+              <>
+                <circle cx={cx} cy={cy} r={edgeDotR} fill="#ffeb3b" stroke="#14161a" strokeWidth={1.5} opacity={0.95} />
+                <text x={cx + 6} y={cy - 6} fill="#ffeb3b" fontSize={8} textAnchor="middle" opacity={0.9}>R</text>
+              </>
+            )
+          })()}
+
+          {/* tooltip 십자선 */}
+          {!isPanning && tooltip && (
+            <>
+              <line x1={tooltip.svgX} y1={padT} x2={tooltip.svgX} y2={H - padB}
+                stroke="#ffffff33" strokeWidth={1} strokeDasharray="3 3" />
+              <line x1={padL} y1={tooltip.svgY} x2={W - padR} y2={tooltip.svgY}
+                stroke="#ffffff33" strokeWidth={1} strokeDasharray="3 3" />
+              <circle cx={tooltip.svgX} cy={tooltip.svgY} r={3.5} fill="#fff" stroke="#00e5ff" strokeWidth={1.5} />
+            </>
+          )}
+        </g>
 
         {/* 투명 히트 영역 */}
         <rect x={padL} y={padT} width={W - padL - padR} height={H - padT - padB} fill="transparent" />
@@ -249,14 +267,9 @@ export default function NotchChunkChart({
           </g>
         )}
 
-        {/* tooltip */}
+        {/* tooltip 텍스트 박스 (클립 밖 — 항상 완전히 표시) */}
         {!isPanning && tooltip && (
           <>
-            <line x1={tooltip.svgX} y1={padT} x2={tooltip.svgX} y2={H - padB}
-              stroke="#ffffff33" strokeWidth={1} strokeDasharray="3 3" />
-            <line x1={padL} y1={tooltip.svgY} x2={W - padR} y2={tooltip.svgY}
-              stroke="#ffffff33" strokeWidth={1} strokeDasharray="3 3" />
-            <circle cx={tooltip.svgX} cy={tooltip.svgY} r={3.5} fill="#fff" stroke="#00e5ff" strokeWidth={1.5} />
             <rect x={tipX} y={tipY} width={tipW} height={tipH} rx={3} fill="#1e2330ee" stroke="#00e5ff55" strokeWidth={1} />
             <text x={tipX + 6} y={tipY + 12} fill="#aaa" fontSize={9.5}>y</text>
             <text x={tipX + 16} y={tipY + 12} fill="#e0e0e0" fontSize={9.5}>{tooltip.dx.toFixed(4)} mm</text>
