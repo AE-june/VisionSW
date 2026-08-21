@@ -18,7 +18,8 @@ std::string lowerExt(const std::string& path) {
     return e;
 }
 
-// .xyz 텍스트: 줄마다 "x y z"
+// .xyz / .asc 공용 텍스트 파서: 줄마다 "x y z [추가 컬럼...]".
+//   추가 컬럼(intensity/rgb 등)은 무시. 파싱 안 되는 줄(헤더·주석 등)은 조용히 스킵.
 bool loadXyz(std::istream& in, PointCloud3D& cloud) {
     std::string line;
     while (std::getline(in, line)) {
@@ -139,12 +140,17 @@ ToolResult CloudLoaderTool::execute(VisionDataPtr /*input*/) {
     bool ok = false;
     if      (ext == "xyz") ok = loadXyz(in, *cloud);
     else if (ext == "asc") ok = loadAsc(in, *cloud);
+    else if (ext == "pcd") ok = loadXyz(in, *cloud);
     else if (ext == "bin") ok = loadBin(in, *cloud);
     else if (ext == "ply") ok = loadPly(in, *cloud);
-    else return { ToolStatus::Fail, "CloudLoader: 지원 안 하는 확장자: ." + ext + " (ply/xyz/asc/bin)" };
+    else return { ToolStatus::Fail, "CloudLoader: 지원 안 하는 확장자: ." + ext + " (ply/xyz/asc/pcd/bin)" };
 
     if (!ok || cloud->empty())
         return { ToolStatus::Fail, "CloudLoader: 점을 읽지 못했습니다: " + m_path };
+
+    if (m_swapXY) {
+        for (auto& p : cloud->points) std::swap(p.x, p.y);
+    }
 
     auto out = std::make_shared<VisionData>();
     out->setCloud(cloud);

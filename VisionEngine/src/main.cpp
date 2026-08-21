@@ -26,6 +26,7 @@
 #include <thread>
 #include <fstream>
 #include <cmath>
+#include <limits>
 #include <algorithm>
 #include <future>
 #include <cstdlib>
@@ -81,6 +82,10 @@ struct InputRef {
     int dstPort = 0;
 };
 
+
+// ── Notch envelope 캐시 (NotchMeasureV2 시각화용 — nodeId → chunk envelope Profile[]) ──
+static std::unordered_map<std::string, std::vector<std::shared_ptr<vision::Profile>>> g_notchEnvCache;
+static std::mutex g_notchEnvCacheMtx;
 
 // ── 노드 결과 캐시 ─────────────────────────────────────────────────────────
 //  개별 노드 실행 시, 파라미터가 바뀌지 않은 상류 노드는 재실행하지 않고 캐시 재사용.
@@ -408,17 +413,33 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 메타만 전송, x/z는 fetchProfile로
             if (result.output && !result.output->profiles.empty()) {
                 const auto& profs = result.output->profiles;
-                jr["profileCount"] = static_cast<long long>(profs.size());
-                // 캐시에 저장 (shared_ptr 복사라 메모리 추가 없음, 병렬 쓰기 보호)
-                {
-                    std::lock_guard<std::mutex> lk(g_profileCacheMtx);
-                    g_profileCache[nodeId] = std::vector<std::shared_ptr<Profile>>(profs.begin(), profs.end());
+                // __notchenv_ 접두사 profile → notchEnvCache 분리 (NotchMeasureV2 시각화)
+                std::vector<std::shared_ptr<Profile>> regularProfs, envProfs;
+                for (const auto& p : profs) {
+                    if (p->label.rfind("__notchenv_", 0) == 0)
+                        envProfs.push_back(p);
+                    else
+                        regularProfs.push_back(p);
                 }
-                // 메타만 전송 — x/z 없음
-                json meta = json::array();
-                for (const auto& pr : profs)
-                    meta.push_back({{"label", pr->label}, {"n", (long long)pr->size()}});
-                jr["profileMeta"] = meta;
+                if (!envProfs.empty()) {
+                    std::lock_guard<std::mutex> lk(g_notchEnvCacheMtx);
+                    g_notchEnvCache[nodeId] = envProfs;
+                    jr["notchChunkCount"] = static_cast<long long>(envProfs.size());
+                }
+
+                if (!regularProfs.empty()) {
+                    jr["profileCount"] = static_cast<long long>(regularProfs.size());
+                    // 캐시에 저장 → fetchProfile 온디맨드 지원
+                    {
+                        std::lock_guard<std::mutex> lk(g_profileCacheMtx);
+                        g_profileCache[nodeId] = regularProfs;
+                    }
+                    // 메타만 전송 — x/z는 fetchProfile로
+                    json meta = json::array();
+                    for (const auto& pr : regularProfs)
+                        meta.push_back({{"label", pr->label}, {"n", (long long)pr->size()}});
+                    jr["profileMeta"] = meta;
+                }
             }
 
             if (!noPreview) {
@@ -905,6 +926,54 @@ int main(int argc, char** argv) {
                         {"event","profileData"},{"nodeId",nid},{"profileIdx",idx},
                         {"label",pr.label},{"n",(long long)pr.size()},{"x",xs},{"z",zs}
                     }.dump());
+                    return;
+                }
+                if (cmd == "fetchNotchEnv") {
+                    std::string nid = msg.value("nodeId", "");
+                    int idx = msg.value("chunkIdx", 0);
+                    std::lock_guard<std::mutex> lk(g_notchEnvCacheMtx);
+                    auto it = g_notchEnvCache.find(nid);
+                    if (it == g_notchEnvCache.end() || idx < 0 || idx >= (int)it->second.size()) {
+                        conn.send_text(json{{"event","notchEnvData"},{"nodeId",nid},{"chunkIdx",idx},{"error","not found"}}.dump());
+                        return;
+                    }
+                    const auto& pr = *it->second[idx];
+                    json xs = json::array(), zs = json::array(), yFit = json::array();
+                    for (size_t i = 0; i < pr.x.size(); ++i) {
+                        xs.push_back(pr.x[i]);
+                        zs.push_back(pr.z[i]);
+                        yFit.push_back(pr.y.size() > i ? json(pr.y[i]) : json(nullptr));
+                    }
+                    double c0           = pr.s.size() > 0 ? pr.s[0] : 0.0;
+                    double c1           = pr.s.size() > 1 ? pr.s[1] : 0.0;
+                    double c2           = pr.s.size() > 2 ? pr.s[2] : 0.0;
+                    double c3           = pr.s.size() > 3 ? pr.s[3] : 0.0;
+                    double notchLoY     = pr.s.size() > 4 ? pr.s[4] : 0.0;
+                    double notchHiY     = pr.s.size() > 5 ? pr.s[5] : 0.0;
+                    double floorCenterY = pr.s.size() > 6 ? pr.s[6] : 0.0;
+                    double floorZRelUm  = pr.s.size() > 7 ? pr.s[7] : 0.0;
+                    double leftLandZmm  = pr.s.size() > 8  ? pr.s[8]  : std::numeric_limits<double>::quiet_NaN();
+                    double rightLandZmm = pr.s.size() > 9  ? pr.s[9]  : std::numeric_limits<double>::quiet_NaN();
+                    double leftEdgeZmm  = pr.s.size() > 10 ? pr.s[10] : std::numeric_limits<double>::quiet_NaN();
+                    double rightEdgeZmm = pr.s.size() > 11 ? pr.s[11] : std::numeric_limits<double>::quiet_NaN();
+                    double leftEdgeYmm  = pr.s.size() > 12 ? pr.s[12] : std::numeric_limits<double>::quiet_NaN();
+                    double rightEdgeYmm = pr.s.size() > 13 ? pr.s[13] : std::numeric_limits<double>::quiet_NaN();
+                    double polyAtFloor = c0 + c1*floorCenterY + c2*floorCenterY*floorCenterY + c3*floorCenterY*floorCenterY*floorCenterY;
+                    double floorZmm    = polyAtFloor + floorZRelUm / 1000.0;
+                    json resp = {
+                        {"event","notchEnvData"},{"nodeId",nid},{"chunkIdx",idx},
+                        {"x",xs},{"z",zs},{"yFit",yFit},
+                        {"notchLoY",notchLoY},{"notchHiY",notchHiY},
+                        {"floorCenterY",floorCenterY},{"floorZRelUm",floorZRelUm},
+                        {"floorZmm",floorZmm}
+                    };
+                    if (!std::isnan(leftLandZmm))  resp["leftLandZmm"]  = leftLandZmm;
+                    if (!std::isnan(rightLandZmm)) resp["rightLandZmm"] = rightLandZmm;
+                    if (!std::isnan(leftEdgeZmm))  resp["leftEdgeZmm"]  = leftEdgeZmm;
+                    if (!std::isnan(rightEdgeZmm)) resp["rightEdgeZmm"] = rightEdgeZmm;
+                    if (!std::isnan(leftEdgeYmm))  resp["leftEdgeYmm"]  = leftEdgeYmm;
+                    if (!std::isnan(rightEdgeYmm)) resp["rightEdgeYmm"] = rightEdgeYmm;
+                    conn.send_text(resp.dump());
                     return;
                 }
                 conn.send_text(json{{"event","error"},{"msg","unknown cmd: " + cmd}}.dump());

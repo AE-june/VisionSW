@@ -1,6 +1,7 @@
 #include "ToolFactory.h"
 #include "HeightMapCache.h"
 #include "NoiseFilter.h"
+#include "ProfileToCloudTool.h"
 #include "PlaneFitTool.h"
 #include "LineFitTool.h"
 #include "HeightMapToCloudTool.h"
@@ -21,6 +22,7 @@
 #include "SurfaceResampleTool.h"
 #include "SurfaceSubtractTool.h"
 #include "NotchMeasureTool.h"
+#include "NotchMeasureV2Tool.h"
 #include "ExtractProfileTool.h"
 #include "ProfileFeatureTool.h"
 #include "CompareTool.h"
@@ -1140,7 +1142,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         return std::make_shared<HeightMapToCloudTool>(p.value("step", 1));
     }
     if (type == "CloudLoader") {
-        return std::make_shared<CloudLoaderTool>(p.value("path", std::string()));
+        return std::make_shared<CloudLoaderTool>(p.value("path", std::string()), p.value("swapXY", false));
     }
     if (type == "CloudToProfiles") {
         CloudToProfilesTool::Params cp;
@@ -1155,6 +1157,11 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         else if (rd == "mean") cp.reduce = CloudToProfilesTool::Reduce::Mean;
         else                   cp.reduce = CloudToProfilesTool::Reduce::None;
         return std::make_shared<CloudToProfilesTool>(cp);
+    }
+    if (type == "ProfileToCloud") {
+        ProfileToCloudTool::Params params;
+        params.transportResMm = p.value("transportResMm", 0.0);
+        return std::make_shared<ProfileToCloudTool>(params);
     }
     if (type == "GapFill") {
         std::string ms = p.value("method", "neighbor");
@@ -1257,6 +1264,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         CsvWriterParams params;
         params.path = p.value("path", "");
         params.label = p.value("label", "");
+        params.addTimestamp = p.value("addTimestamp", false);
         return std::make_shared<CsvWriterTool>(params);
     }
 
@@ -1432,6 +1440,37 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         np.avgProfiles     = p.value("avgProfiles",      1);
         np.avgMethod       = p.value("avgMethod",        std::string("mean"));
         return std::make_shared<NotchMeasureTool>(np);
+    }
+    if (type == "NotchMeasureV2") {
+        NotchMeasureV2Params np;
+        np.lateralResMm      = p.value("lateralResMm",      0.0063);
+        np.transportResMm    = p.value("transportResMm",    0.008);
+        np.avgProfiles       = p.value("avgProfiles",       1);
+        np.avgMethod         = p.value("avgMethod",          std::string("mean"));
+        np.landFitIters      = p.value("landFitIters",      4);
+        np.notchTrigUm       = p.value("notchTrigUm",       -150.0);
+        np.notchMaxGapUm     = p.value("notchMaxGapUm",     50.0);
+        np.notchMinCols      = p.value("notchMinCols",      20);
+        np.method             = p.value("method",             std::string("flat"));
+        np.floorAgg           = p.value("floorAgg",           std::string("median"));
+        np.floorWinUm        = p.value("floorWinUm",        150.0);
+        np.floorMinPts       = p.value("floorMinPts",       12);
+        np.floorSearchFrac   = p.value("floorSearchFrac",   1.0);
+        np.smoothCols        = p.value("smoothCols",        3);
+        np.slopeDrop         = p.value("slopeDrop",         0.35);
+        np.cornerSearchUm    = p.value("cornerSearchUm",    500.0);
+        np.landFlatFilter     = p.value("landFlatFilter",     false);
+        np.landTolUm          = p.value("landTolUm",          30.0);
+        np.landAgg            = p.value("landAgg",            std::string("median"));
+        np.landMaxDistMm      = p.value("landMaxDistMm",      0.0);
+        np.floorStabilizeHalf         = p.value("floorStabilizeHalf",         25);
+        np.floorStabilizeCenterTolUm  = p.value("floorStabilizeCenterTolUm",  50.0);
+        np.floorStabilizeZTolUm       = p.value("floorStabilizeZTolUm",       60.0);
+        np.floorTolUm          = p.value("floorTolUm",          40.0);
+        np.landMarginMm        = p.value("landMarginMm",        0.020);
+        np.edgeSlopeTolUmPerMm = p.value("edgeSlopeTolUmPerMm", 30.0);
+        np.edgeSlopeWindowPts  = p.value("edgeSlopeWindowPts",  5);
+        return std::make_shared<NotchMeasureV2Tool>(np);
     }
 
     VISION_LOG_WARN("ToolFactory: unknown tool type '{}'", type);

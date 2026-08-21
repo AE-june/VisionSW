@@ -141,4 +141,10 @@ export function registerEngineIpc() {
     ws.send(JSON.stringify({ cmd: 'fetchProfile', nodeId, profileIdx }))
     return { ok: true }
   })
+
+  ipcMain.handle('engine:fetchNotchEnv', async (_event, nodeId: string, chunkIdx: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'fetchNotchEnv', nodeId, chunkIdx }))
+    return { ok: true }
+  })
 }

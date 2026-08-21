@@ -11,6 +11,10 @@ inline double eval3(const double c[4], double t) noexcept {
     return c[0] + t * (c[1] + t * (c[2] + t * c[3]));
 }
 
+inline double deriv3(const double c[4], double t) noexcept {
+    return c[1] + t * (2.0 * c[2] + t * 3.0 * c[3]);
+}
+
 // Robust degree-3 least-squares polynomial fit with iterative outlier trimming.
 // ts: independent variable, zs: dependent variable.
 // keep: in/out validity mask (true = include point in fit).

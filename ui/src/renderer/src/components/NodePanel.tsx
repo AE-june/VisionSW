@@ -12,6 +12,8 @@ import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
 import ProfileChart from './ProfileChart'
+import NotchProfileChart from './NotchProfileChart'
+import NotchChunkChart from './NotchChunkChart'
 import RoiCanvas, { type Roi } from './RoiCanvas'
 
 interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean }
@@ -36,6 +38,8 @@ interface NodeResult {
   profileCount?: number
   profileMeta?: { label: string; n: number }[]  // 온디맨드 로딩용 메타
   profiles?: { label: string; n: number; x: number[]; z: (number | null)[] }[] // 구형 호환
+  // NotchMeasureV2 chunk 시각화용 — 온디맨드 fetch
+  notchChunkCount?: number
   // LineCenter — 찾은 모든 라인 (overlay에서 직렬화)
   lines?: { cx: number; cy: number; cxMm: number; cyMm: number; angleDeg: number; roiIndex: number; pointCount: number;
             p0x?: number; p0y?: number; p1x?: number; p1y?: number }[]
@@ -62,6 +66,7 @@ interface Props {
   upstreamResY?: number
   upstreamOriginCol?: number
   upstreamOriginRow?: number
+  upstreamCloud?: [number, number, number][]
   width: number
   onWidthChange: (w: number) => void
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
@@ -97,11 +102,12 @@ function extractHeightMeasures(
   return result
 }
 
-function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow, viewKey }: {
+function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow, viewKey, upstreamCloud }: {
   toolType: string; result?: NodeResult; rois?: Roi[]
   nodeId: string; params: Record<string, unknown>
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
   originCol?: number; originRow?: number; viewKey?: string
+  upstreamCloud?: [number, number, number][]
 }) {
   const [stageIdx, setStageIdx] = useState(0)
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
@@ -120,7 +126,6 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
     const api = window.electronAPI
     if (!api?.engineFetchProfile) return
     setProfLoading(true)
-    // profData는 null로 안 내림 — ProfileChart 마운트 유지해서 zoom/pan 상태 보존
     api.engineFetchProfile(nodeId, clampedRow)
   }, [profRow, meta, metaLen, nodeId])
 
@@ -138,6 +143,41 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
     })
     return unsub
   }, [meta, metaLen, nodeId])
+
+  const [chunkRow, setChunkRow] = useState(0)
+  const [notchView, setNotchView] = useState<'inputCloud' | 'outputCloud' | 'measurements' | 'envelope'>('measurements')
+  const [notchEnvData, setNotchEnvData] = useState<{
+    x: number[]; z: number[]; yFit: (number | null)[]
+    notchLoY: number; notchHiY: number; floorCenterY: number; floorZRelUm: number; floorZmm: number
+    leftLandZmm?: number; rightLandZmm?: number
+    leftEdgeZmm?: number; rightEdgeZmm?: number
+    leftEdgeYmm?: number; rightEdgeYmm?: number
+  } | null>(null)
+  const [notchEnvLoading, setNotchEnvLoading] = useState(false)
+  const notchChunkCount = result?.notchChunkCount ?? 0
+
+  // NotchMeasureV2 chunk envelope 온디맨드 fetch
+  useEffect(() => {
+    if (!notchChunkCount) return
+    const api = window.electronAPI
+    if (!api?.engineFetchNotchEnv) return
+    setNotchEnvLoading(true)
+    api.engineFetchNotchEnv(nodeId, Math.min(chunkRow, notchChunkCount - 1))
+  }, [chunkRow, notchChunkCount, nodeId])
+
+  useEffect(() => {
+    if (!notchChunkCount) return
+    const api = window.electronAPI
+    if (!api?.onEngineEvent) return
+    const unsub = api.onEngineEvent((raw: unknown) => {
+      const d = raw as { event?: string; nodeId?: string; chunkIdx?: number; x?: number[]; z?: number[]; yFit?: (number | null)[]; notchLoY?: number; notchHiY?: number; floorCenterY?: number; floorZRelUm?: number; floorZmm?: number; leftLandZmm?: number; rightLandZmm?: number; leftEdgeZmm?: number; rightEdgeZmm?: number; leftEdgeYmm?: number; rightEdgeYmm?: number; error?: string }
+      if (d.event !== 'notchEnvData' || d.nodeId !== nodeId) return
+      setNotchEnvLoading(false)
+      if (d.error) { setNotchEnvData(null); return }
+      setNotchEnvData({ x: d.x ?? [], z: d.z ?? [], yFit: d.yFit ?? [], notchLoY: d.notchLoY ?? 0, notchHiY: d.notchHiY ?? 0, floorCenterY: d.floorCenterY ?? 0, floorZRelUm: d.floorZRelUm ?? 0, floorZmm: d.floorZmm ?? 0, leftLandZmm: d.leftLandZmm, rightLandZmm: d.rightLandZmm, leftEdgeZmm: d.leftEdgeZmm, rightEdgeZmm: d.rightEdgeZmm, leftEdgeYmm: d.leftEdgeYmm, rightEdgeYmm: d.rightEdgeYmm })
+    })
+    return unsub
+  }, [notchChunkCount, nodeId])
 
   const zMin = result?.zMin
   const zMax = result?.zMax
@@ -472,9 +512,124 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         )
       })()}
 
-      {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) */}
-      {/* 행별 Profile — profileMeta(온디맨드) 또는 구형 profiles */}
-      {(() => {
+      {/* NotchMeasureV2 통합 결과창 — 4개 드롭박스 뷰 전환 */}
+      {toolType === 'NotchMeasureV2' && (() => {
+        const byLabel = (label: string) => result.profiles?.find(p => p.label === label)
+        const depthL   = byLabel('depth_left_um')
+        const depthR   = byLabel('depth_right_um')
+        const depthC   = byLabel('depth_combined_um')
+        const depthLE  = byLabel('depth_left_edge_um')
+        const depthRE  = byLabel('depth_right_edge_um')
+        const floorZ   = byLabel('notch_floor_z_mm')
+        const landL    = byLabel('land_left_z_mm')
+        const landR    = byLabel('land_right_z_mm')
+        const clampedChunk = Math.min(chunkRow, Math.max(0, notchChunkCount - 1))
+        const hasCloud = !!result?.cloud && result.cloud.length > 0
+        const hasProfiles = !!result?.profiles && result.profiles.length > 0
+        return (
+          <div className="node-result-measures">
+            <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+              <span className="node-result-label">NotchMeasureV2 결과</span>
+              <select className="param-select" value={notchView}
+                onChange={e => setNotchView(e.target.value as 'inputCloud' | 'outputCloud' | 'measurements' | 'envelope')}
+                style={{ fontSize: 11 }}>
+                <option value="inputCloud">입력 pointcloud</option>
+                <option value="outputCloud">최종 출력 pointcloud</option>
+                <option value="measurements">각 높이 측정 그래프</option>
+                <option value="envelope">프로파일별 그래프</option>
+              </select>
+            </div>
+
+            {/* 입력 pointcloud */}
+            {notchView === 'inputCloud' && (
+              upstreamCloud && upstreamCloud.length > 0
+                ? <PlaneView3D points={upstreamCloud} showPlane={false} />
+                : <div className="param-empty" style={{ fontSize: 11 }}>상류 노드 cloud 없음</div>
+            )}
+
+            {/* 최종 출력 pointcloud */}
+            {notchView === 'outputCloud' && (
+              hasCloud
+                ? <PlaneView3D points={result!.cloud!} showPlane={false} />
+                : <div className="param-empty" style={{ fontSize: 11 }}>출력 cloud 없음 (먼저 실행하세요)</div>
+            )}
+
+            {/* 각 높이 측정 그래프 */}
+            {notchView === 'measurements' && hasProfiles && (
+              <>
+                {depthL && depthR && depthC && (
+                  <NotchProfileChart series={[
+                    { label: 'depth left',     x: depthL.x, z: depthL.z, color: '#eb6834', bold: true },
+                    { label: 'depth right',    x: depthR.x, z: depthR.z, color: '#1baf7a', bold: true },
+                    { label: 'depth combined', x: depthC.x, z: depthC.z, color: '#3987e5' },
+                  ]} unit="µm" />
+                )}
+                {depthLE && depthRE && (
+                  <NotchProfileChart series={[
+                    { label: 'depth left (edge)',  x: depthLE.x, z: depthLE.z, color: '#00bcd4', bold: true },
+                    { label: 'depth right (edge)', x: depthRE.x, z: depthRE.z, color: '#e040fb', bold: true },
+                  ]} unit="µm" />
+                )}
+                {floorZ && landL && landR && (
+                  <NotchProfileChart series={[
+                    { label: 'floor z',    x: floorZ.x, z: floorZ.z, color: '#3987e5', bold: true },
+                    { label: 'land left',  x: landL.x,  z: landL.z,  color: '#eb6834' },
+                    { label: 'land right', x: landR.x,  z: landR.z,  color: '#1baf7a' },
+                  ]} unit="mm" />
+                )}
+                {!depthL && !floorZ && (
+                  <div className="param-empty" style={{ fontSize: 11 }}>측정 결과 없음 (먼저 실행하세요)</div>
+                )}
+              </>
+            )}
+            {notchView === 'measurements' && !hasProfiles && (
+              <div className="param-empty" style={{ fontSize: 11 }}>측정 결과 없음 (먼저 실행하세요)</div>
+            )}
+
+            {/* 프로파일별 그래프 */}
+            {notchView === 'envelope' && (
+              notchChunkCount > 0 ? (
+                <>
+                  <div className="param-row">
+                    <span className="param-label">chunk</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+                      <button className="param-btn" style={{ padding: '1px 6px' }}
+                        onClick={() => setChunkRow(r => Math.max(0, r - 1))}>◀</button>
+                      <input type="range" min={0} max={notchChunkCount - 1} step={1} value={clampedChunk}
+                        style={{ flex: 1 }} onChange={e => setChunkRow(parseInt(e.target.value))} />
+                      <input type="number" min={0} max={notchChunkCount - 1} value={clampedChunk}
+                        style={{ width: 48, textAlign: 'right', background: '#1a1d24', border: '1px solid #333', color: '#ccc', borderRadius: 3, fontSize: 11 }}
+                        onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v)) setChunkRow(Math.max(0, Math.min(notchChunkCount - 1, v))) }} />
+                      <button className="param-btn" style={{ padding: '1px 6px' }}
+                        onClick={() => setChunkRow(r => Math.min(notchChunkCount - 1, r + 1))}>▶</button>
+                    </div>
+                  </div>
+                  {notchEnvLoading && <div className="param-empty" style={{ fontSize: 11 }}>로딩 중…</div>}
+                  {notchEnvData && (
+                    <NotchChunkChart
+                      x={notchEnvData.x} z={notchEnvData.z} yFit={notchEnvData.yFit}
+                      notchLoY={notchEnvData.notchLoY} notchHiY={notchEnvData.notchHiY}
+                      floorCenterY={notchEnvData.floorCenterY} floorZRelUm={notchEnvData.floorZRelUm}
+                      floorZmm={notchEnvData.floorZmm}
+                      leftLandZmm={notchEnvData.leftLandZmm}
+                      rightLandZmm={notchEnvData.rightLandZmm}
+                      leftEdgeZmm={notchEnvData.leftEdgeZmm}
+                      rightEdgeZmm={notchEnvData.rightEdgeZmm}
+                      leftEdgeYmm={notchEnvData.leftEdgeYmm}
+                      rightEdgeYmm={notchEnvData.rightEdgeYmm}
+                    />
+                  )}
+                </>
+              ) : (
+                <div className="param-empty" style={{ fontSize: 11 }}>프로파일 없음 (먼저 실행하세요)</div>
+              )
+            )}
+          </div>
+        )
+      })()}
+
+      {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) — NotchMeasureV2 제외 */}
+      {toolType !== 'NotchMeasureV2' && (() => {
         const useMeta = meta && metaLen > 0
         const useOld = !useMeta && result.profiles && result.profiles.length > 0
         if (!useMeta && !useOld) return null
@@ -556,7 +711,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, upstreamCloud, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>(() => getViewState(nodeId).tab ?? 'params')
   useEffect(() => { patchViewState(nodeId, { tab }) }, [nodeId, tab])
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
@@ -782,7 +937,8 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
       <div className="node-panel-body" style={{ display: tab === 'result' ? undefined : 'none' }}>
         <ResultView toolType={toolType} result={result} rois={params.rois as Roi[]}
           nodeId={nodeId} params={params} onParamChange={onParamChange}
-          originCol={upstreamOriginCol} originRow={upstreamOriginRow} viewKey={`${nodeId}:result`} />
+          originCol={upstreamOriginCol} originRow={upstreamOriginRow} viewKey={`${nodeId}:result`}
+          upstreamCloud={upstreamCloud} />
       </div>
     </div>
   )
