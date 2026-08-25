@@ -95,6 +95,8 @@ function PathField({ label, value, onChange, toolType }: {
       ? [{ name: 'HeightMap (PNG)', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
       : toolType === 'CloudLoader'
       ? [{ name: 'Point Cloud', extensions: ['ply', 'xyz', 'asc', 'pcd', 'bin'] }, { name: 'All Files', extensions: ['*'] }]
+      : toolType === 'CloudMerge'
+      ? [{ name: 'Matrix (텍스트)', extensions: ['txt', 'csv'] }, { name: 'All Files', extensions: ['*'] }]
       : [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tiff'] }, { name: 'All Files', extensions: ['*'] }]
     const path = await api.openFile(filters)
     if (path) onChange(path)
@@ -496,10 +498,44 @@ function CloudSaverParams({ params, onChange }: { params: Record<string, unknown
       <input className="param-input" type="text" value={filename} placeholder="비우면 소스 파일명"
         onChange={e => set('filename', e.target.value)} />
     </div>
-    <SelectField label="포맷" value={format} options={['ply', 'xyz', 'bin']} onChange={v => set('format', v)}
-      tooltip="ply=ascii(CloudCompare/MeshLab 호환), xyz=텍스트(x y z 한 줄씩), bin=생 바이너리(float32 x,y,z 연속·헤더없음·최고속, 점수=파일크기/12)" />
+    <SelectField label="포맷" value={format} options={['ply', 'xyz', 'asc', 'bin']} onChange={v => set('format', v)}
+      tooltip="ply=binary_little_endian(CloudCompare/MeshLab 호환), xyz/asc=텍스트(x y z 한 줄씩, 동일 포맷), bin=생 바이너리(float32 x,y,z 연속·헤더없음·최고속, 점수=파일크기/12)" />
     <div className="param-empty" style={{ fontSize: 10 }}>
       저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷
+    </div>
+  </>
+}
+
+// HeightMapSaver: HeightMap → PNG/TIF(16bit) 또는 그 외(8bit 정규화) 파일 저장 + 사이드카 메타
+function HeightMapSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const folder = params.folder as string ?? ''
+  const filename = params.filename as string ?? ''
+  const format = params.format as string ?? 'png'
+  const pickFolder = async () => {
+    const dir = await window.electronAPI?.openFolder?.()
+    if (dir) set('folder', dir)
+  }
+  return <>
+    <div className="param-section">저장 위치 (HeightMap)</div>
+    <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+      <span className="param-label">폴더 (필수)</span>
+      <button className="btn-browse" onClick={pickFolder}>📁 폴더 선택</button>
+      <input className="param-input" type="text" value={folder} placeholder="경로 직접 입력 (예: C:\path\to\folder)"
+        onChange={e => set('folder', e.target.value)} />
+    </div>
+    <div className="param-row">
+      <span className="param-label">파일명 (선택)</span>
+      <input className="param-input" type="text" value={filename} placeholder="비우면 소스 파일명"
+        onChange={e => set('filename', e.target.value)} />
+    </div>
+    <SelectField label="포맷" value={format} options={['png', 'tif', 'jpg', 'bmp']} onChange={v => set('format', v)}
+      tooltip="png/tif=16bit 그레이스케일(raw 값 그대로, [0,65535] clamp) · jpg/bmp=8bit(min-max 정규화)" />
+    <CheckField label="메타데이터(.meta.json) 저장" value={(params.saveMeta as boolean) ?? true}
+      onChange={v => set('saveMeta', v)}
+      tooltip="켜면(기본) 사이드카 .meta.json에 해상도·원점·zZeroCount 등을 함께 저장해 HeightMapLoader로 정확히 복원 가능. 끄면 이미지 파일만 저장(왕복 복원 불가)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷 (+ 메타데이터 저장 시 같은 이름의 .meta.json)
     </div>
   </>
 }
@@ -549,6 +585,63 @@ function CloudLoaderParams({ params, onChange, toolType }: { params: Record<stri
       onChange={v => set('swapXY', v)}
       tooltip="켜면 로드한 점의 X/Y를 맞바꿈. SmartRay는 x=스캔(transport)/y=레이저라인(lateral)인데 Keyence는 반대(스캔=Y, 레이저라인=X)이므로 켜서 파이프라인 축 관례에 맞춤" />
     <div className="param-empty" style={{ fontSize: 10 }}>출력: PointCloud3D. CloudSaver 포맷과 대칭.</div>
+  </>
+}
+
+function CloudMergeParams({ params, onChange, toolType }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void; toolType?: string }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">Point Cloud 합성</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>입력: Master(포트0, 그대로 유지) / Transform(포트1, 아래 행렬 적용)</div>
+    <PathField label="변환 행렬 파일 (4x4)" value={(params.matrixPath as string) ?? ''}
+      onChange={v => set('matrixPath', v)} toolType={toolType} />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      공백/개행 구분 숫자 16개(4행×4열, row-major). 위 3행이 [R|T] — Transform 각 점 P에 P&apos;=R·P+T 적용 후 Master와 합쳐 하나의 PointCloud3D로 출력.<br />
+      예)<br />
+      R11 R12 R13 Tx<br />
+      R21 R22 R23 Ty<br />
+      R31 R32 R33 Tz<br />
+      0 0 0 1
+    </div>
+  </>
+}
+
+function CloudSorFilterParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">공간 격자 이웃 탐색</div>
+    <NumField label="Cell Size(mm)" step={0.001} value={(params.cellSizeMm as number) ?? 0.02}
+      onChange={v => set('cellSizeMm', v)} tooltip="이웃 탐색용 격자 셀 크기 — 점 간격과 비슷한 정도로 설정. 너무 크면 이웃 탐색이 부정확·느려지고, 너무 작으면 셀이 과도하게 많아짐" />
+    <NumField label="k (이웃 개수)" step={1} value={(params.kNeighbors as number) ?? 8}
+      onChange={v => set('kNeighbors', v)} tooltip="각 점마다 이 개수의 최근접 이웃까지 평균거리를 계산" />
+    <NumField label="stdRatio" step={0.1} value={(params.stdRatio as number) ?? 2.0}
+      onChange={v => set('stdRatio', v)} tooltip="meanDist > 전역평균 + stdRatio*표준편차 인 점을 이상치로 제거. 작을수록 더 많이 제거됨. 1.0은 스캔 경계점까지 오탐하는 경우가 많아 기본 2.0 권장" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      출력: PointCloud3D(이상치 제거됨). 공간 해시 격자로 이웃을 찾아 대용량 클라우드도 실용적 속도로 처리(브루트포스 아님).
+    </div>
+  </>
+}
+
+function CloudToZmapParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">Zmap 래스터화 해상도</div>
+    <NumField label="Lateral Resolution(mm)" step={0.0001} value={(params.lateralResMm as number) ?? 0.0063}
+      onChange={v => set('lateralResMm', v)} tooltip="가로(col) 해상도 — point.y(lateral)" />
+    <NumField label="Transport Resolution(mm)" step={0.0001} value={(params.transportResMm as number) ?? 0.008}
+      onChange={v => set('transportResMm', v)} tooltip="세로(row) 해상도 — point.x(transport)" />
+    <NumField label="Vertical Resolution(mm)" step={0.00001} value={(params.verticalResMm as number) ?? 0.00105}
+      onChange={v => set('verticalResMm', v)} tooltip="z 해상도(mm/count)" />
+    <NumField label="zZeroCount" step={1} value={(params.zZeroCount as number) ?? 32768}
+      onChange={v => set('zZeroCount', v)}
+      tooltip="z=0에 대응하는 raw count 기준(16bit 중간값). raw=round(z/verticalResMm+zZeroCount)를 [0,65535]로 clamp — 음수/과대 z가 무효(0)로 뭉개지지 않도록 데이터 범위에 맞게 조정" />
+    <SelectField label="셀 집계" value={(params.agg as string) ?? 'median'} options={['top', 'mean', 'median', 'bottom']}
+      onChange={v => set('agg', v)}
+      tooltip="같은 격자 셀에 여러 점이 겹칠 때 대표 z값. top=최댓값 · mean=평균 · median=중앙값(기본, 이상치에 강건) · bottom=최솟값" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      입력 포트에 여러 PointCloud3D를 연결하면 같은 격자에 누적됩니다(격자는 연결된 전체 클라우드의 합집합 bbox로 한 번만 계산).<br />
+      출력: HeightMap(Zmap). col=lateral(y)/row=transport(x) — 원시 클라우드 축 관례(x=transport)와 반대로 배치됨. 빈 셀=NaN.
+    </div>
   </>
 }
 
@@ -825,6 +918,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapSaver'   && <HeightMapSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
         {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}
@@ -834,6 +928,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudMerge'       && <CloudMergeParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudToZmap'      && <CloudToZmapParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSorFilter'   && <CloudSorFilterParams params={params} onChange={handleChange} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
         {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
@@ -861,6 +958,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapSaver'   && <HeightMapSaverParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
         {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}
@@ -870,6 +968,9 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'RegionMeasure'    && <RegionMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'ReduceDomain'     && <ReduceDomainParams params={params} onChange={handleChange} />}
         {toolType === 'CloudLoader'      && <CloudLoaderParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudMerge'       && <CloudMergeParams params={params} onChange={handleChange} toolType={toolType} />}
+        {toolType === 'CloudToZmap'      && <CloudToZmapParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSorFilter'   && <CloudSorFilterParams params={params} onChange={handleChange} />}
         {toolType === 'CloudToProfiles'  && <CloudToProfilesParams params={params} onChange={handleChange} />}
         {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}

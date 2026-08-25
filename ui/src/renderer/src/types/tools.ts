@@ -144,6 +144,12 @@ export const TOOL_DEFS: ToolDef[] = [
     tooltip: '포트 1에 Region 연결 시 해당 영역만 필터. 없으면 전체 적용.',
   },
   {
+    type: 'CloudSorFilter', label: 'Cloud SOR Filter', category: '필터',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
+    defaultParams: { cellSizeMm: 0.02, kNeighbors: 8, stdRatio: 2.0 },
+    description: 'PointCloud3D 통계적 이상치 제거(SOR). 공간 격자(cellSizeMm)로 이웃을 빠르게 찾아 점마다 k-최근접 평균거리를 구하고, 전역평균+stdRatio*표준편차보다 먼 점을 노이즈로 제거. 대용량 클라우드도 처리 가능(브루트포스 아님). stdRatio=1.0은 실제 스캔 경계점까지 오탐 제거하는 경우가 많아 기본 2.0.',
+  },
+  {
     type: 'GapFill', label: 'Gap Fill', category: '필터',
     inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, edgeSigma: 30 },
@@ -184,8 +190,8 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     type: 'HeightMapSaver', label: 'HeightMap Saver', category: '출력',
     inputs: ['HeightMap'], outputs: [],
-    defaultParams: { folder: '', filename: '', format: 'png' },
-    description: 'HeightMap을 파일로 저장. 사이드카 .meta.json에 메타(해상도·원점·zZero 등)를 함께 기록해 HeightMapLoader로 정확히 복원 가능.',
+    defaultParams: { folder: '', filename: '', format: 'png', saveMeta: true },
+    description: 'HeightMap을 파일로 저장. saveMeta=true(기본)면 사이드카 .meta.json에 메타(해상도·원점·zZero 등)를 함께 기록해 HeightMapLoader로 정확히 복원 가능.',
   },
   {
     type: 'HeightMapToCloud', label: 'HeightMap to Cloud', category: '변환',
@@ -204,6 +210,21 @@ export const TOOL_DEFS: ToolDef[] = [
     inputs: [], outputs: ['PointCloud3D'],
     defaultParams: { path: '', swapXY: false },
     description: '포인트클라우드 파일(ply/xyz/asc/pcd/bin) → PointCloud3D 로드. swapXY=true면 X/Y를 맞바꿔 로드(예: Keyence — 스캔방향 Y, 레이저라인 X)',
+  },
+  {
+    type: 'CloudMerge', label: 'Cloud Merge', category: '변환',
+    inputs: ['PointCloud3D', 'PointCloud3D'], outputs: ['PointCloud3D'],
+    inputLabels: ['Master', 'Transform'],
+    defaultParams: { matrixPath: '' },
+    description: 'Master(포트0)는 그대로, Transform(포트1)는 4x4 행렬 파일(matrixPath)을 적용(P\'=R·P+T)해 하나의 PointCloud3D로 합성. CloudSaver로 .asc 저장해 내보낼 수 있음',
+  },
+  {
+    type: 'CloudToZmap', label: 'Cloud to Zmap', category: '변환',
+    inputs: [{ type: 'PointCloud3D', isArray: true }], outputs: ['HeightMap'],
+    inputLabels: ['PointCloud3D[ ]'],
+    outputLabels: ['Zmap (HeightMap)'],
+    defaultParams: { lateralResMm: 0.0063, transportResMm: 0.008, verticalResMm: 0.00105, zZeroCount: 32768, agg: 'median' },
+    description: 'PointCloud3D(여러 개 연결 가능 — 같은 격자에 누적)→ Zmap(HeightMap) 래스터화. col=lateral(y)/row=transport(x) — 원시 클라우드 축 관례(x=transport)와 반대로 배치됨. 격자는 연결된 모든 클라우드의 합집합 bbox로 한 번만 계산. 셀당 여러 점은 agg(top/mean/median/bottom)로 집계. z는 raw=round(z/verticalResMm+zZeroCount)로 [0,65535] clamp 양자화, 빈 셀은 NaN',
   },
   {
     type: 'CloudToProfiles', label: 'Cloud to Profiles', category: '변환',

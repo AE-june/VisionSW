@@ -176,6 +176,12 @@ struct VisionData {
         auto p = in(port);
         return (p && idx < p->clouds.size()) ? p->clouds[idx] : nullptr;
     }
+    // 포트의 PointCloud 배열 전체 반환 (여러 클라우드가 같은 포트로 병합된 경우). 없으면 빈 벡터.
+    const std::vector<std::shared_ptr<PointCloud3D>>& inClouds(std::size_t port) const {
+        static const std::vector<std::shared_ptr<PointCloud3D>> kEmpty;
+        auto p = in(port);
+        return p ? p->clouds : kEmpty;
+    }
     std::shared_ptr<Region> inRegion(std::size_t port, std::size_t idx = 0) const {
         auto p = in(port);
         return (p && idx < p->regions.size()) ? p->regions[idx] : nullptr;

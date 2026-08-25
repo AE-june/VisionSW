@@ -27,6 +27,9 @@ add_library(VisionTools STATIC
     src/NotchMeasureTool.cpp
     src/NotchMeasureV2Tool.cpp
     src/ProfileToCloudTool.cpp
+    src/CloudMergeTool.cpp
+    src/CloudToZmapTool.cpp
+    src/CloudSorFilterTool.cpp
 )
 
 target_include_directories(VisionTools

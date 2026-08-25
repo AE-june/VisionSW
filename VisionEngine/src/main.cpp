@@ -251,6 +251,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                         VISION_LOG_WARN("[pipeline] {} port{} 충돌 — 내용 병합", nodeId, dstPort);
                         auto combined = std::make_shared<VisionData>(*merged->inputs[dstPort]);
                         for (auto& hm : o->heightmaps) combined->heightmaps.push_back(hm);
+                        for (auto& cl : o->clouds)     combined->clouds.push_back(cl);
                         for (auto& rg : o->regions)    combined->regions.push_back(rg);
                         for (auto& pl : o->planes)     combined->planes.push_back(pl);
                         for (auto& ln : o->lines)      combined->lines.push_back(ln);

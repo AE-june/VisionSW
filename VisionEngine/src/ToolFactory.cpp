@@ -6,6 +6,9 @@
 #include "LineFitTool.h"
 #include "HeightMapToCloudTool.h"
 #include "CloudLoaderTool.h"
+#include "CloudMergeTool.h"
+#include "CloudToZmapTool.h"
+#include "CloudSorFilterTool.h"
 #include "CloudToProfilesTool.h"
 #include "RowStretchTool.h"
 #include "GapFillTool.h"
@@ -713,9 +716,10 @@ static std::string buildSavePath(const std::string& folder, const std::string& f
 //   HeightMapLoader가 사이드카를 인식해 왕복 불변량이 성립한다.
 class HeightMapSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
+    bool m_saveMeta;
 public:
-    HeightMapSaverTool(std::string folder, std::string filename, std::string format)
-        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)) {}
+    HeightMapSaverTool(std::string folder, std::string filename, std::string format, bool saveMeta = true)
+        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)), m_saveMeta(saveMeta) {}
     std::string name() const override { return "HeightMapSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -755,15 +759,15 @@ public:
             return { ToolStatus::Fail, std::string("HeightMapSaver: ") + e.what() };
         }
 
-        // 사이드카 메타 저장 — HeightMapLoader가 읽어 왕복 불변량 달성
-        writeSidecar(savePath, zm);
+        // 사이드카 메타 저장 — HeightMapLoader가 읽어 왕복 불변량 달성(선택)
+        if (m_saveMeta) writeSidecar(savePath, zm);
 
         VISION_LOG_INFO("HeightMapSaver: 저장됨 → {}", savePath);
         return { ToolStatus::Ok, "", input };   // 통과 (탭 노드)
     }
 };
 
-// ── CloudSaver: PointCloud3D → 파일 저장. .xyz(텍스트) / .ply(ascii, 기본). ────
+// ── CloudSaver: PointCloud3D → 파일 저장. .xyz/.asc(텍스트) / .bin / .ply(binary_little_endian, 기본). ────
 //   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
 class CloudSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
@@ -789,7 +793,7 @@ public:
             // Point3f = {float x,y,z} 연속(12B)이라 배열 통째로 1회 write → 텍스트 변환 없이 최고속.
             ofs.write(reinterpret_cast<const char*>(pts.data()),
                       (std::streamsize)pts.size() * sizeof(Point3f));
-        } else if (ext == "xyz") {                // 단순 텍스트: "x y z" 한 줄씩
+        } else if (ext == "xyz" || ext == "asc") { // 단순 텍스트: "x y z" 한 줄씩 (.asc는 .xyz와 동일 포맷)
             ofs << std::fixed << std::setprecision(4);
             for (const auto& p : pts) ofs << p.x << " " << p.y << " " << p.z << "\n";
         } else {                                  // PLY binary_little_endian (기본, CloudCompare/MeshLab 호환·고속)
@@ -1136,13 +1140,35 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 if (!e.empty()) format = e;
             }
         }
-        return std::make_shared<HeightMapSaverTool>(folder, filename, format);
+        bool saveMeta = p.value("saveMeta", true);
+        return std::make_shared<HeightMapSaverTool>(folder, filename, format, saveMeta);
     }
     if (type == "HeightMapToCloud") {
         return std::make_shared<HeightMapToCloudTool>(p.value("step", 1));
     }
     if (type == "CloudLoader") {
         return std::make_shared<CloudLoaderTool>(p.value("path", std::string()), p.value("swapXY", false));
+    }
+    if (type == "CloudMerge") {
+        CloudMergeParams mp;
+        mp.matrixPath = p.value("matrixPath", std::string());
+        return std::make_shared<CloudMergeTool>(mp);
+    }
+    if (type == "CloudSorFilter") {
+        CloudSorFilterParams sp;
+        sp.cellSizeMm = p.value("cellSizeMm", 0.02);
+        sp.kNeighbors = p.value("kNeighbors", 8);
+        sp.stdRatio   = p.value("stdRatio",   2.0);
+        return std::make_shared<CloudSorFilterTool>(sp);
+    }
+    if (type == "CloudToZmap") {
+        CloudToZmapParams zp;
+        zp.lateralResMm   = p.value("lateralResMm",   0.0063);
+        zp.transportResMm = p.value("transportResMm", 0.008);
+        zp.verticalResMm  = p.value("verticalResMm",  0.00105);
+        zp.zZeroCount     = p.value("zZeroCount",     32768.0);
+        zp.agg            = p.value("agg",            std::string("median"));
+        return std::make_shared<CloudToZmapTool>(zp);
     }
     if (type == "CloudToProfiles") {
         CloudToProfilesTool::Params cp;
