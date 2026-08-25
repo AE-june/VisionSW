@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   enginePreload: (folder: string, xResMm: number, yResMm: number, zResMm: number) =>
     ipcRenderer.invoke('engine:preload', folder, xResMm, yResMm, zResMm),
 
+  // NotchMeasureV2 chunk envelope 온디맨드 요청 (응답은 onEngineEvent notchEnvData)
+  engineFetchNotchEnv: (nodeId: string, chunkIdx: number) =>
+    ipcRenderer.invoke('engine:fetchNotchEnv', nodeId, chunkIdx),
+
   // Subscribe to streamed events from VisionEngine
   onEngineEvent: (cb: (data: unknown) => void) => {
     const handler = (_: Electron.IpcRendererEvent, data: unknown) => cb(data)

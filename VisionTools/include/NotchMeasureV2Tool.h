@@ -51,6 +51,10 @@ struct NotchMeasureV2Params {
     std::string landAgg    = "median"; // median(기본)=이상치에 강건, 평탄도 필터 없이도 안정적 | mean=V1과 동일(landFlatFilter=true와 조합 권장)
     double landMaxDistMm   = 0.0;      // notch 경계에서 이 거리(mm) 이내 점만 land로 참조. 0=제한 없음(전체 영역)
 
+    // 기울기 기반 land 시작점(edge) 탐색 — 노치 경계에서 바깥으로 나가며 기울기 부호 변화 or 평탄 구간 첫 점
+    double edgeSlopeTolUmPerMm = 30.0;  // 평탄 판정 임계 기울기 편차 (µm/mm). land 피팅 기울기와의 차이가 이 값 미만이면 평탄 구간
+    int    edgeSlopeWindowPts  = 5;     // 기울기 계산 윈도우 크기 (점 수). W점 간격으로 기울기 산출해 노이즈 억제
+
     // 안정화 — 이웃 chunk(±floorStabilizeHalf) 이동중앙값으로 보정 + 무효 chunk 채우기 (V1 stabilize()와 동일)
     int    floorStabilizeHalf        = 25;
     double floorStabilizeCenterTolUm = 50.0;  // 바닥 중심위치(y) 보정 임계값(µm)

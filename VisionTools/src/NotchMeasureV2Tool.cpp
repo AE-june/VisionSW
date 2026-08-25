@@ -30,16 +30,23 @@ struct EnvPt {
 struct ChunkResult {
     bool   hadFit       = false;   // 피팅+notch 검출 성공(바닥 검출 실패해도 true일 수 있음 — 안정화 대상)
     bool   valid        = false;   // 바닥까지 성공(또는 안정화로 보정)
-    double coef[4]      = { 0, 0, 0, 0 };
+    double coef[4]      = { 0, 0, 0, 0 };  // 전체 land 피팅 (notch 검출 + floor 기준)
+    double leftCoef[4]  = { 0, 0, 0, 0 };  // 좌측 land 별도 피팅
+    double rightCoef[4] = { 0, 0, 0, 0 };  // 우측 land 별도 피팅
     double notchLoY     = 0.0;
     double notchHiY     = 0.0;
     double floorCenterY = 0.0;
     double floorZRel    = 0.0;     // µm, 피팅 곡선 대비 상대값
     double floorWidth   = 0.0;     // µm
-    double leftLandZ    = NAN_D;   // mm, 절대높이
+    double leftLandZ    = NAN_D;   // mm, 절대높이 (mean/median 집계)
     double rightLandZ   = NAN_D;   // mm
     double combinedLandZ = NAN_D;  // mm — 좌우 풀링(V2 확장, 3번째 깊이 출력용)
+    double leftEdgeZ    = NAN_D;   // mm, 기울기 기반 land 시작점
+    double leftEdgeY    = NAN_D;   // mm, lateral 위치
+    double rightEdgeZ   = NAN_D;   // mm
+    double rightEdgeY   = NAN_D;   // mm
     double centerXmm    = 0.0;
+    std::vector<EnvPt> env;        // 시각화용 envelope 데이터 (y=lateral mm, z=absolute mm)
 };
 
 static double median(std::vector<double> v) {
@@ -195,66 +202,105 @@ static bool detectFloorCorner(const std::vector<EnvPt>& env, const std::vector<d
     return true;
 }
 
-// 한 chunk의 envelope 처리 — V1 processChunkEnv와 동일 흐름 + combinedLandZ(V2 확장) 계산 추가
+// notch 최장 연속구간 탐색 — 성공 시 true, loY/hiY 업데이트
+static bool findNotchInterval(const std::vector<EnvPt>& env,
+                               const std::vector<double>& rel,
+                               const NotchMeasureV2Params& p,
+                               double& loY, double& hiY) {
+    int bestLen = 0, bestStart = -1, runLen = 0, runStart = -1;
+    for (int k = 0; k < (int)env.size(); ++k) {
+        if (rel[k] < p.notchTrigUm) {
+            if (runLen == 0) runStart = k;
+            else {
+                double gap = (env[k].y - env[k - 1].y) * 1000.0;
+                if (gap > p.notchMaxGapUm) { runLen = 0; runStart = k; }
+            }
+            ++runLen;
+            if (runLen > bestLen) { bestLen = runLen; bestStart = runStart; }
+        } else { runLen = 0; }
+    }
+    if (bestLen < p.notchMinCols || bestStart < 0) return false;
+    loY = env[bestStart].y;
+    hiY = env[bestStart + bestLen - 1].y;
+    return true;
+}
+
+// 한 chunk의 envelope 처리
 static void processChunkEnv(const std::vector<EnvPt>& env, const NotchMeasureV2Params& p, ChunkResult& cr) {
     if ((int)env.size() < 9) return;
+    const int nEnv = (int)env.size();
 
     std::vector<double> ys, zs;
-    ys.reserve(env.size()); zs.reserve(env.size());
+    ys.reserve(nEnv); zs.reserve(nEnv);
     for (auto& e : env) { ys.push_back(e.y); zs.push_back(e.z); }
 
-    std::vector<bool> keep(env.size(), true);
+    // ── 1. 전체 robust 피팅 + 1차 노치 검출 ──────────────────────────────
+    std::vector<bool> keep(nEnv, true);
     double coef[4] = {};
     if (!poly::robustPolyfit3(ys, zs, keep, coef, p.landFitIters)) return;
 
-    std::vector<double> rel(env.size());
-    for (int k = 0; k < (int)env.size(); ++k)
-        rel[k] = (env[k].z - poly::eval3(coef, env[k].y)) * 1000.0;
+    auto makeRel = [&](const std::function<double(double)>& evalFn) {
+        std::vector<double> r(nEnv);
+        for (int k = 0; k < nEnv; ++k)
+            r[k] = (env[k].z - evalFn(env[k].y)) * 1000.0;
+        return r;
+    };
+    std::vector<double> rel = makeRel([&](double y){ return poly::eval3(coef, y); });
 
-    // notch 개구: land 기준선 대비 notchTrigUm보다 낮은 최장 연속구간(gap 허용)
     double notchLoY = 0, notchHiY = 0;
-    {
-        int bestLen = 0, bestStart = -1, runLen = 0, runStart = -1;
-        for (int k = 0; k < (int)env.size(); ++k) {
-            if (rel[k] < p.notchTrigUm) {
-                if (runLen == 0) runStart = k;
-                else {
-                    double gap = (env[k].y - env[k - 1].y) * 1000.0;
-                    if (gap > p.notchMaxGapUm) { runLen = 0; runStart = k; }
-                }
-                ++runLen;
-                if (runLen > bestLen) { bestLen = runLen; bestStart = runStart; }
-            } else {
-                runLen = 0;
-            }
-        }
-        if (bestLen < p.notchMinCols || bestStart < 0) return;
-        notchLoY = env[bestStart].y;
-        notchHiY = env[bestStart + bestLen - 1].y;
-    }
+    if (!findNotchInterval(env, rel, p, notchLoY, notchHiY)) return;
 
     std::memcpy(cr.coef, coef, sizeof(coef));
     cr.hadFit   = true;
     cr.notchLoY = notchLoY;
     cr.notchHiY = notchHiY;
 
+    // ── 2. 좌/우 별도 피팅 (노치 내부 제외) ─────────────────────────────
+    {
+        std::vector<double> lys, lzs, rys, rzs;
+        for (const auto& ep : env) {
+            if (ep.y < notchLoY) { lys.push_back(ep.y); lzs.push_back(ep.z); }
+            else if (ep.y > notchHiY) { rys.push_back(ep.y); rzs.push_back(ep.z); }
+        }
+        std::vector<bool> lk(lys.size(), true), rk(rys.size(), true);
+        if (!poly::robustPolyfit3(lys, lzs, lk, cr.leftCoef,  p.landFitIters))
+            std::memcpy(cr.leftCoef,  coef, sizeof(coef));
+        if (!poly::robustPolyfit3(rys, rzs, rk, cr.rightCoef, p.landFitIters))
+            std::memcpy(cr.rightCoef, coef, sizeof(coef));
+    }
+
+    // ── 3. 좌/우 피팅 기준 rel2 재계산 → 노치 재검출 ───────────────────
+    // 노치 내부: leftCoef/rightCoef 선형 보간 → floor 기준점 일관성 유지
+    const double notchW2 = (notchHiY > notchLoY) ? (notchHiY - notchLoY) : 1e-9;
+    std::vector<double> rel2 = makeRel([&](double y) -> double {
+        if (y <= notchLoY) return poly::eval3(cr.leftCoef, y);
+        if (y >= notchHiY) return poly::eval3(cr.rightCoef, y);
+        double t = (y - notchLoY) / notchW2;
+        return poly::eval3(cr.leftCoef, y) * (1.0 - t) + poly::eval3(cr.rightCoef, y) * t;
+    });
+    {
+        double lo2 = notchLoY, hi2 = notchHiY;
+        if (findNotchInterval(env, rel2, p, lo2, hi2)) {
+            cr.notchLoY = lo2; cr.notchHiY = hi2;
+            notchLoY = lo2;   notchHiY = hi2;
+        }
+        // 재검출 실패 시 기존 경계 유지
+    }
+
+    // ── 4. 바닥 검출 (rel2, 정제된 경계 기준) ───────────────────────────
     bool floorOk = false;
     if (p.method == "corner") {
-        floorOk = detectFloorCorner(env, rel, notchLoY, notchHiY, p, cr);
-        if (!floorOk) floorOk = detectFloorFlat(env, rel, notchLoY, notchHiY, p, cr);
+        floorOk = detectFloorCorner(env, rel2, notchLoY, notchHiY, p, cr);
+        if (!floorOk) floorOk = detectFloorFlat(env, rel2, notchLoY, notchHiY, p, cr);
     } else {
-        floorOk = detectFloorFlat(env, rel, notchLoY, notchHiY, p, cr);
+        floorOk = detectFloorFlat(env, rel2, notchLoY, notchHiY, p, cr);
     }
     if (!floorOk) return;
 
-    // land: notch 밖 영역의 점을 사용.
-    // landFlatFilter=true면 |rel|<landTolUm인 평탄한 점만(V1과 동일) — 너무 좁은 landMaxDistMm과 겹치면
-    // 조건 만족 점이 하나도 없어 NaN이 될 수 있음.
-    // landFlatFilter=false(기본)면 평탄도 필터 없이 구간 내 전체 점을 사용 — landAgg=median의 이상치 강건성에 의존.
-    // landMaxDistMm > 0이면 notch 경계에서 그 거리 이내 점만 참조(기존 V2의 landSampleMm과 동일 취지).
+    // ── 5. land 집계 (rel2 기준, landFlatFilter 적용) ───────────────────
     std::vector<double> leftVals, rightVals;
-    for (int k = 0; k < (int)env.size(); ++k) {
-        if (p.landFlatFilter && std::abs(rel[k]) >= p.landTolUm) continue;
+    for (int k = 0; k < nEnv; ++k) {
+        if (p.landFlatFilter && std::abs(rel2[k]) >= p.landTolUm) continue;
         if (env[k].y < notchLoY) {
             if (p.landMaxDistMm > 0.0 && (notchLoY - env[k].y) > p.landMaxDistMm) continue;
             leftVals.push_back(env[k].z);
@@ -271,6 +317,67 @@ static void processChunkEnv(const std::vector<EnvPt>& env, const NotchMeasureV2P
         pooled.insert(pooled.end(), rightVals.begin(), rightVals.end());
         cr.combinedLandZ = aggregate(pooled, useMedian ? "median" : "mean");
     }
+
+    // ── 6. edge 탐색 — 노치 경계에서 바깥으로, 기울기 부호 반전 OR 평탄 구간 첫 점
+    //    dev(k) = actualSlope(k,W) - sideCoef 도함수(y[k])
+    //    signChange: prevDev * dev < 0  /  flat: |dev| < tol
+    {
+        const double tolMmPerMm = p.edgeSlopeTolUmPerMm / 1000.0;
+        const int    W          = std::max(1, p.edgeSlopeWindowPts);
+
+        // 좌측: notchLoY에서 왼쪽으로 (k 감소 = 노치에서 멀어짐)
+        int startK = -1;
+        for (int k = nEnv - 1; k >= 0; --k) {
+            if (env[k].y < notchLoY) { startK = k; break; }
+        }
+        if (startK >= 1) {
+            double prevDev = NAN_D;
+            for (int k = startK; k >= 1; --k) {
+                int w = std::min(W, k);
+                double dy = env[k - w].y - env[k].y;
+                double dz = env[k - w].z - env[k].z;
+                if (std::abs(dy) < 1e-9) { prevDev = NAN_D; continue; }
+                double dev = (dz / dy) - poly::deriv3(cr.leftCoef, env[k].y);
+                if (!std::isnan(prevDev)) {
+                    if (prevDev * dev < 0 || std::abs(dev) < tolMmPerMm) {
+                        cr.leftEdgeZ = env[k].z; cr.leftEdgeY = env[k].y; break;
+                    }
+                }
+                prevDev = dev;
+            }
+            if (std::isnan(cr.leftEdgeZ)) { cr.leftEdgeZ = env[0].z; cr.leftEdgeY = env[0].y; }
+        } else {
+            cr.leftEdgeZ = poly::eval3(cr.leftCoef, notchLoY);
+            cr.leftEdgeY = notchLoY;
+        }
+
+        // 우측: notchHiY에서 오른쪽으로 (k 증가 = 노치에서 멀어짐)
+        int startR = -1;
+        for (int k = 0; k < nEnv; ++k) {
+            if (env[k].y > notchHiY) { startR = k; break; }
+        }
+        if (startR >= 0 && startR < nEnv - 1) {
+            double prevDev = NAN_D;
+            for (int k = startR; k < nEnv - 1; ++k) {
+                int w = std::min(W, nEnv - 1 - k);
+                double dy = env[k + w].y - env[k].y;
+                double dz = env[k + w].z - env[k].z;
+                if (std::abs(dy) < 1e-9) { prevDev = NAN_D; continue; }
+                double dev = (dz / dy) - poly::deriv3(cr.rightCoef, env[k].y);
+                if (!std::isnan(prevDev)) {
+                    if (prevDev * dev < 0 || std::abs(dev) < tolMmPerMm) {
+                        cr.rightEdgeZ = env[k].z; cr.rightEdgeY = env[k].y; break;
+                    }
+                }
+                prevDev = dev;
+            }
+            if (std::isnan(cr.rightEdgeZ)) { cr.rightEdgeZ = env.back().z; cr.rightEdgeY = env.back().y; }
+        } else {
+            cr.rightEdgeZ = poly::eval3(cr.rightCoef, notchHiY);
+            cr.rightEdgeY = notchHiY;
+        }
+    }
+
     cr.valid = true;
 }
 
@@ -390,6 +497,7 @@ ToolResult NotchMeasureV2Tool::execute(VisionDataPtr input) {
         }
         std::sort(env.begin(), env.end(), [](const EnvPt& a, const EnvPt& b) { return a.y < b.y; });
 
+        chunks[ci].env = env;   // 시각화용 보존 (정렬 후)
         processChunkEnv(env, m_p, chunks[ci]);
     }
 
@@ -450,24 +558,37 @@ ToolResult NotchMeasureV2Tool::execute(VisionDataPtr input) {
     auto profZ   = std::make_shared<Profile>();
     auto profLZ  = std::make_shared<Profile>();
     auto profRZ  = std::make_shared<Profile>();
+    auto profLE  = std::make_shared<Profile>();  // depth_left_edge_um
+    auto profRE  = std::make_shared<Profile>();  // depth_right_edge_um
     profL->label  = "depth_left_um";
     profR->label  = "depth_right_um";
     profC->label  = "depth_combined_um";
     profZ->label  = "notch_floor_z_mm";
     profLZ->label = "land_left_z_mm";
     profRZ->label = "land_right_z_mm";
+    profLE->label = "depth_left_edge_um";
+    profRE->label = "depth_right_edge_um";
     profL->frameId = profR->frameId = profC->frameId
-        = profZ->frameId = profLZ->frameId = profRZ->frameId = cloud.frameId;
+        = profZ->frameId = profLZ->frameId = profRZ->frameId
+        = profLE->frameId = profRE->frameId = cloud.frameId;
 
     int validCount = 0;
     for (const auto& cr : chunks) {
         if (!cr.valid || !cr.hadFit) continue;
         ++validCount;
 
-        const double floorZmm = poly::eval3(cr.coef, cr.floorCenterY) + cr.floorZRel / 1000.0;
-        const double dL = std::isnan(cr.leftLandZ)     ? NAN_D : (cr.leftLandZ     - floorZmm) * 1000.0;
-        const double dR = std::isnan(cr.rightLandZ)    ? NAN_D : (cr.rightLandZ    - floorZmm) * 1000.0;
-        const double dC = std::isnan(cr.combinedLandZ) ? NAN_D : (cr.combinedLandZ - floorZmm) * 1000.0;
+        // floorZRel은 rel2(좌우 보간) 기준 → interpRef로 절대 z 복원
+        double fT = (cr.notchHiY > cr.notchLoY)
+            ? std::max(0.0, std::min(1.0, (cr.floorCenterY - cr.notchLoY) / (cr.notchHiY - cr.notchLoY)))
+            : 0.5;
+        double fInterpRef = poly::eval3(cr.leftCoef, cr.floorCenterY) * (1.0 - fT)
+                          + poly::eval3(cr.rightCoef, cr.floorCenterY) * fT;
+        const double floorZmm = fInterpRef + cr.floorZRel / 1000.0;
+        const double dL  = std::isnan(cr.leftLandZ)    ? NAN_D : (cr.leftLandZ    - floorZmm) * 1000.0;
+        const double dR  = std::isnan(cr.rightLandZ)   ? NAN_D : (cr.rightLandZ   - floorZmm) * 1000.0;
+        const double dC  = std::isnan(cr.combinedLandZ)? NAN_D : (cr.combinedLandZ- floorZmm) * 1000.0;
+        const double dLE = std::isnan(cr.leftEdgeZ)    ? NAN_D : (cr.leftEdgeZ    - floorZmm) * 1000.0;
+        const double dRE = std::isnan(cr.rightEdgeZ)   ? NAN_D : (cr.rightEdgeZ   - floorZmm) * 1000.0;
 
         profL->x.push_back(cr.centerXmm);  profL->y.push_back(0);  profL->s.push_back(cr.centerXmm);  profL->z.push_back(dL);
         profR->x.push_back(cr.centerXmm);  profR->y.push_back(0);  profR->s.push_back(cr.centerXmm);  profR->z.push_back(dR);
@@ -475,6 +596,8 @@ ToolResult NotchMeasureV2Tool::execute(VisionDataPtr input) {
         profZ->x.push_back(cr.centerXmm);  profZ->y.push_back(0);  profZ->s.push_back(cr.centerXmm);  profZ->z.push_back(floorZmm);
         profLZ->x.push_back(cr.centerXmm); profLZ->y.push_back(0); profLZ->s.push_back(cr.centerXmm); profLZ->z.push_back(cr.leftLandZ);
         profRZ->x.push_back(cr.centerXmm); profRZ->y.push_back(0); profRZ->s.push_back(cr.centerXmm); profRZ->z.push_back(cr.rightLandZ);
+        profLE->x.push_back(cr.centerXmm); profLE->y.push_back(0); profLE->s.push_back(cr.centerXmm); profLE->z.push_back(dLE);
+        profRE->x.push_back(cr.centerXmm); profRE->y.push_back(0); profRE->s.push_back(cr.centerXmm); profRE->z.push_back(dRE);
     }
     out->profiles.push_back(profL);
     out->profiles.push_back(profR);
@@ -482,7 +605,39 @@ ToolResult NotchMeasureV2Tool::execute(VisionDataPtr input) {
     out->profiles.push_back(profZ);
     out->profiles.push_back(profLZ);
     out->profiles.push_back(profRZ);
+    out->profiles.push_back(profLE);
+    out->profiles.push_back(profRE);
     out->measurements.push_back({ "valid_count", (double)validCount, "", validCount > 0 });
+
+    // ── Chunk envelope profiles (시각화용 — main.cpp에서 별도 캐시로 분리) ──
+    // label = "__notchenv_{ci}", x=lateral mm, z=abs z mm, y=fit curve mm,
+    // s=[c0,c1,c2,c3, notchLoY,notchHiY,floorCenterY,floorZRel_um]
+    for (int ci = 0; ci < nChunks; ++ci) {
+        const ChunkResult& cr = chunks[ci];
+        if (!cr.hadFit || cr.env.empty()) continue;
+        auto profEnv = std::make_shared<Profile>();
+        profEnv->label = "__notchenv_" + std::to_string(ci);
+        profEnv->frameId = cloud.frameId;
+        for (const auto& ep : cr.env) {
+            profEnv->x.push_back(ep.y);
+            profEnv->z.push_back(ep.z);
+            const double* sideCoef = (ep.y <= cr.notchLoY) ? cr.leftCoef : cr.rightCoef;
+            profEnv->y.push_back(poly::eval3(sideCoef, ep.y));
+        }
+        // s[0..3]: floor 기준 ref 전달. main.cpp는 c0+c1*y+c2*y²+c3*y³ 공식으로 floorZmm 계산.
+        // rel2 기준(좌우 보간)과 일치시키려면 interpRef 하나만 s[0]에 넣고 s[1..3]=0.
+        double floorT = (cr.notchHiY > cr.notchLoY)
+            ? std::max(0.0, std::min(1.0, (cr.floorCenterY - cr.notchLoY) / (cr.notchHiY - cr.notchLoY)))
+            : 0.5;
+        double interpRef = poly::eval3(cr.leftCoef,  cr.floorCenterY) * (1.0 - floorT)
+                         + poly::eval3(cr.rightCoef, cr.floorCenterY) * floorT;
+        profEnv->s = { interpRef, 0.0, 0.0, 0.0,
+                       cr.notchLoY, cr.notchHiY, cr.floorCenterY, cr.floorZRel,
+                       cr.leftLandZ, cr.rightLandZ,
+                       cr.leftEdgeZ, cr.rightEdgeZ,
+                       cr.leftEdgeY, cr.rightEdgeY };
+        out->profiles.push_back(profEnv);
+    }
 
     VISION_LOG_INFO("NotchMeasureV2: {} profiles → {} chunks ({} merged) → {} valid",
                     nProf, nChunks, chunkSize, validCount);

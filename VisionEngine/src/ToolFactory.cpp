@@ -1492,8 +1492,10 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         np.floorStabilizeHalf         = p.value("floorStabilizeHalf",         25);
         np.floorStabilizeCenterTolUm  = p.value("floorStabilizeCenterTolUm",  50.0);
         np.floorStabilizeZTolUm       = p.value("floorStabilizeZTolUm",       60.0);
-        np.floorTolUm        = p.value("floorTolUm",        40.0);
-        np.landMarginMm      = p.value("landMarginMm",      0.020);
+        np.floorTolUm          = p.value("floorTolUm",          40.0);
+        np.landMarginMm        = p.value("landMarginMm",        0.020);
+        np.edgeSlopeTolUmPerMm = p.value("edgeSlopeTolUmPerMm", 30.0);
+        np.edgeSlopeWindowPts  = p.value("edgeSlopeWindowPts",  5);
         return std::make_shared<NotchMeasureV2Tool>(np);
     }
 

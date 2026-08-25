@@ -36,6 +36,9 @@ declare global {
       ) => Promise<{ ok?: boolean; error?: string }>
       batchRespawn: (workerId: number) => Promise<{ ok?: boolean; error?: string }>
       onBatchEvent: (cb: (data: unknown) => void) => () => void
+      enginePreload?: (folder: string, xResMm: number, yResMm: number, zResMm: number) => Promise<{ ok?: boolean }>
+      engineFetchNotchEnv?: (nodeId: string, chunkIdx: number) => Promise<{ ok?: boolean; error?: string }>
+      saveImage?: (defaultName: string, dataURL: string) => Promise<string | null>
     }
   }
 }
@@ -650,6 +653,17 @@ export default function App() {
   const upstreamOriginCol = upstreamRes?.originCol ?? upstreamRes?.offCol
   const upstreamOriginRow = upstreamRes?.originRow ?? upstreamRes?.offRow
 
+  // NotchMeasureV2/NotchMeasure: 입력 포트 0의 상류 cloud 데이터
+  const upstreamCloud = (() => {
+    if (!selectedNode) return undefined
+    const tt = (selectedNode.data as { toolType: string }).toolType
+    if (tt !== 'NotchMeasureV2' && tt !== 'NotchMeasure') return undefined
+    const edge = edges.find(e => e.target === selectedNode.id && (e.targetHandle ?? 'input-0') === 'input-0')
+      ?? edges.find(e => e.target === selectedNode.id)
+    if (!edge) return undefined
+    return (nodeResults[edge.source] as { cloud?: [number, number, number][] } | undefined)?.cloud
+  })()
+
   return (
     <div className="app">
       <Toolbar
@@ -699,6 +713,7 @@ export default function App() {
             upstreamResY={upstreamResY}
             upstreamOriginCol={upstreamOriginCol}
             upstreamOriginRow={upstreamOriginRow}
+            upstreamCloud={upstreamCloud}
             width={panelWidth}
             onWidthChange={setPanelWidth}
             onParamChange={onParamChange}
