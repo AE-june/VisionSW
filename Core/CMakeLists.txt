@@ -3,6 +3,7 @@ add_library(Core STATIC
     src/Pipeline.cpp
     src/PipelineSerializer.cpp
     src/HeightMapLoader.cpp
+    src/BroadcastRun.cpp
 )
 
 target_include_directories(Core

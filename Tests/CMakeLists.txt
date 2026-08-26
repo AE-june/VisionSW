@@ -5,6 +5,7 @@ add_executable(CoreTests
     Core/PipelineTest.cpp
     Core/FrameTest.cpp
     Core/BroadcastTest.cpp
+    Core/BroadcastRunTest.cpp
 )
 target_link_libraries(CoreTests PRIVATE
     Core
