@@ -10,6 +10,7 @@ import NodePanel from './components/NodePanel'
 import FolderInspectPanel, { type BatchResult, type BatchLoader, type BatchSortKey } from './components/FolderInspectPanel'
 import { HoveredEdgeContext, type HoveredEdge } from './components/hoveredEdge'
 import { TOOL_DEF_MAP } from './types/tools'
+import { nodeToEnginePayload } from './recipe'
 import './App.css'
 
 declare global {
@@ -188,11 +189,13 @@ export default function App() {
     }
 
     const recipe = {
-      nodes: allNodes.filter(n => needed.has(n.id)).map(n => ({
-        id: n.id,
-        type: (n.data as { toolType: string }).toolType,
-        params: (n.data as { params: Record<string, unknown> }).params ?? {}
-      })),
+      nodes: allNodes.filter(n => needed.has(n.id)).map(n =>
+        nodeToEnginePayload(
+          n.id,
+          (n.data as { toolType: string }).toolType,
+          (n.data as { params: Record<string, unknown> }).params ?? {}
+        )
+      ),
       edges: allEdges
         .filter(e => needed.has(e.source) && needed.has(e.target))
         .map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })),
@@ -436,7 +439,7 @@ export default function App() {
           const params = { ...((n.data as { params?: Record<string, unknown> }).params ?? {}) }
           if (paths.has(n.id)) params.path = paths.get(n.id)   // folder 로더는 i번째 파일로
           if (csv && n.id === csv.id) params.label = setLabel
-          return { id: n.id, type: (n.data as { toolType: string }).toolType, params }
+          return nodeToEnginePayload(n.id, (n.data as { toolType: string }).toolType, params)
         }),
         edges: baseEdges,
         // 디스플레이 갱신 OFF면 미리보기 생략(엔진 인코딩/z스캔 생략) → 가속
