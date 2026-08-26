@@ -10,6 +10,8 @@
 #include "LineCenterTool.h"
 #include "AlignTool.h"
 #include "RegionMeasureTool.h"
+#include "BroadcastRun.h"
+#include "Broadcast.h"
 #include <crow.h>
 #include <nlohmann/json.hpp>
 
@@ -134,6 +136,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     struct NodeSpec {
         std::string id, type;
         json params;
+        std::vector<vision::PortMeta> inputPorts;
     };
     std::vector<NodeSpec> nodeSpecs;
     std::unordered_map<std::string, int> nodeIdx;
@@ -144,6 +147,14 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
         ns.id     = n.at("id").get<std::string>();
         ns.type   = n.at("type").get<std::string>();
         ns.params = n.value("params", json::object());
+        if (n.contains("inputPorts") && n.at("inputPorts").is_array()) {
+            for (const auto& pm : n.at("inputPorts")) {
+                vision::PortMeta m;
+                m.type    = pm.value("type", std::string());
+                m.isArray = pm.value("isArray", false);
+                ns.inputPorts.push_back(m);
+            }
+        }
         if (ns.type == "HeightMapLoader") {
             auto p = ns.params.value("path", std::string());
             if (!p.empty()) heightmapPathsUsed.push_back(p);
@@ -315,12 +326,59 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 return;
             }
 
-            // 6. 실행
+            // 6. 실행 — 브로드캐스트: 스칼라선언 포트가 배열 받으면 원소별 N회 (설계 §4.4)
             const auto t0 = std::chrono::steady_clock::now();
-            auto result   = tool->execute(inputData);
+            ToolResult result;
+            std::vector<std::size_t> axisLens =
+                inputData ? vision::broadcastAxisLengths(*inputData, ns.inputPorts)
+                          : std::vector<std::size_t>{};
+            vision::BroadcastPlan plan = vision::computeBroadcast(axisLens);
+            if (!plan.ok) {
+                result = { ToolStatus::Fail,
+                           "브로드캐스트 배열 길이 불일치 (" + ns.type + ")" };
+            } else if (plan.count <= 1) {
+                result = tool->execute(inputData);            // 기존 경로 (회귀 0)
+            } else {
+                // N>1: 원소별 실행 후 생산 벡터를 인덱스 순서로 concat
+                auto agg = std::make_shared<VisionData>();
+                bool anyOk = false;
+                for (std::size_t i = 0; i < plan.count; ++i) {
+                    auto slice = vision::sliceBroadcastInput(*inputData, i, ns.inputPorts);
+                    auto r = tool->execute(slice);
+                    if (r.status != ToolStatus::Ok) {
+                        result = { ToolStatus::Fail,
+                                   r.message.empty() ? ("브로드캐스트 원소 실패 idx="
+                                       + std::to_string(i)) : r.message };
+                        agg.reset();
+                        break;
+                    }
+                    if (r.output) {
+                        anyOk = true;
+                        if (agg->sourceId.empty()) agg->sourceId = r.output->sourceId;
+                        if (!agg->frames) agg->frames = r.output->frames;
+                        auto& o = *r.output;
+                        for (auto& e : o.heightmaps)    agg->heightmaps.push_back(e);
+                        for (auto& e : o.clouds)        agg->clouds.push_back(e);
+                        for (auto& e : o.regions)       agg->regions.push_back(e);
+                        for (auto& e : o.planes)        agg->planes.push_back(e);
+                        for (auto& e : o.lines)         agg->lines.push_back(e);
+                        for (auto& e : o.geometries)    agg->geometries.push_back(e);
+                        for (auto& e : o.profiles)      agg->profiles.push_back(e);
+                        for (auto& e : o.points)        agg->points.push_back(e);
+                        for (auto& e : o.measurements)  agg->measurements.push_back(e);
+                        for (auto& e : o.decisions)     agg->decisions.push_back(e);
+                        for (auto& e : o.overlays)      agg->overlays.push_back(e);
+                        for (auto& f : o.definedFrames) agg->definedFrames.push_back(f);
+                    }
+                }
+                if (agg && anyOk) result = { ToolStatus::Ok, "", agg };
+                else if (result.status != ToolStatus::Fail)
+                    result = { ToolStatus::Ok, "", agg };   // N>1 이지만 전부 빈 출력
+            }
             const double elapsedMs = std::chrono::duration<double, std::milli>(
                                          std::chrono::steady_clock::now() - t0).count();
-            VISION_LOG_INFO("[pipeline] {} [{:.1f} ms]", ns.type, elapsedMs);
+            VISION_LOG_INFO("[pipeline] {} [{:.1f} ms]{}", ns.type, elapsedMs,
+                            plan.count > 1 ? (" x" + std::to_string(plan.count)) : "");
 
             // 7. 출력·캐시·프레임 전파
             if (result.output) {
