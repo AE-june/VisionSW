@@ -65,12 +65,15 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: 'SDC 전용',
-    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    inputs: ['HeightMap', { type: 'HeightMap', optional: true }, { type: 'HeightMap', optional: true }],
+    outputs: ['HeightMap', 'HeightMap'],
+    inputLabels:  ['HeightMap(Z)', 'HeightMap(Intensity)', 'HeightMap(Thickness)'],
+    outputLabels: ['HeightMap(Z)', 'HeightMap(Intensity)'],
     defaultParams: {
       matchTol: 20, reflTol: 30, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
-      removeReflection: true,
+      removeReflection: true, targetThickness: 30,
     },
-    description: '저/중/장노출 3단계 캐스케이드 병합. 반사 및 갭 완전 제거',
+    description: '저/중/장노출 3단계 캐스케이드 병합. 반사 및 갭 완전 제거. intensity 입력 시 머지 출력 — thickness 입력 시 목표 두께에 가장 근접한 노출 선택, 없으면 최대 밝기',
   },
   {
     type: 'Threshold', label: 'Threshold', category: '분할',

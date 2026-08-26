@@ -412,6 +412,10 @@ function ExposureMerge3Params({ params, onChange }: { params: Record<string, unk
       <NumField label="겹침 행 수 (입력)" value={params.overlapRows as number ?? 180} step={30} onChange={v => set('overlapRows', v)}
         tooltip="청크 위·아래로 확장해 함께 연산하는 입력행 수(출력=/3). 캐스케이드 2단계 연속성이 청크 경계를 넘어 이어지도록 하는 마진. SDC 실측: 40출력행(120입력)이면 전체모드와 0px 동일. 기본 60출력행(180입력, 마진). 클수록 이음매 안전·연산량↑" />
     </>}
+    <div className="param-section">Intensity 머지 (선택)</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>포트2에 intensity(저/중/장 인터리브) 연결 시 머지 intensity를 포트2로 출력. 포트3에 thickness 연결 시 목표 두께에 가장 근접한 노출의 intensity를 선택(없으면 최대 밝기).</div>
+    <NumField label="목표 두께 (cnt)" value={params.targetThickness as number ?? 30} step={1} onChange={v => set('targetThickness', v)}
+      tooltip="레이저선 두께가 이 값에 가장 가까운 노출의 intensity를 픽셀별로 선택. 언더/포화 노출은 두께가 목표에서 멀어 자동 배제. thickness 입력(포트3) 있을 때만 사용." />
     <div className="param-empty" style={{ fontSize: 10 }}>중간 단계(저·중 머지 / 저·중·장 원본)는 결과창 드롭다운(디스플레이 전용, 비청크)에서만 확인됩니다.</div>
   </>
 }
@@ -828,6 +832,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapSaver'   && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
@@ -864,6 +869,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapSaver'   && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}

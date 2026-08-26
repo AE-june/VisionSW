@@ -475,14 +475,16 @@ class TripleExposureMergeTool : public IAlgorithmTool {
     bool  m_removeReflection;
     bool  m_noPreview;
     int   m_bands;
+    float m_targetThickness;  // intensity 노출 선택: |thickness-target| 최소
     std::string m_nodeId;  // A5-1: 새 프레임 정의용
 public:
     TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
                             int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands,
-                            std::string nodeId)
+                            float targetThickness, std::string nodeId)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
           m_gapK(gapK), m_halfRes(halfRes), m_removeReflection(removeReflection),
-          m_noPreview(noPreview), m_bands(bands), m_nodeId(std::move(nodeId)) {}
+          m_noPreview(noPreview), m_bands(bands), m_targetThickness(targetThickness),
+          m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -495,6 +497,14 @@ public:
         const size_t BN = (size_t)n * w;
         const float NaN = std::numeric_limits<float>::quiet_NaN();
         auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
+        const auto imPtr = input->inHeightMap(1);
+        const bool hasIntensity = (imPtr != nullptr);
+        if (hasIntensity && (imPtr->width != w || imPtr->height != h))
+            return { ToolStatus::Fail, "3노출 머지: intensity 크기가 HeightMap과 다릅니다" };
+        const auto thkPtr = input->inHeightMap(2);
+        const bool hasThickness = (thkPtr != nullptr);
+        if (hasThickness && (thkPtr->width != w || thkPtr->height != h))
+            return { ToolStatus::Fail, "3노출 머지: thickness 크기가 HeightMap과 다릅니다" };
 
         // 세부 계측(동작 불변): 각 구간 소요시간을 로그로.
         using clk = std::chrono::steady_clock;
@@ -515,6 +525,34 @@ public:
                 }
         });
         lap("① 저/중/장 분리");
+        std::vector<float> intLo(hasIntensity ? BN : 0, NaN),
+                           intMid(hasIntensity ? BN : 0, NaN),
+                           intHi(hasIntensity ? BN : 0, NaN);
+        if (hasIntensity) {
+            const auto& im = *imPtr;
+            auto atInt = [&](int r, int c){ return im.data[(size_t)r*w + c]; };
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        size_t i = (size_t)r*w + c;
+                        intLo[i] = atInt(3*r,c); intMid[i] = atInt(3*r+1,c); intHi[i] = atInt(3*r+2,c);
+                    }
+            });
+        }
+        std::vector<float> thkLo(hasThickness ? BN : 0, NaN),
+                           thkMid(hasThickness ? BN : 0, NaN),
+                           thkHi(hasThickness ? BN : 0, NaN);
+        if (hasThickness) {
+            const auto& tm = *thkPtr;
+            auto atThk = [&](int r, int c){ return tm.data[(size_t)r*w + c]; };
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        size_t i = (size_t)r*w + c;
+                        thkLo[i] = atThk(3*r,c); thkMid[i] = atThk(3*r+1,c); thkHi[i] = atThk(3*r+2,c);
+                    }
+            });
+        }
 
         // 전역 오프셋(median(A−B), stride-4 서브샘플) — 결정 코어 내부와 동일 산식.
         //  밴드 병렬에서도 모든 밴드가 이 값을 forcedOffset으로 공유해야 전체-1회 연산과 비트 동일.
@@ -537,8 +575,8 @@ public:
         // 밴드 슬롯별 작업 버퍼 — 결정 호출마다 새 할당하던 것을 재사용(힙 경합 제거). 단계 간에도 재사용.
         std::vector<ExposureMergeScratch> scratch(nBands);
         std::vector<std::vector<uint8_t>>  srcBufs(nBands);
-        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) {
-            std::vector<float> out(BN);
+        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) -> std::vector<float> {
+            std::vector<float> out(BN, NaN);
             const int bands = std::max(1, std::min(bandsReq, n));
             cv::parallel_for_(cv::Range(0, bands), [&](const cv::Range& rg) {
                 for (int b = rg.start; b < rg.end; ++b) {
@@ -552,7 +590,7 @@ public:
                     exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
                                           m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b],
                                           m_removeReflection, m_reflTol);
-                    // source → Z, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림). 승자 값은 전체 배열에서 직접.
+                    // source → Z + intensity, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림).
                     for (int r = p0; r < p1; ++r) {
                         const size_t so = (size_t)(r - e0) * w, dst = (size_t)r * w;
                         for (int c = 0; c < w; ++c) {
@@ -592,18 +630,22 @@ public:
             }
             // 청크 [p0,p1)를 위·아래 ov행 확장해 두 단계를 블록 내에서 수행, 코어 행만 기록.
             //  ov는 두 단계 BFS 전파를 덮어야 함(실측: 40 출력행이면 전체모드와 0px, 기본 60출력행 마진).
-            auto computeTripleFiltered = [&](int e0, int e1) {
+            auto computeTripleFiltered = [&](int e0, int e1) -> std::vector<float> {
                 const int bn = e1 - e0;
                 std::vector<uint8_t> s1;
                 exposureMergeDecision(lo.data()+(size_t)e0*w, mid.data()+(size_t)e0*w, w, bn,
                                       m_matchTol, m_tolX, m_tolY, m_gapK, ofs1, s1, nullptr, m_removeReflection, m_reflTol);
                 std::vector<float> mA((size_t)bn*w);
-                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s1[i]; mA[i]= s==1? lo[(size_t)e0*w+i]-ofs1 : (s==2? mid[(size_t)e0*w+i] : NaN); }
+                for (size_t i=0;i<(size_t)bn*w;++i) {
+                    uint8_t s=s1[i]; mA[i]= s==1? lo[(size_t)e0*w+i]-ofs1 : (s==2? mid[(size_t)e0*w+i] : NaN);
+                }
                 std::vector<uint8_t> s2;
                 exposureMergeDecision(mA.data(), hi.data()+(size_t)e0*w, w, bn,
                                       m_matchTol, m_tolX, m_tolY, m_gapK, ofs2, s2, nullptr, m_removeReflection, m_reflTol);
                 std::vector<float> fB((size_t)bn*w);
-                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s2[i]; fB[i]= s==1? mA[i]-ofs2 : (s==2? hi[(size_t)e0*w+i] : NaN); }
+                for (size_t i=0;i<(size_t)bn*w;++i) {
+                    uint8_t s=s2[i]; fB[i]= s==1? mA[i]-ofs2 : (s==2? hi[(size_t)e0*w+i] : NaN);
+                }
                 return fB;
             };
             finalZ.assign(BN, NaN);
@@ -614,7 +656,8 @@ public:
                 const int p1 = std::min(n, p0+chunkOut);
                 const int e0 = std::max(0, p0-ov), e1 = std::min(n, p1+ov);
                 auto fB = computeTripleFiltered(e0, e1);
-                for (int r=p0;r<p1;++r) std::copy(&fB[(size_t)(r-e0)*w], &fB[(size_t)(r-e0)*w+w], &finalZ[(size_t)r*w]);
+                for (int r=p0;r<p1;++r)
+                    std::copy(&fB[(size_t)(r-e0)*w], &fB[(size_t)(r-e0)*w+w], &finalZ[(size_t)r*w]);
                 ++nChunks;
             }
             VISION_LOG_INFO("ExposureMerge3[청크]: {}개 청크(코어 {}입력행+겹침 {}입력행), ofs1={:.1f} ofs2={:.1f}",
@@ -622,15 +665,55 @@ public:
             lap("②③ 청크 캐스케이드");
         }
 
+        // ③b intensity 머지(z-map과 독립): finalZ NaN 마스크만 공유. 유효 픽셀 채우기:
+        //  · thickness 입력 있으면 |thickness - target| 최소인 노출의 intensity 선택
+        //    (레이저선 두께가 목표에 가까울수록 노출 적정 — 밝기보다 포화/언더 판별에 강함).
+        //  · thickness 없으면 저→중→장 순 대입 후 더 밝으면 교체(최대값).
+        //  intensity/thickness 0은 로더가 NaN으로 저장하므로 NaN 후보는 건너뛴다.
+        std::vector<float> intFinal(hasIntensity ? BN : 0, NaN);
+        if (hasIntensity) {
+            const float target = m_targetThickness;
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        const size_t i = (size_t)r*w + c;
+                        if (std::isnan(finalZ[i])) { intFinal[i] = NaN; continue; }
+                        // 유효 = NaN 아님 && 0 아님(0은 무효 픽셀로 취급, 후보 제외).
+                        auto valid = [](float v){ return !std::isnan(v) && v != 0.f; };
+                        float best = NaN;
+                        if (hasThickness) {
+                            // 두께가 목표에 가장 가까운 노출 선택(동률이면 저>중>장 우선).
+                            float bestDist = std::numeric_limits<float>::infinity();
+                            auto consider = [&](float thk, float inten) {
+                                if (!valid(thk) || !valid(inten)) return;
+                                float d = std::fabs(thk - target);
+                                if (d < bestDist) { bestDist = d; best = inten; }
+                            };
+                            consider(thkLo[i], intLo[i]);
+                            consider(thkMid[i], intMid[i]);
+                            consider(thkHi[i], intHi[i]);
+                        }
+                        if (std::isnan(best)) {
+                            // thickness 없음/전부 무효 → 저→중→장 최대 밝기 폴백.
+                            if (valid(intLo[i]))                                    best = intLo[i];
+                            if (valid(intMid[i]) && (std::isnan(best) || intMid[i] > best)) best = intMid[i];
+                            if (valid(intHi[i])  && (std::isnan(best) || intHi[i]  > best)) best = intHi[i];
+                        }
+                        intFinal[i] = best;
+                    }
+            });
+            lap(hasThickness ? "③b intensity 머지(두께 근접)" : "③b intensity 머지(저→중→장 최대)");
+        }
+
         // ④ 출력 HeightMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
-        auto makeOut = [&](std::vector<float> src) {   // by-value: 최종은 move로 넘겨 복사 제거
+        auto makeOut = [&](std::vector<float> src, const HeightMap& meta) {   // by-value: 최종은 move로 넘겨 복사 제거
             auto z = std::make_shared<HeightMap>();
-            z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            z->width=w; z->xResMm=meta.xResMm; z->zResMm=meta.zResMm; z->zZeroCount=meta.zZeroCount;
+            z->originCol=meta.originCol; z->originRow=meta.originRow;
             if (m_halfRes) {
-                z->height=n; z->yResMm=zm.yResMm*3.f; z->data = std::move(src);
+                z->height=n; z->yResMm=meta.yResMm*3.f; z->data = std::move(src);
             } else {
-                z->height=3*n; z->yResMm=zm.yResMm;
+                z->height=3*n; z->yResMm=meta.yResMm;
                 z->data.resize((size_t)3*n*w);
                 cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
                     for (int r=rg.start;r<rg.end;++r)
@@ -640,10 +723,13 @@ public:
             }
             return z;
         };
-        auto zFinal = makeOut(std::move(finalZ));
+        auto zFinal = makeOut(std::move(finalZ), zm);
+        HeightMapPtr intFinalHm;
+        if (hasIntensity) intFinalHm = makeOut(std::move(intFinal), *imPtr);
 
         auto data = std::make_shared<VisionData>();
         data->setHeightMap(zFinal);
+        if (intFinalHm) data->heightmaps.push_back(intFinalHm);
         data->sourceId = input->sourceId;
         data->frames = input->frames;
         // A5-1: halfRes=true 시 새 프레임 정의
@@ -656,14 +742,23 @@ public:
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview && 비청크 일 때만(청크는 mergedA 미보관).
         if (!m_noPreview && !chunkMode) {
             // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
-            auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
-                 zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
+            auto zMerged = makeOut(std::move(mergedA), zm), zLo = makeOut(std::move(lo), zm),
+                 zMid = makeOut(std::move(mid), zm), zHi = makeOut(std::move(hi), zm);
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
             data->stages->push_back({ "2. 저·중 머지",          zMerged });
             data->stages->push_back({ "3. 저노출",             zLo });
             data->stages->push_back({ "4. 중간노출",           zMid });
             data->stages->push_back({ "5. 장노출",             zHi });
+            if (hasIntensity) {
+                auto intLoHm  = makeOut(std::move(intLo),  *imPtr);
+                auto intMidHm = makeOut(std::move(intMid), *imPtr);
+                auto intHiHm  = makeOut(std::move(intHi),  *imPtr);
+                data->stages->push_back({ "6. intensity 머지",    intFinalHm });
+                data->stages->push_back({ "7. 저노출 intensity",  intLoHm });
+                data->stages->push_back({ "8. 중간노출 intensity", intMidHm });
+                data->stages->push_back({ "9. 장노출 intensity",  intHiHm });
+            }
         }
         lap("④ 출력 HeightMap + 스테이지");
         VISION_LOG_INFO("ExposureMerge3: {}x{} → {}행, offset1={:.1f} offset2={:.1f}cnt (matchTol={}, tolX={}, tolY={})",
@@ -1122,6 +1217,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("removeReflection", true),
             noPreview,
             p.value("mergeBands", 0),
+            p.value("targetThickness", 30.0f),
             p.value("_nodeId",  std::string()));
     }
     if (type == "HeightMapSaver") {

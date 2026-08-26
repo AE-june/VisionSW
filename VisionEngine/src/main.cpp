@@ -254,15 +254,28 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                     any = true;
                     const std::size_t dstPort = static_cast<std::size_t>(std::max(0, in.dstPort));
                     if (dstPort >= merged->inputs.size()) merged->inputs.resize(dstPort + 1);
+                    // srcPort 라우팅: 생산자의 출력 포트 s(>0)가 heightmaps[s]를 가리키면,
+                    //  소비자가 inHeightMap(port,0)으로 그 출력을 읽도록 heightmaps[s]를 [0]으로 노출.
+                    //  (예: ExposureMerge3 포트1 = intensity → HeightMapSaver로 저장)
+                    std::shared_ptr<VisionData> routed = o;
+                    const std::size_t s = static_cast<std::size_t>(std::max(0, in.srcPort));
+                    if (s > 0 && s < o->heightmaps.size()) {
+                        auto copy = std::make_shared<VisionData>(*o);
+                        copy->heightmaps.clear();
+                        copy->heightmaps.push_back(o->heightmaps[s]);          // 선택 출력 → [0]
+                        for (std::size_t k = 0; k < o->heightmaps.size(); ++k) // 나머지는 뒤에 유지
+                            if (k != s) copy->heightmaps.push_back(o->heightmaps[k]);
+                        routed = copy;
+                    }
                     if (!merged->inputs[dstPort]) {
-                        merged->inputs[dstPort] = o;
+                        merged->inputs[dstPort] = routed;
                     } else {
                         VISION_LOG_WARN("[pipeline] {} port{} 충돌 — 내용 병합", nodeId, dstPort);
                         auto combined = std::make_shared<VisionData>(*merged->inputs[dstPort]);
-                        for (auto& hm : o->heightmaps) combined->heightmaps.push_back(hm);
-                        for (auto& rg : o->regions)    combined->regions.push_back(rg);
-                        for (auto& pl : o->planes)     combined->planes.push_back(pl);
-                        for (auto& ln : o->lines)      combined->lines.push_back(ln);
+                        for (auto& hm : routed->heightmaps) combined->heightmaps.push_back(hm);
+                        for (auto& rg : routed->regions)    combined->regions.push_back(rg);
+                        for (auto& pl : routed->planes)     combined->planes.push_back(pl);
+                        for (auto& ln : routed->lines)      combined->lines.push_back(ln);
                         merged->inputs[dstPort] = combined;
                     }
                     if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
