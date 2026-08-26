@@ -123,7 +123,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'RegionMeasure', label: 'Region Measure', category: '측정',
-    inputs: [{ type: 'Region', isArray: true }, 'HeightMap'], outputs: ['Measurements'],
+    inputs: ['Region', 'HeightMap'], outputs: ['Measurements'],
     inputLabels: ['Region', 'HeightMap(선택)'],
     defaultParams: {
       aggregation: 'Mean',

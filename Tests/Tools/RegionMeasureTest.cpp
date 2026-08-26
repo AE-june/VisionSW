@@ -314,3 +314,21 @@ TEST(RegionMeasureTest, LevelDistanceMeanEquivalence) {
     ASSERT_EQ(res.status, ToolStatus::Ok);
     EXPECT_NEAR(findMeas(res, "zMm"), expected, 1e-6);
 }
+
+// ── 스칼라화: Region 2개를 주면 첫 원소(inRegion(0))만 측정 ────────────────
+TEST(RegionMeasureTest, MultipleRegionsMeasuresFirstOnly) {
+    auto hm = makeUniformHM(4, 1, 0.0, 1.f, 1.f, 0.001f);
+    auto input  = std::make_shared<VisionData>();
+    auto port   = std::make_shared<VisionData>();
+    port->regions.push_back(makeRectRegion(4, 1, 0, 0, 2, 1)); // 첫 원소: areaPx=2
+    port->regions.push_back(makeRectRegion(4, 1, 0, 0, 4, 1)); // 둘째: areaPx=4
+    input->inputs.push_back(port);                              // 포트0 = Region[]
+    auto hmPort = std::make_shared<VisionData>();
+    hmPort->heightmaps.push_back(hm);
+    input->inputs.push_back(hmPort);                            // 포트1 = HeightMap
+
+    auto res = RegionMeasureTool().execute(input);
+    ASSERT_EQ(res.status, ToolStatus::Ok);
+    EXPECT_NEAR(findMeas(res, "areaPx"), 2.0, 1e-9);   // 첫 원소만
+    EXPECT_TRUE(std::isnan(findMeas(res, "0.areaPx"))); // prefix 이름 안 생김
+}

@@ -109,35 +109,26 @@ static std::vector<Measurement> measureOne(
 ToolResult RegionMeasureTool::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "RegionMeasure: 입력이 없습니다." };
 
-    const auto& regions = input->inRegions(0);
-    if (regions.empty())
+    // 스칼라 툴: 첫 Region만 측정. 다중 Region fan-out은 엔진 브로드캐스트가 담당.
+    auto rg = input->inRegion(0);
+    if (!rg || rg->empty())
         return { ToolStatus::Fail, "RegionMeasure: Region이 없습니다." };
 
+    // aggregation 화이트리스트 검증 — 알 수 없는 값은 명시적 실패.
+    const std::string& ag = m_params.aggregation;
+    if (ag != "Mean" && ag != "Median" && ag != "Max" && ag != "Min" &&
+        ag != "StdDev" && ag != "HighTail" && ag != "Percentile")
+        return { ToolStatus::Fail, "RegionMeasure: 알 수 없는 aggregation '" + ag + "'" };
+
     const HeightMap* map = input->inHeightMap(1) ? input->inHeightMap(1).get() : nullptr;
-    const bool multiRegion = (regions.size() > 1);
 
     auto out = std::make_shared<VisionData>();
     out->sourceId = input->sourceId;
 
-    for (size_t i = 0; i < regions.size(); ++i) {
-        const auto& rg = regions[i];
-        if (!rg || rg->empty()) continue;
-
-        // prefix: label 있으면 label, 없으면 단수면 "" 다수면 인덱스 문자열
-        std::string prefix;
-        if (multiRegion) {
-            prefix = rg->label.empty() ? std::to_string(i) : rg->label;
-        }
-
-        auto ms = measureOne(*rg, map, m_params, prefix);
-        if (ms.empty())
-            return { ToolStatus::Fail, "RegionMeasure: 빈 Region입니다." };
-
-        out->measurements.insert(out->measurements.end(), ms.begin(), ms.end());
-    }
-
-    if (out->measurements.empty())
-        return { ToolStatus::Fail, "RegionMeasure: 유효한 Region이 없습니다." };
+    auto ms = measureOne(*rg, map, m_params, "");   // 단일 측정, prefix 없음
+    if (ms.empty())
+        return { ToolStatus::Fail, "RegionMeasure: 빈 Region입니다." };
+    out->measurements = std::move(ms);
 
     return { ToolStatus::Ok, "", out };
 }
