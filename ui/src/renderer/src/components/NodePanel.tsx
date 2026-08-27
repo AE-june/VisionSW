@@ -16,7 +16,7 @@ import NotchProfileChart from './NotchProfileChart'
 import NotchChunkChart from './NotchChunkChart'
 import RoiCanvas, { type Roi } from './RoiCanvas'
 
-interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean }
+interface NodeMeasurement { name: string; value: number; unit: string; valid: boolean; elemIndex?: number }
 interface NodeDecision { name: string; pass: boolean; reason: string; measured?: number; nominal?: number; tolerance?: number }
 
 // HeightMeasure 오버레이 렌더용 내부 표현
@@ -110,6 +110,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   upstreamCloud?: [number, number, number][]
 }) {
   const [stageIdx, setStageIdx] = useState(0)
+  const [selElem, setSelElem] = useState<number | 'all'>('all')   // 브로드캐스트 원소 선택
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
   const [profRow, setProfRow] = useState(0)
   const [profMode, setProfMode] = useState<'line' | 'points'>('points')
@@ -693,18 +694,42 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 
       {/* 범용 측정값 테이블 — 커스텀 렌더 없는 툴(RegionMeasure, LineFit 등) */}
       {result.measurements && result.measurements.length > 0
-        && !['PlaneFit', 'Align', 'HeightMeasure'].includes(toolType) && (
+        && !['PlaneFit', 'Align', 'HeightMeasure'].includes(toolType) && (() => {
+        const measAll = result.measurements
+        // 브로드캐스트 원소 인덱스 목록 (>=0). 있으면 드롭다운으로 원소 선택.
+        const elems = Array.from(new Set(
+          measAll.map(m => m.elemIndex ?? -1).filter(idx => idx >= 0)
+        )).sort((a, b) => a - b)
+        const hasElems = elems.length > 0
+        const shown = hasElems && selElem !== 'all'
+          ? measAll.filter(m => (m.elemIndex ?? -1) === selElem)
+          : measAll
+        return (
         <div className="node-result-measures">
-          {result.measurements.map((m, i) => (
+          {hasElems && (
+            <div className="node-result-row">
+              <span className="node-result-label">ROI</span>
+              <select className="node-result-select" value={String(selElem)}
+                onChange={e => setSelElem(e.target.value === 'all' ? 'all' : Number(e.target.value))}>
+                <option value="all">전체 ({elems.length})</option>
+                {elems.map(idx => <option key={idx} value={idx}>roi{idx}</option>)}
+              </select>
+            </div>
+          )}
+          {shown.map((m, i) => (
             <div className={`node-result-row ${m.valid ? '' : 'fail-val'}`} key={`${m.name}-${i}`}>
-              <span className="node-result-label">{m.name}</span>
+              <span className="node-result-label">
+                {hasElems && selElem === 'all' && (m.elemIndex ?? -1) >= 0
+                  ? `roi${m.elemIndex}.${m.name}` : m.name}
+              </span>
               <span className="node-result-val">
                 {Number.isFinite(m.value) ? m.value.toFixed(4) : '—'}{m.unit ? ` ${m.unit}` : ''}
               </span>
             </div>
           ))}
         </div>
-      )}
+        )
+      })()}
 
       {result.msg && <div className="node-result-msg">{result.msg}</div>}
     </div>
