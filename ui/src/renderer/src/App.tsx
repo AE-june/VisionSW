@@ -342,11 +342,13 @@ export default function App() {
     setLogs(l => [...l, { level: 'info', msg: `Run started (${nodes.length} nodes)` }])
 
     const recipe = {
-      nodes: nodes.map(n => ({
-        id: n.id,
-        type: (n.data as { toolType: string }).toolType,
-        params: (n.data as { params: Record<string, unknown> }).params ?? {}
-      })),
+      nodes: nodes.map(n =>
+        nodeToEnginePayload(
+          n.id,
+          (n.data as { toolType: string }).toolType,
+          (n.data as { params: Record<string, unknown> }).params ?? {}
+        )
+      ),
       edges: edges.map(e => ({
         source: e.source,
         target: e.target,
