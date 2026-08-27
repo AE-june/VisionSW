@@ -10,6 +10,7 @@ struct Measurement {
     double      value = 0;
     std::string unit;
     bool        valid = true;
+    int         elemIndex = -1;   // 브로드캐스트 원소 인덱스. -1=단일(없음). UI 드롭다운·CSV 열 구분용.
 };
 
 struct Decision {

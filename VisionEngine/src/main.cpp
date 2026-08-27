@@ -365,7 +365,10 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                         for (auto& e : o.geometries)    agg->geometries.push_back(e);
                         for (auto& e : o.profiles)      agg->profiles.push_back(e);
                         for (auto& e : o.points)        agg->points.push_back(e);
-                        for (auto& e : o.measurements)  agg->measurements.push_back(e);
+                        for (auto& e : o.measurements) {           // 원소 인덱스 태그
+                            e.elemIndex = static_cast<int>(i);
+                            agg->measurements.push_back(e);
+                        }
                         for (auto& e : o.decisions)     agg->decisions.push_back(e);
                         for (auto& e : o.overlays)      agg->overlays.push_back(e);
                         for (auto& f : o.definedFrames) agg->definedFrames.push_back(f);
@@ -439,7 +442,8 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             if (result.output && !result.output->measurements.empty()) {
                 json meas = json::array();
                 for (const auto& m : result.output->measurements)
-                    meas.push_back({{"name",m.name},{"value",m.value},{"unit",m.unit},{"valid",m.valid}});
+                    meas.push_back({{"name",m.name},{"value",m.value},{"unit",m.unit},
+                                    {"valid",m.valid},{"elemIndex",m.elemIndex}});
                 jr["measurements"] = meas;
             }
             // ── Generic: decisions (+ allPass → pipelinePassA) ─────────────
