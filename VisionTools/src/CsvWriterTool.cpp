@@ -110,6 +110,8 @@ ToolResult CsvWriterTool::execute(VisionDataPtr input) {
         if (!m_params.label.empty()) ofs << "label,";
         for (std::size_t i = 0; i < meas.size(); ++i) {
             if (i) ofs << ",";
+            // 브로드캐스트 원소는 열 이름에 roi{idx}. prefix로 구분 (CSV는 전 원소 한 번에).
+            if (meas[i].elemIndex >= 0) ofs << "roi" << meas[i].elemIndex << ".";
             ofs << meas[i].name;
         }
         ofs << "\n";
