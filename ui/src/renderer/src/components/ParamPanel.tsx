@@ -420,6 +420,39 @@ function ExposureMerge3Params({ params, onChange }: { params: Record<string, unk
   </>
 }
 
+// ExposureFilter (split-free 3노출 필터): 분리하지 않고 datum 정규화 → 대칭 일관성 제거 → gap fill.
+//   EM3와 달리 저노출 리플렉션도 대칭으로 걸러진다. 기본 출력은 전해상도(h행).
+function ExposureFilterParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 저/중/장 3노출 인터리브 Z PNG(행 순서 저·중·장 반복)를 연결하세요. split 없이 원본 격자에서 필터링합니다.</div>
+    <div className="param-section">Stage 0 — 노출 datum 정규화</div>
+    <NumField label="datum 윈도우 (행)" value={params.datumWindow as number ?? 9} step={3} onChange={v => set('datumWindow', v)}
+      tooltip="클래스별 offset 산출용 Y방향 로버스트 선피팅 윈도우. 3의 배수여야 주기3 리플이 윈도우 내에서 상쇄됨(아니면 자동 올림). 단위: 원본 행" />
+    <NumField label="datum 반복" value={params.datumIters as number ?? 3} step={1} onChange={v => set('datumIters', v)}
+      tooltip="교대 추정(선피팅↔offset median) 반복 횟수. 3이면 충분." />
+    <div className="param-section">Stage 1 — 대칭 일관성 리플렉션 제거</div>
+    <NumField label="τ 기본 (cnt)" value={params.tauBase as number ?? 30} step={5} onChange={v => set('tauBase', v)}
+      tooltip="자기 제외 Y선피팅 예측과의 허용 차이 기본값. |z' − pred| > τ 면 제거. 평면부 반사가 남으면 줄이고, 정상 표면이 지워지면 키우세요. 단위: raw count" />
+    <NumField label="τ 기울기항" value={params.tauSlope as number ?? 0.5} step={0.1} onChange={v => set('tauSlope', v)}
+      tooltip="τ = tauBase + tauSlope·|기울기|. 급경사 벽이 잘못 제거되면 키우세요. 단위: 무차원(count/row에 곱)" />
+    <NumField label="일관성 윈도우 (행)" value={params.consistWindow as number ?? 9} step={3} onChange={v => set('consistWindow', v)}
+      tooltip="이상치 판정용 Y선피팅 윈도우(자기 제외). 단위: 원본 행" />
+    <NumField label="최소 클래스 이웃" value={params.minClassNeighbors as number ?? 2} step={1} onChange={v => set('minClassNeighbors', v)}
+      tooltip="근거 가드: 서로 다른 2개 이상 클래스가 각각 이만큼 유효해야 판정. 못 미치면 보존(장노출만 유효한 어두운 영역 자동 살림)." />
+    <div className="param-section">Stage 2 — Gap Fill</div>
+    <NumField label="최대 갭 (행)" value={params.maxGapRows as number ?? 6} step={1} onChange={v => set('maxGapRows', v)}
+      tooltip="제거로 생긴 세로 구멍을 위·아래 유효값으로 선형보간. streak가 이 값을 넘으면 NaN 유지. 단위: 원본 행" />
+    <div className="param-section">출력</div>
+    <CheckField label="반해상도 출력 (Y×3)" value={params.halfRes as boolean ?? false} onChange={v => set('halfRes', v)}
+      tooltip="기본 끔: 전해상도 h행(진짜 Y해상도, 3피치 다른 실측) 그대로 출력. 켜면 각 3행 묶음을 median으로 n행·Y피치×3 축약(EM3 출력 기하 호환용)." />
+    <div className="param-section">Intensity (선택)</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>포트2에 intensity 연결 시 Z 유효 위치의 intensity를 포트2로 출력. 반해상도일 때만 포트3 thickness로 노출 선택.</div>
+    <NumField label="목표 두께 (cnt)" value={params.targetThickness as number ?? 30} step={1} onChange={v => set('targetThickness', v)}
+      tooltip="반해상도 축약 시 레이저선 두께가 이 값에 가장 가까운 노출의 intensity 선택(없으면 최대 밝기). thickness 입력(포트3) 있을 때만." />
+  </>
+}
+
 // ImageSaver: 입력(HeightMap/이미지)을 저장. 폴더(필수)+파일명(선택,비우면 소스명)+포맷.
 function ImageSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -478,12 +511,69 @@ function ExposureMergeCloudParams({ params, onChange }: { params: Record<string,
   </>
 }
 
+// CloudSelect: PointCloud 배열에서 특정 인덱스 선택
+function CloudSelectParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const cloudIdx = (params.cloudIdx as number) ?? 0
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>PointCloudSplit 등 배열 출력 툴 이후에 연결. 원하는 인덱스를 선택해 단일 PointCloud로 출력합니다.</div>
+    <div className="param-section">선택</div>
+    <div className="param-row">
+      <label className="param-label">Cloud 인덱스</label>
+      <input className="param-input" type="number" min={0} value={cloudIdx}
+        onChange={e => set('cloudIdx', Number(e.target.value))} />
+    </div>
+  </>
+}
+
+// PointCloudSOR: Statistical Outlier Removal
+function PointCloudSORParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const roiEnabled = (params.roiEnabled as boolean) ?? false
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      k-NN 평균거리 기반 이상점 제거. 전역 평균 + stdDevMult × 표준편차 초과 점 제거.
+    </div>
+    <div className="param-section">파라미터</div>
+    <NumField label="k 이웃 수" value={(params.kNeighbors as number) ?? 20}
+      onChange={v => set('kNeighbors', Math.round(v))}
+      tooltip="각 점에서 가장 가까운 이웃 k개를 찾아 평균 거리를 계산. 클수록 통계가 안정되지만 느려짐. 보통 10~50." />
+    <NumField label="표준편차 배수" value={(params.stdDevMult as number) ?? 1.0}
+      onChange={v => set('stdDevMult', v)}
+      tooltip="제거 임계값 = 전역 평균 + 배수 × 표준편차. 낮을수록(0.5) 공격적으로 제거, 높을수록(2.0) 보수적. 보통 0.5~2.0." />
+    <NumField label="Grid cell (mm)" value={(params.cellSizeMm as number) ?? 0.1}
+      onChange={v => set('cellSizeMm', v)}
+      tooltip="이웃 탐색용 격자 셀 크기. 클수록 탐색 범위 넓어지나 느려짐. 스캐너 점 간격(예: 0.006mm)의 10~20배 정도가 적당." />
+    <div className="param-section">ROI (선택 영역)</div>
+    <div className="param-row">
+      <label className="param-label">ROI 활성화</label>
+      <input type="checkbox" checked={roiEnabled}
+        onChange={e => set('roiEnabled', e.target.checked)} />
+    </div>
+    {roiEnabled && <>
+      <NumField label="X min (mm)" value={(params.roiXMin as number) ?? -1000} onChange={v => set('roiXMin', v)}
+        tooltip="SOR을 적용할 X 범위 최솟값. 이 범위 밖 점은 필터 없이 그대로 출력." />
+      <NumField label="X max (mm)" value={(params.roiXMax as number) ?? 1000}  onChange={v => set('roiXMax', v)}
+        tooltip="SOR을 적용할 X 범위 최댓값." />
+      <NumField label="Y min (mm)" value={(params.roiYMin as number) ?? -1000} onChange={v => set('roiYMin', v)}
+        tooltip="SOR을 적용할 Y 범위 최솟값." />
+      <NumField label="Y max (mm)" value={(params.roiYMax as number) ?? 1000}  onChange={v => set('roiYMax', v)}
+        tooltip="SOR을 적용할 Y 범위 최댓값." />
+      <NumField label="Z min (mm)" value={(params.roiZMin as number) ?? -1000} onChange={v => set('roiZMin', v)}
+        tooltip="SOR을 적용할 Z 범위 최솟값. 리플렉션이 특정 Z 높이에만 있으면 Z 범위만 지정해도 충분." />
+      <NumField label="Z max (mm)" value={(params.roiZMax as number) ?? 1000}  onChange={v => set('roiZMax', v)}
+        tooltip="SOR을 적용할 Z 범위 최댓값." />
+    </>}
+  </>
+}
+
 // CloudSaver: PointCloud3D → PLY/XYZ 파일 저장
 function CloudSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const folder = params.folder as string ?? ''
   const filename = params.filename as string ?? ''
   const format = params.format as string ?? 'ply'
+  const cloudIdx = (params.cloudIdx as number) ?? 0
   const pickFolder = async () => {
     const dir = await window.electronAPI?.openFolder?.()
     if (dir) set('folder', dir)
@@ -502,9 +592,86 @@ function CloudSaverParams({ params, onChange }: { params: Record<string, unknown
     </div>
     <SelectField label="포맷" value={format} options={['ply', 'xyz', 'bin']} onChange={v => set('format', v)}
       tooltip="ply=ascii(CloudCompare/MeshLab 호환), xyz=텍스트(x y z 한 줄씩), bin=생 바이너리(float32 x,y,z 연속·헤더없음·최고속, 점수=파일크기/12)" />
+    <div className="param-section">PointCloudSplit 연결 시</div>
+    <div className="param-row">
+      <label className="param-label">Cloud 인덱스</label>
+      <select className="param-select" value={cloudIdx} onChange={e => set('cloudIdx', Number(e.target.value))}>
+        <option value={0}>0 — 저노출</option>
+        <option value={1}>1 — 장노출 (2-way) / 중노출 (3-way)</option>
+        <option value={2}>2 — 장노출 (3-way)</option>
+      </select>
+    </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
       저장 형식: 폴더 / HHMMSSmmm_(파일명 또는 소스명).포맷
     </div>
+  </>
+}
+
+// CloudZReduce: 같은 (x,y) bin 내 여러 Z → 1개 선택
+function CloudZReduceParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const roiEnabled = (params.roiEnabled as boolean) ?? false
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>같은 (x,y) 위치에 Z가 여러 개인 포인트클라우드에서 reduce로 Z 1개를 선택합니다.</div>
+    <div className="param-section">Z 선택</div>
+    <SelectField label="Reduce" value={(params.reduce as string) ?? 'max'} options={['max', 'min', 'mean', 'median', 'continuity']}
+      onChange={v => set('reduce', v)}
+      tooltip="max=가장 높은 Z · min=가장 낮은 Z · mean=평균 · median=중앙값 · continuity=앞뒤 스캔과 연속되는 Z 선택" />
+    {(params.reduce as string) === 'continuity' && (
+      <NumField label="이웃 범위" value={(params.neighborRange as number) ?? 2}
+        onChange={v => set('neighborRange', Math.round(v))}
+        tooltip="앞뒤 몇 개 스캔(X bin)을 참조할지. 클수록 전역 연속성 강조, 작을수록 국소. 보통 2~5." />
+    )}
+    <div className="param-section">Binning</div>
+    <NumField label="X 스텝 (mm)" value={(params.xStepMm as number) ?? 0} step={0.001}
+      onChange={v => set('xStepMm', v)}
+      tooltip="0 = exact 좌표 기준 그룹핑(권장). 0보다 크면 해당 거리 내 점을 같은 bin으로 묶음." />
+    <NumField label="Y 스텝 (mm)" value={(params.yStepMm as number) ?? 0} step={0.001}
+      onChange={v => set('yStepMm', v)}
+      tooltip="0 = exact 좌표 기준 그룹핑(권장)." />
+    <div className="param-section">ROI (선택 영역)</div>
+    <div className="param-row">
+      <label className="param-label">ROI 활성화</label>
+      <input type="checkbox" checked={roiEnabled}
+        onChange={e => set('roiEnabled', e.target.checked)} />
+    </div>
+    {roiEnabled && <>
+      <NumField label="X min (mm)" value={(params.roiXMin as number) ?? -1000} onChange={v => set('roiXMin', v)}
+        tooltip="Z reduce를 적용할 X 범위 최솟값. 이 범위 밖 점은 그대로 출력." />
+      <NumField label="X max (mm)" value={(params.roiXMax as number) ?? 1000}  onChange={v => set('roiXMax', v)} />
+      <NumField label="Y min (mm)" value={(params.roiYMin as number) ?? -1000} onChange={v => set('roiYMin', v)} />
+      <NumField label="Y max (mm)" value={(params.roiYMax as number) ?? 1000}  onChange={v => set('roiYMax', v)} />
+      <NumField label="Z min (mm)" value={(params.roiZMin as number) ?? -1000} onChange={v => set('roiZMin', v)} />
+      <NumField label="Z max (mm)" value={(params.roiZMax as number) ?? 1000}  onChange={v => set('roiZMax', v)} />
+    </>}
+  </>
+}
+
+// PointCloudSplit: 인터리브 다중노출 PointCloud를 노출별로 분리
+function PointCloudSplitParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const splitCount = (params.splitCount as number) ?? 2
+  const scanAxis = (params.scanAxis as string) ?? 'x'
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>인터리브된 다중노출 PointCloud를 스캔 행 순서로 분리합니다. CloudSaver의 Cloud 인덱스로 저장할 노출을 선택하세요.</div>
+    <div className="param-section">분리</div>
+    <div className="param-row">
+      <label className="param-label">분할 수</label>
+      <select className="param-select" value={splitCount} onChange={e => set('splitCount', Number(e.target.value))}>
+        <option value={2}>2 (저/장)</option>
+        <option value={3}>3 (저/중/장)</option>
+      </select>
+    </div>
+    <div className="param-row">
+      <label className="param-label">스캔축</label>
+      <select className="param-select" value={scanAxis} onChange={e => set('scanAxis', e.target.value)}>
+        <option value="x">X (기본)</option>
+        <option value="y">Y</option>
+      </select>
+    </div>
+    <NumField label="스캔 스텝 (mm)" value={(params.scanStepMm as number) ?? 0.004} step={0.001}
+      onChange={v => set('scanStepMm', v)}
+      tooltip="스캔축 binning 단위(mm). 인터리브 이중노출 간격. 단일노출 영역은 2× 간격이어도 자동 처리." />
   </>
 }
 
@@ -829,13 +996,18 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapSaver'   && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSelect'      && <CloudSelectParams params={params} onChange={handleChange} />}
+        {toolType === 'PointCloudSOR'   && <PointCloudSORParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'PointCloudSplit'  && <PointCloudSplitParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudZReduce'     && <CloudZReduceParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
         {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}
@@ -866,13 +1038,18 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
         {toolType === 'CsvWriter'        && <CsvWriterParams params={params} onChange={handleChange} />}
         {toolType === 'ImageSaver'       && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapSaver'   && <ImageSaverParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapToCloud'      && <HeightMapToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudSelect'      && <CloudSelectParams params={params} onChange={handleChange} />}
+        {toolType === 'PointCloudSOR'   && <PointCloudSORParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
+        {toolType === 'PointCloudSplit'  && <PointCloudSplitParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudZReduce'     && <CloudZReduceParams params={params} onChange={handleChange} />}
         {toolType === 'Align'            && <div className="param-empty">입력: HeightMap + Point (기준점). 파라미터 없음</div>}
         {toolType === 'ValidRegion'      && <ValidRegionParams params={params} onChange={handleChange} />}
         {toolType === 'Level'            && <LevelNodeParams params={params} onChange={handleChange} />}

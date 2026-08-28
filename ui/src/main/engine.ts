@@ -3,7 +3,11 @@ import { spawn, ChildProcess } from 'child_process'
 import { join } from 'path'
 import WebSocket from 'ws'
 
-const ENGINE_URL = 'ws://localhost:9000'
+// 엔진 포트: 워크트리마다 다르게 줄 수 있게 .env(MAIN_VITE_ENGINE_PORT)로 오버라이드. 기본 9000.
+//  같은 머신에서 여러 워크트리 앱을 동시에 띄우려면 워크트리별로 다른 포트를 줘야 한다
+//  (안 그러면 두 엔진이 같은 포트에 바인딩 충돌 → 한 엔진만 살고 두 UI가 그것을 공유 → 불안정).
+const ENGINE_PORT = Number((import.meta as { env?: Record<string, string> }).env?.MAIN_VITE_ENGINE_PORT) || 9000
+const ENGINE_URL = `ws://localhost:${ENGINE_PORT}`
 const ENGINE_RECONNECT_MS = 1000
 const ENGINE_MAX_RETRIES = 10
 
@@ -62,7 +66,7 @@ export function startEngine() {
     : join(__dirname, '../../../build/bin/Release/VisionEngine.exe')
 
   try {
-    engineProcess = spawn(exePath, ['--parent-pid', String(process.pid)], {
+    engineProcess = spawn(exePath, ['--parent-pid', String(process.pid), '--port', String(ENGINE_PORT)], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     })

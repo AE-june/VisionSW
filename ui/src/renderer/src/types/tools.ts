@@ -76,6 +76,19 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '저/중/장노출 3단계 캐스케이드 병합. 반사 및 갭 완전 제거. intensity 입력 시 머지 출력 — thickness 입력 시 목표 두께에 가장 근접한 노출 선택, 없으면 최대 밝기',
   },
   {
+    type: 'ExposureFilter', label: 'Exposure Filter', category: 'SDC 전용',
+    inputs: ['HeightMap', { type: 'HeightMap', optional: true }, { type: 'HeightMap', optional: true }],
+    outputs: ['HeightMap', 'HeightMap'],
+    inputLabels:  ['HeightMap(Z)', 'HeightMap(Intensity)', 'HeightMap(Thickness)'],
+    outputLabels: ['HeightMap(Z)', 'HeightMap(Intensity)'],
+    defaultParams: {
+      datumWindow: 9, datumIters: 3,
+      tauBase: 30, tauSlope: 0.5, consistWindow: 9, minClassNeighbors: 2,
+      maxGapRows: 6, halfRes: false, targetThickness: 30,
+    },
+    description: 'split 없이 3노출 인터리브를 노출 datum 정규화 → 대칭 일관성 리플렉션 제거 → gap fill. EM3 대체 실험용(저노출 리플렉션도 대칭 제거)',
+  },
+  {
     type: 'Threshold', label: 'Threshold', category: '분할',
     inputs: ['HeightMap'], outputs: ['Region'],
     defaultParams: { channel: 0, thresholdMode: 'mm', thresholdMm: 0, thresholdRaw: 0, keepAbove: true },
@@ -197,10 +210,46 @@ export const TOOL_DEFS: ToolDef[] = [
     description: 'HeightMap의 유효 픽셀을 3D 포인트클라우드로 변환',
   },
   {
+    type: 'CloudSelect', label: 'Cloud Select', category: '변환',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
+    defaultParams: { cloudIdx: 0 },
+    description: 'PointCloud 배열에서 특정 인덱스 하나를 선택해 단일 PointCloud로 출력. PointCloudSplit 이후 배선 분리용.',
+  },
+  {
+    type: 'PointCloudSOR', label: 'Point Cloud SOR', category: '변환',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
+    defaultParams: {
+      kNeighbors: 20, stdDevMult: 1.0, cellSizeMm: 0.1,
+      roiEnabled: false,
+      roiXMin: -1000, roiXMax: 1000,
+      roiYMin: -1000, roiYMax: 1000,
+      roiZMin: -1000, roiZMax: 1000,
+    },
+    description: 'Statistical Outlier Removal. k-NN 평균거리 기반 이상점 제거. ROI 활성화 시 지정 영역만 필터링.',
+  },
+  {
     type: 'CloudSaver', label: 'Cloud Saver', category: '출력',
     inputs: ['PointCloud3D'], outputs: [],
-    defaultParams: { folder: '', filename: '', format: 'ply' },
-    description: '3D 포인트클라우드를 PLY 등 파일 형식으로 저장',
+    defaultParams: { folder: '', filename: '', format: 'ply', cloudIdx: 0 },
+    description: '3D 포인트클라우드를 PLY 등 파일 형식으로 저장. cloudIdx로 PointCloudSplit 출력 노출 선택.',
+  },
+  {
+    type: 'CloudZReduce', label: 'Cloud Z Reduce', category: '변환',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
+    defaultParams: {
+      reduce: 'max', xStepMm: 0, yStepMm: 0, neighborRange: 2,
+      roiEnabled: false,
+      roiXMin: -1000, roiXMax: 1000,
+      roiYMin: -1000, roiYMax: 1000,
+      roiZMin: -1000, roiZMax: 1000,
+    },
+    description: '같은 (x,y) 위치에 Z 여러 개인 PointCloud → reduce로 Z 1개 선택 출력. continuity: 앞뒤 스캔 연속성 기반 선택.',
+  },
+  {
+    type: 'PointCloudSplit', label: 'PointCloud Split', category: 'SDC 전용',
+    inputs: ['PointCloud3D'], outputs: ['PointCloud3D'],
+    defaultParams: { splitCount: 2, scanAxis: 'x', scanStepMm: 0.004 },
+    description: '다중노출 인터리브 PointCloud를 노출별로 분리. CloudSaver의 cloudIdx로 노출 선택.',
   },
   {
     type: 'CloudLoader', label: 'Cloud Loader', category: '입력',
