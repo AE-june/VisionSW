@@ -1393,10 +1393,9 @@ public:
         if (xMax <= xMin || yMax <= yMin)
             return { ToolStatus::Fail, "CloudToHeightMap: XY 범위 오류 (xMax<=xMin 또는 yMax<=yMin)" };
 
-        // PointCloud X=스캔방향 → HeightMap row(Y축/height)
-        // PointCloud Y=래터럴   → HeightMap col(X축/width)
-        const int W = (int)std::ceil((yMax - yMin) / m_xResMm) + 1;  // 래터럴 → width
-        const int H = (int)std::ceil((xMax - xMin) / m_yResMm) + 1;  // 스캔   → height
+        // PointCloud X → HeightMap col(X축/width), Y → row(Y축/height) 직접 매핑
+        const int W = (int)std::ceil((xMax - xMin) / m_xResMm) + 1;
+        const int H = (int)std::ceil((yMax - yMin) / m_yResMm) + 1;
         const size_t N = (size_t)W * H;
         const float zZero = 32768.f;
         const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -1419,8 +1418,8 @@ public:
         }
 
         for (const auto& p : pts) {
-            const int col = (int)std::floor((p.y - yMin) / m_xResMm + 0.5f);  // 래터럴(Y) → col
-            const int row = (int)std::floor((p.x - xMin) / m_yResMm + 0.5f);  // 스캔(X)   → row
+            const int col = (int)std::floor((p.x - xMin) / m_xResMm + 0.5f);  // X → col
+            const int row = (int)std::floor((p.y - yMin) / m_yResMm + 0.5f);  // Y → row
             if (col < 0 || col >= W || row < 0 || row >= H) continue;
             const int idx = row * W + col;
             const float raw = p.z / m_zResMm + zZero;
