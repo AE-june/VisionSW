@@ -574,13 +574,9 @@ function CloudToHeightMapParams({ params, onChange }: { params: Record<string, u
   return <>
     <div className="param-section">변환 모드</div>
     <SelectField label="모드" value={(params.mode as string) ?? 'top'}
-      options={[
-        { value: 'top',    label: 'Top (최고 Z)' },
-        { value: 'bottom', label: 'Bottom (최저 Z)' },
-        { value: 'mean',   label: 'Mean (평균 Z)' },
-      ]}
+      options={['top', 'bottom', 'mean']}
       onChange={v => set('mode', v)}
-      tooltip="같은 XY 위치에 여러 Z가 있을 때 선택 방법. Top=표면 최상단, Bottom=최하단, Mean=평균." />
+      tooltip="같은 XY 위치에 여러 Z가 있을 때 선택 방법. top=표면 최상단, bottom=최하단, mean=평균." />
     <div className="param-section">해상도</div>
     <NumField label="X 해상도 (mm/px)" value={(params.xResMm as number) ?? 0.1}
       onChange={v => set('xResMm', v)}
