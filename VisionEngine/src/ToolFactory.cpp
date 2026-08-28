@@ -1393,9 +1393,11 @@ public:
         if (xMax <= xMin || yMax <= yMin)
             return { ToolStatus::Fail, "CloudToHeightMap: XY 범위 오류 (xMax<=xMin 또는 yMax<=yMin)" };
 
-        // PointCloud X → HeightMap col(X축/width), Y → row(Y축/height) 직접 매핑
-        const int W = (int)std::ceil((xMax - xMin) / m_xResMm) + 1;
-        const int H = (int)std::ceil((yMax - yMin) / m_yResMm) + 1;
+        // SRCore ZMapCellIndex 동일 규약:
+        //   py(Y=래터럴) → xi(col), latRes=xResMm,   width  = lround((yMax-yMin)/xResMm)+1
+        //   px(X=이송)   → yi(row), transRes=yResMm,  height = lround((xMax-xMin)/yResMm)+1
+        const int W = (int)std::lround((yMax - yMin) / m_xResMm) + 1;
+        const int H = (int)std::lround((xMax - xMin) / m_yResMm) + 1;
         const size_t N = (size_t)W * H;
         const float zZero = 32768.f;
         const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -1418,8 +1420,8 @@ public:
         }
 
         for (const auto& p : pts) {
-            const int col = (int)std::floor((p.x - xMin) / m_xResMm + 0.5f);  // X → col
-            const int row = (int)std::floor((p.y - yMin) / m_yResMm + 0.5f);  // Y → row
+            const int col = (int)std::floorf((p.y - yMin) / m_xResMm + 0.5f);  // Y(래터럴) → col
+            const int row = (int)std::floorf((p.x - xMin) / m_yResMm + 0.5f);  // X(이송)   → row
             if (col < 0 || col >= W || row < 0 || row >= H) continue;
             const int idx = row * W + col;
             const float raw = p.z / m_zResMm + zZero;
