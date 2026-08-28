@@ -567,6 +567,49 @@ function PointCloudSORParams({ params, onChange }: { params: Record<string, unkn
   </>
 }
 
+// CloudToHeightMap: PointCloud3D → HeightMap 변환
+function CloudToHeightMapParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const autoRange = (params.autoRange as boolean) ?? true
+  return <>
+    <div className="param-section">변환 모드</div>
+    <SelectField label="모드" value={(params.mode as string) ?? 'top'}
+      options={[
+        { value: 'top',    label: 'Top (최고 Z)' },
+        { value: 'bottom', label: 'Bottom (최저 Z)' },
+        { value: 'mean',   label: 'Mean (평균 Z)' },
+      ]}
+      onChange={v => set('mode', v)}
+      tooltip="같은 XY 위치에 여러 Z가 있을 때 선택 방법. Top=표면 최상단, Bottom=최하단, Mean=평균." />
+    <div className="param-section">해상도</div>
+    <NumField label="X 해상도 (mm/px)" value={(params.xResMm as number) ?? 0.1}
+      onChange={v => set('xResMm', v)}
+      tooltip="HeightMap X 방향 픽셀 크기(mm). 스캐너 래터럴 해상도와 맞추거나 더 크게 설정." />
+    <NumField label="Y 해상도 (mm/px)" value={(params.yResMm as number) ?? 0.1}
+      onChange={v => set('yResMm', v)}
+      tooltip="HeightMap Y 방향 픽셀 크기(mm). 스캐너 이송 간격과 맞추거나 더 크게 설정." />
+    <NumField label="Z 해상도 (mm/count)" value={(params.zResMm as number) ?? 0.001}
+      onChange={v => set('zResMm', v)}
+      tooltip="Z 인코딩 단위. 0.001=1µm 분해능, 유효범위 ±32.767mm. 큰 공작물은 0.01 이상으로 설정." />
+    <div className="param-section">XY 범위</div>
+    <div className="param-row">
+      <label className="param-label">자동 범위</label>
+      <input type="checkbox" checked={autoRange}
+        onChange={e => set('autoRange', e.target.checked)} />
+    </div>
+    {!autoRange && <>
+      <NumField label="X min (mm)" value={(params.xMin as number) ?? -100} onChange={v => set('xMin', v)}
+        tooltip="HeightMap XY 범위 수동 지정 시 X 최솟값." />
+      <NumField label="X max (mm)" value={(params.xMax as number) ?? 100}  onChange={v => set('xMax', v)}
+        tooltip="HeightMap XY 범위 수동 지정 시 X 최댓값." />
+      <NumField label="Y min (mm)" value={(params.yMin as number) ?? -100} onChange={v => set('yMin', v)}
+        tooltip="HeightMap XY 범위 수동 지정 시 Y 최솟값." />
+      <NumField label="Y max (mm)" value={(params.yMax as number) ?? 100}  onChange={v => set('yMax', v)}
+        tooltip="HeightMap XY 범위 수동 지정 시 Y 최댓값." />
+    </>}
+  </>
+}
+
 // CloudSaver: PointCloud3D → PLY/XYZ 파일 저장
 function CloudSaverParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -1005,6 +1048,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSelect'      && <CloudSelectParams params={params} onChange={handleChange} />}
         {toolType === 'PointCloudSOR'   && <PointCloudSORParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudToHeightMap' && <CloudToHeightMapParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'PointCloudSplit'  && <PointCloudSplitParams params={params} onChange={handleChange} />}
         {toolType === 'CloudZReduce'     && <CloudZReduceParams params={params} onChange={handleChange} />}
@@ -1047,6 +1091,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ExposureMergeCloud' && <ExposureMergeCloudParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSelect'      && <CloudSelectParams params={params} onChange={handleChange} />}
         {toolType === 'PointCloudSOR'   && <PointCloudSORParams params={params} onChange={handleChange} />}
+        {toolType === 'CloudToHeightMap' && <CloudToHeightMapParams params={params} onChange={handleChange} />}
         {toolType === 'CloudSaver'       && <CloudSaverParams params={params} onChange={handleChange} />}
         {toolType === 'PointCloudSplit'  && <PointCloudSplitParams params={params} onChange={handleChange} />}
         {toolType === 'CloudZReduce'     && <CloudZReduceParams params={params} onChange={handleChange} />}

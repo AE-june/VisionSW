@@ -228,6 +228,18 @@ export const TOOL_DEFS: ToolDef[] = [
     description: 'Statistical Outlier Removal. k-NN 평균거리 기반 이상점 제거. ROI 활성화 시 지정 영역만 필터링.',
   },
   {
+    type: 'CloudToHeightMap', label: 'Cloud to HeightMap', category: '변환',
+    inputs: ['PointCloud3D'], outputs: ['HeightMap'],
+    defaultParams: {
+      mode: 'top',
+      xResMm: 0.1, yResMm: 0.1, zResMm: 0.001,
+      autoRange: true,
+      xMin: -100, xMax: 100,
+      yMin: -100, yMax: 100,
+    },
+    description: 'PointCloud3D를 HeightMap으로 변환. mode: top(최고Z)/bottom(최저Z)/mean(평균Z). autoRange=true이면 XY 범위 자동 계산. zResMm=0.001(1µm분해능) → 유효범위 ±32.767mm.',
+  },
+  {
     type: 'CloudSaver', label: 'Cloud Saver', category: '출력',
     inputs: ['PointCloud3D'], outputs: [],
     defaultParams: { folder: '', filename: '', format: 'ply', cloudIdx: 0 },

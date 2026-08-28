@@ -1347,6 +1347,113 @@ private:
     }
 };
 
+// ── CloudToHeightMap: PointCloud3D → HeightMap 변환. ─────────────────────────
+//   SRCore ConvertPointCloudToZIL_CPU 알고리즘 인라인 포팅.
+//   Point3f는 x/y/z만 있으므로 intensity/llt 없이 Z 전용 HeightMap 생성.
+//   zZeroCount=32768 (16비트 중점 규약). 빈 픽셀=NaN.
+//
+//   주의: zResMm가 작을수록 Z 분해능 높지만 표현 범위 줄어듦.
+//   zResMm=0.001(1µm분해능) → 유효 범위 ±32.767mm.
+//   큰 공작물은 zResMm을 늘려야 함.
+class CloudToHeightMapTool : public IAlgorithmTool {
+public:
+    enum class Mode { Top, Bottom, Mean };
+private:
+    Mode  m_mode;
+    float m_xResMm, m_yResMm, m_zResMm;
+    bool  m_autoRange;
+    float m_xMin, m_xMax, m_yMin, m_yMax;
+public:
+    CloudToHeightMapTool(Mode mode, float xRes, float yRes, float zRes,
+                         bool autoRange, float xMin, float xMax, float yMin, float yMax)
+        : m_mode(mode)
+        , m_xResMm(xRes > 0 ? xRes : 0.1f)
+        , m_yResMm(yRes > 0 ? yRes : 0.1f)
+        , m_zResMm(zRes > 0 ? zRes : 0.001f)
+        , m_autoRange(autoRange)
+        , m_xMin(xMin), m_xMax(xMax), m_yMin(yMin), m_yMax(yMax) {}
+    std::string name() const override { return "CloudToHeightMap"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->inCloud(0))
+            return { ToolStatus::Fail, "CloudToHeightMap: PointCloud3D 입력 필요" };
+        const auto& pts = input->inCloud(0)->points;
+        if (pts.empty())
+            return { ToolStatus::Fail, "CloudToHeightMap: 빈 PointCloud" };
+
+        float xMin = m_xMin, xMax = m_xMax, yMin = m_yMin, yMax = m_yMax;
+        if (m_autoRange) {
+            xMin = xMax = pts[0].x;
+            yMin = yMax = pts[0].y;
+            for (const auto& p : pts) {
+                if (p.x < xMin) xMin = p.x; if (p.x > xMax) xMax = p.x;
+                if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y;
+            }
+        }
+        if (xMax <= xMin || yMax <= yMin)
+            return { ToolStatus::Fail, "CloudToHeightMap: XY 범위 오류 (xMax<=xMin 또는 yMax<=yMin)" };
+
+        const int W = (int)std::ceil((xMax - xMin) / m_xResMm) + 1;
+        const int H = (int)std::ceil((yMax - yMin) / m_yResMm) + 1;
+        const size_t N = (size_t)W * H;
+        const float zZero = 32768.f;
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+
+        auto hm = std::make_shared<HeightMap>();
+        hm->width      = W;
+        hm->height     = H;
+        hm->xResMm     = m_xResMm;
+        hm->yResMm     = m_yResMm;
+        hm->zResMm     = m_zResMm;
+        hm->zZeroCount = zZero;
+        hm->frameId    = input->inCloud(0)->frameId;
+        hm->data.assign(N, nan);
+
+        std::vector<double> sumBuf;
+        std::vector<int>    cntBuf;
+        if (m_mode == Mode::Mean) {
+            sumBuf.assign(N, 0.0);
+            cntBuf.assign(N, 0);
+        }
+
+        for (const auto& p : pts) {
+            const int col = (int)std::floor((p.x - xMin) / m_xResMm + 0.5f);
+            const int row = (int)std::floor((p.y - yMin) / m_yResMm + 0.5f);
+            if (col < 0 || col >= W || row < 0 || row >= H) continue;
+            const int idx = row * W + col;
+            const float raw = p.z / m_zResMm + zZero;
+
+            switch (m_mode) {
+            case Mode::Top:
+                if (std::isnan(hm->data[idx]) || raw > hm->data[idx])
+                    hm->data[idx] = raw;
+                break;
+            case Mode::Bottom:
+                if (std::isnan(hm->data[idx]) || raw < hm->data[idx])
+                    hm->data[idx] = raw;
+                break;
+            case Mode::Mean:
+                sumBuf[idx] += raw;
+                cntBuf[idx]++;
+                break;
+            }
+        }
+
+        if (m_mode == Mode::Mean) {
+            for (size_t i = 0; i < N; ++i)
+                hm->data[i] = cntBuf[i] > 0 ? (float)(sumBuf[i] / cntBuf[i]) : nan;
+        }
+
+        const size_t valid = std::count_if(hm->data.begin(), hm->data.end(),
+                                           [](float v) { return !std::isnan(v); });
+        VISION_LOG_INFO("CloudToHeightMap: {}x{} grid, {} 유효픽셀 / {} 총픽셀", W, H, valid, N);
+        auto out = std::make_shared<VisionData>();
+        out->sourceId = input->sourceId;
+        out->setHeightMap(hm);
+        return { ToolStatus::Ok, "", out };
+    }
+};
+
 // ── CloudSaver: PointCloud3D → 파일 저장. .xyz(텍스트) / .ply(ascii, 기본). ────
 //   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
 class CloudSaverTool : public IAlgorithmTool {
@@ -1795,6 +1902,19 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("roiXMin", -1e9f), p.value("roiXMax", 1e9f),
             p.value("roiYMin", -1e9f), p.value("roiYMax", 1e9f),
             p.value("roiZMin", -1e9f), p.value("roiZMax", 1e9f));
+    }
+    if (type == "CloudToHeightMap") {
+        std::string ms = p.value("mode", std::string("top"));
+        CloudToHeightMapTool::Mode m = CloudToHeightMapTool::Mode::Top;
+        if      (ms == "bottom") m = CloudToHeightMapTool::Mode::Bottom;
+        else if (ms == "mean")   m = CloudToHeightMapTool::Mode::Mean;
+        return std::make_shared<CloudToHeightMapTool>(m,
+            p.value("xResMm",    0.1f),
+            p.value("yResMm",    0.1f),
+            p.value("zResMm",    0.001f),
+            p.value("autoRange", true),
+            p.value("xMin",  -1e9f), p.value("xMax", 1e9f),
+            p.value("yMin",  -1e9f), p.value("yMax", 1e9f));
     }
     if (type == "CloudSaver") {
         std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "ply");
