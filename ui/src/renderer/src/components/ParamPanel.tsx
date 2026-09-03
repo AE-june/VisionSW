@@ -49,13 +49,17 @@ export function NumField({ label, value, onChange, step = 1, tooltip }: {
   return (
     <div className="param-row">
       <span className="param-label">{label}<Tip text={tooltip} /></span>
-      <input className="param-input" type="number" value={raw} step={step}
+      <input className="param-input" type="text" inputMode="decimal" value={raw}
         onChange={e => {
           const s = e.target.value
           setRaw(s)
           if (s === '' || s === '-' || s === '.' || s === '-.' || s.endsWith('.')) return
           const n = parseFloat(s)
           if (!Number.isNaN(n)) onChange(n)
+        }}
+        onBlur={() => {
+          const n = parseFloat(raw)
+          if (Number.isNaN(n)) setRaw(String(value))
         }} />
     </div>
   )
@@ -268,43 +272,47 @@ function HeightMapLoaderParams({ params, onChange }: { params: Record<string, un
   </>
 }
 
-// ExposureSplit (다중노출 분리): 인터리브 → 노출별 행 분리 (행확장 없음)
+// ExposureMerge: 분리된 다중노출 HeightMap 머지 + 리플렉션 제거
 function ExposureMergeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
-  const splitCount = (params.splitCount as number) ?? 2
-  const labels = splitCount === 3 ? ['1. 저노출', '2. 중노출', '3. 장노출'] : ['1. 저노출', '2. 장노출']
+  const exposureCount = (params.exposureCount as number) ?? 2
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 인터리브 Z PNG를 연결하세요. 인터리브된 노출을 행별로 분리합니다(행확장 없음). 머지는 Exposure Merge 노드가 담당합니다.</div>
-    <div className="param-section">분리</div>
+    <div className="param-section">노출 설정</div>
     <div className="param-row">
-      <label className="param-label">분할 수</label>
+      <label className="param-label">노출 수</label>
       <select
         className="param-select"
-        value={splitCount}
-        onChange={e => {
-          const sc = Number(e.target.value)
-          const os = Math.min((params.outputStage as number ?? 0), sc - 1)
-          onChange({ ...params, splitCount: sc, outputStage: os })
-        }}
+        value={exposureCount}
+        onChange={e => set('exposureCount', Number(e.target.value))}
       >
-        <option value={2}>2행 (저/장)</option>
-        <option value={3}>3행 (저/중/장)</option>
-      </select>
-    </div>
-    <div className="param-section">출력</div>
-    <div className="param-row">
-      <label className="param-label">저장 출력</label>
-      <select
-        className="param-select"
-        value={Math.min((params.outputStage as number ?? 0), splitCount - 1)}
-        onChange={e => set('outputStage', Number(e.target.value))}
-      >
-        {labels.map((l, i) => <option key={i} value={i}>{l}</option>)}
+        <option value={2}>2노출 (저·장)</option>
+        <option value={3}>3노출 (저·중·장)</option>
       </select>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
-      결과창 드롭다운에서 각 노출을 미리볼 수 있습니다.
+      포트0=저노출, 포트1=장노출(2) 또는 중노출(3), 포트2=장노출(3노출만)
     </div>
+    <div className="param-section">오프셋 / 씨앗</div>
+    <NumField label="매칭 허용 (cnt)" value={(params.matchTol as number) ?? 20} step={5} onChange={v => set('matchTol', v)}
+      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 겹침 일치 판정. 전역 오프셋(두 노출 간 Z 바이어스) 추정에 사용. 너무 작으면 오프셋 표본 부족, 너무 크면 리플렉션도 포함. 단위: raw count" />
+    <NumField label="리플 씨앗 허용 (cnt)" value={(params.reflTol as number) ?? -1} step={5} onChange={v => set('reflTol', v)}
+      tooltip="-1이면 매칭 허용(matchTol)과 동일값 사용. 따로 설정 시 이 값 이하 차이만 신뢰 씨앗으로 인정 → 클수록 씨앗↑·덜 제거, 작을수록 더 제거. 단위: raw count" />
+    <div className="param-section">연속성 확장</div>
+    <NumField label="X 허용치 (cnt/px)" value={(params.tolX as number) ?? 5} step={1} onChange={v => set('tolX', v)}
+      tooltip="BFS 확장 시 스캔(이송)방향 이웃과의 Z 허용 차이. 스캔 피치가 측면보다 크면 작게 잡아야 리플렉션 streak를 막을 수 있음. 단위: count/px" />
+    <NumField label="Y 허용치 (cnt/px)" value={(params.tolY as number) ?? 30} step={5} onChange={v => set('tolY', v)}
+      tooltip="BFS 확장 시 측면(래터럴)방향 이웃과의 Z 허용 차이. 측면 피치(~6µm)가 작아 값이 더 작아도 됨. 단위: count/px" />
+    <NumField label="갭 점프 (px)" value={(params.gapK as number) ?? 0} step={1} onChange={v => set('gapK', Math.round(v))}
+      tooltip="BFS가 NaN 픽셀을 건너뛸 최대 거리. 0이면 건너뛰기 없음. 늘리면 구멍 너머까지 연속성 전파 — 리플렉션이 NaN 경계로 막혀있을 때 유용. 단위: px" />
+    <div className="param-section">필터</div>
+    <div className="param-row">
+      <label className="param-label">리플렉션 제거</label>
+      <input type="checkbox" checked={(params.removeReflection as boolean) ?? true}
+        onChange={e => set('removeReflection', e.target.checked)}
+        title="끄면 오프셋 보정 + 저노출 우선 머지만 수행(BFS 연속성 필터 생략). 리플렉션이 없는 데이터에서 빠르게 확인용." />
+    </div>
+    <NumField label="밴드 수 (0=자동)" value={(params.bands as number) ?? 0} step={1} onChange={v => set('bands', Math.round(v))}
+      tooltip="병렬 처리 밴드 수. 0이면 CPU 스레드 수 자동. 높일수록 행 분할↑ — 단 밴드 경계 컨텍스트(OV=160행)가 겹쳐 재연산됨. 보통 기본값이 최적." />
   </>
 }
 
@@ -346,36 +354,20 @@ function GapFillParams({ params, onChange }: { params: Record<string, unknown>; 
   </>
 }
 
-// ExposureMerge2 (이중노출 머지 재구현): 오프셋 보정 + 연속성 필터로 fill 리플렉션 제거
-function ExposureMerge2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+// ExposureSplit: 인터리브 다중노출 HeightMap → 노출별 분리
+function ExposureSplitParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const splitCount = (params.splitCount as number) ?? 2
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>HeightMapLoader에서 인터리브 Z PNG를 연결하세요. 겹침은 저노출 우선, fill 리플렉션은 연속성으로 제거합니다.</div>
-    <div className="param-section">머지 / 연속성 필터</div>
-    <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
-      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 '겹침 일치'로 판정. 오프셋 추정에 사용(리플 씨앗 허용 미설정 시 씨앗에도 사용). 단위: raw count" />
-    <NumField label="리플 씨앗 허용 (cnt)"
-      value={(params.reflTol as number ?? -1) >= 0 ? (params.reflTol as number) : (params.matchTol as number ?? 20)}
-      step={5} onChange={v => set('reflTol', v)}
-      tooltip="연속성 씨앗 판정 허용치. 기본은 '일치 허용'과 동일값을 사용(-1). 따로 키우면 씨앗↑→고노출 fill 더 유지(덜 제거), 줄이면 더 제거. 오프셋(일치 허용)과 분리 조절용. 단위: raw count" />
-    <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
-      tooltip="연속성 확장 시 X방향 이웃과의 Z 허용 차이. X 피치(~6µm)가 작으므로 작게. 단위: count/px" />
-    <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
-      tooltip="연속성 확장 시 Y방향 이웃과의 Z 허용 차이. Y 피치가 X의 ~15배라 크게. 단위: count/px" />
-    <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
-      tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
-    <CheckField label="반해상도 출력 (Y×2)" value={params.halfRes as boolean ?? true} onChange={v => set('halfRes', v)}
-      tooltip="머지는 홀짝 절반 그리드라 켜면 n행·Y피치×2로 출력. 끄면 각 행을 2배 복제해 원본 높이 유지" />
-    <div className="param-section">청크 연산 (실시간 스트리밍)</div>
-    <CheckField label="청크 단위 연산" value={params.chunkMode as boolean ?? false} onChange={v => set('chunkMode', v)}
-      tooltip="끄면 전체 이미지를 한 번에 연산(기본). 켜면 입력을 청크로 나눠 겹침 포함 처리 — 프로파일이 스트리밍으로 들어오는 실시간 검사용" />
-    {(params.chunkMode as boolean) && <>
-      <NumField label="청크 행 수" value={params.chunkRows as number ?? 1000} step={100} onChange={v => set('chunkRows', v)}
-        tooltip="청크 하나에 담을 입력 프로파일(행) 수. 클수록 겹침 재연산 비율↓(예 1000+겹침320이면 낭비 1.64배). 실시간이면 여러 콜백을 모아 이 크기로 처리" />
-      <NumField label="겹침 행 수" value={params.overlapRows as number ?? 320} step={20} onChange={v => set('overlapRows', v)}
-        tooltip="청크 위·아래로 확장해 함께 연산하는 행 수. 연속성(BFS)이 청크 경계를 넘어 이어지도록 하는 마진 — 코어 출력만 남기고 겹침은 버림. 리플렉션 최장 streak를 덮어야 전체모드와 동일. SDC 100장 검증상 ≥320이면 완전 일치. 클수록 이음매 결함↓·연산량↑ (청크행 대비 겹침이 크면 재연산 비율↑ → 청크행을 키워 상쇄)" />
-    </>}
-    <div className="param-empty" style={{ fontSize: 10 }}>출력은 항상 최종 머지(리플렉션 제거) 이미지. 중간 단계는 결과창 드롭다운(디스플레이 전용)에서만 확인되며 검사 시간엔 반영되지 않습니다. (② I/LLT 게이팅은 추후)</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 Z PNG를 연결하세요. 주 출력=저노출. 결과창 드롭다운에서 다른 노출 확인 가능.</div>
+    <div className="param-section">분리</div>
+    <div className="param-row">
+      <label className="param-label">노출 수</label>
+      <select className="param-select" value={splitCount} onChange={e => set('splitCount', Number(e.target.value))}>
+        <option value={2}>2노출 (저/장)</option>
+        <option value={3}>3노출 (저/중/장)</option>
+      </select>
+    </div>
   </>
 }
 
@@ -1033,7 +1025,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
-        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureSplit' && <ExposureSplitParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
@@ -1076,7 +1068,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'NoiseFilter'      && <NoiseFilterParams params={params} onChange={handleChange} />}
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
-        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
+        {toolType === 'ExposureSplit' && <ExposureSplitParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}

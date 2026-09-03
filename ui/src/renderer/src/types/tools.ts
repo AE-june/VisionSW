@@ -43,10 +43,12 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '파일 또는 폴더에서 3D 표면 데이터(HeightMap)를 로드',
   },
   {
-    type: 'ExposureMerge', label: 'Exposure Split', category: 'SDC 전용',
-    inputs: ['HeightMap'], outputs: ['HeightMap'],
-    defaultParams: { splitCount: 2 },
-    description: '다중노출 SDC HeightMap을 노출별로 분리',
+    type: 'ExposureMerge', label: 'Exposure Merge', category: 'SDC 전용',
+    inputs: ['HeightMap', 'HeightMap', { type: 'HeightMap', optional: true }],
+    outputs: ['HeightMap'],
+    inputLabels: ['저노출', '장노출(2노출) / 중노출(3노출)', '장노출(3노출만)'],
+    defaultParams: { exposureCount: 2, matchTol: 20, reflTol: -1, tolX: 5, tolY: 30, gapK: 0, removeReflection: true, bands: 0 },
+    description: '분리된 다중노출 HeightMap 머지 + 리플렉션 제거',
   },
   {
     type: 'RowStretch', label: 'Row Stretch', category: 'SDC 전용',
@@ -56,12 +58,10 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '지정 행(Region)을 선형 보간해 scale배 업샘플. SDC 노출 정렬용',
   },
   {
-    type: 'ExposureMerge2', label: 'Exposure Merge', category: 'SDC 전용',
+    type: 'ExposureSplit', label: 'Exposure Split', category: 'SDC 전용',
     inputs: ['HeightMap'], outputs: ['HeightMap'],
-    defaultParams: {
-      matchTol: 20, reflTol: -1, tolX: 10, tolY: 100, gapK: 2, halfRes: true,
-    },
-    description: '저/장노출 2단계 병합. 반사 제거 + 갭 보완',
+    defaultParams: { splitCount: 2 },
+    description: '인터리브 다중노출 HeightMap을 노출별로 분리. 주 출력=저노출, 결과창에서 전체 노출 미리보기',
   },
   {
     type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: 'SDC 전용',

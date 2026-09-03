@@ -222,64 +222,140 @@ public:
     }
 };
 
-// ── ExposureSplit (다중노출 분리): 인터리브된 다중노출 HeightMap을 노출별로 행 분리.
-//   splitCount=2: 짝/홀 행 = 저/장 노출. splitCount=3: r%3=0/1/2 = 저/중/장 노출.
-//   행 = r*splitCount + phase. 행확장/보간 없이 각 노출을 n(=h/splitCount)행 그대로 출력.
-//   출력: outputStage로 노출 하나 선택. (머지/리플렉션 제거는 ExposureMerge2/3 노드가 담당)
-// A5-6: outputStage 파라미터 제거 → stages에 전부 싣고 UI가 고른다.
-//   주 출력은 항상 stage 0(저노출). noPreview 시 stages 생략(배치 가속).
+// ── ExposureMerge: 분리된 다중노출 HeightMap 머지 + 리플렉션 제거.
+//   포트0=저노출, 포트1=장노출(2노출) 또는 중노출(3노출), 포트2=장노출(3노출).
+//   exposureCount=2: 1단계. exposureCount=3: 캐스케이드 2단계(저+중→결과+장).
+//   출력 높이 = 입력 높이(행 복제 없음).
 class ExposureMergeTool : public IAlgorithmTool {
-    int   m_splitCount;
+    int   m_exposureCount;
+    float m_matchTol, m_reflTol, m_tolX, m_tolY;
+    int   m_gapK;
+    bool  m_removeReflection;
     bool  m_noPreview;
+    int   m_bands;
+    std::string m_nodeId;
 public:
-    ExposureMergeTool(int splitCount, bool noPreview)
-        : m_splitCount(std::clamp(splitCount, 2, 3)), m_noPreview(noPreview) {}
+    ExposureMergeTool(int exposureCount, float matchTol, float reflTol, float tolX, float tolY,
+                      int gapK, bool removeReflection, bool noPreview, int bands, std::string nodeId)
+        : m_exposureCount(std::clamp(exposureCount, 2, 3))
+        , m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY)
+        , m_gapK(gapK), m_removeReflection(removeReflection), m_noPreview(noPreview)
+        , m_bands(bands), m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->inHeightMap(0))
-            return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
+        const auto _t0 = std::chrono::steady_clock::now();
+        auto hmLo    = input ? input->inHeightMap(0) : nullptr;
+        auto hmMidHi = input ? input->inHeightMap(1) : nullptr;
+        if (!hmLo)    return { ToolStatus::Fail, "ExposureMerge: 포트0 HeightMap(저노출) 필요" };
+        if (!hmMidHi) return { ToolStatus::Fail, "ExposureMerge: 포트1 HeightMap(장/중노출) 필요" };
 
-        const auto& zm = *input->inHeightMap(0);
-        const int w = zm.width, h = zm.height;
-        const int sc = m_splitCount;
-        if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
+        const int w = hmLo->width, n = hmLo->height;
+        if (hmMidHi->width != w || hmMidHi->height != n)
+            return { ToolStatus::Fail, "ExposureMerge: 포트0/1 크기 불일치" };
 
-        const int n = h / sc;
+        std::shared_ptr<HeightMap> hmHi3;
+        if (m_exposureCount == 3) {
+            hmHi3 = input->inHeightMap(2);
+            if (!hmHi3) return { ToolStatus::Fail, "ExposureMerge: 포트2 HeightMap(장노출) 필요(3노출)" };
+            if (hmHi3->width != w || hmHi3->height != n)
+                return { ToolStatus::Fail, "ExposureMerge: 포트2 크기 불일치" };
+        }
 
-        auto extract = [&](int phase) {
-            std::vector<float> half((size_t)n * w);
-            for (int r = 0; r < n; ++r)
-                for (int c = 0; c < w; ++c)
-                    half[(size_t)r*w + c] = zm.data[(size_t)(r*sc + phase)*w + c];
-            return half;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const size_t BN = (size_t)n * w;
+        const std::vector<float>& lo  = hmLo->data;
+        const std::vector<float>& mid = hmMidHi->data;
+        const std::vector<float>& hi  = (m_exposureCount == 3) ? hmHi3->data : hmMidHi->data;
+
+        const int OV = 160;
+        const int nBands = (m_bands > 0) ? m_bands
+                         : std::max(1, std::min(std::max(1, cv::getNumThreads()), n));
+        std::vector<ExposureMergeScratch> scratch(nBands);
+        std::vector<std::vector<uint8_t>> srcBufs(nBands);
+
+        auto globalOffset = [&](const std::vector<float>& A, const std::vector<float>& B) {
+            std::vector<float> d; d.reserve(BN / 4 + 1);
+            for (size_t i = 0; i < BN; i += 4)
+                if (!std::isnan(A[i]) && !std::isnan(B[i]) && std::fabs(A[i]-B[i]) <= m_matchTol)
+                    d.push_back(A[i]-B[i]);
+            float o = 0.f;
+            if (!d.empty()) { size_t m = d.size()/2; std::nth_element(d.begin(), d.begin()+m, d.end()); o = d[m]; }
+            else VISION_LOG_INFO("ExposureMerge: 경고 — 겹침 일치 표본 0개 → offset=0.");
+            return o;
         };
-        auto makeZRaw = [&](std::vector<float> half) {
+
+        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) {
+            std::vector<float> out(BN, NaN);
+            const int bands = std::max(1, std::min(bandsReq, n));
+            cv::parallel_for_(cv::Range(0, bands), [&](const cv::Range& rg) {
+                for (int b = rg.start; b < rg.end; ++b) {
+                    const int p0 = (int)((long long)n * b / bands);
+                    const int p1 = (int)((long long)n * (b+1) / bands);
+                    if (p0 >= p1) continue;
+                    const int e0 = std::max(0, p0-OV), e1 = std::min(n, p1+OV);
+                    const int bn = e1 - e0;
+                    std::vector<uint8_t>& src = srcBufs[b];
+                    exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
+                                          m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b],
+                                          m_removeReflection, m_reflTol);
+                    for (int r = p0; r < p1; ++r) {
+                        const size_t so = (size_t)(r-e0)*w, dst = (size_t)r*w;
+                        for (int c = 0; c < w; ++c) {
+                            uint8_t s = src[so+c];
+                            out[dst+c] = (s==1) ? low[dst+c]-offset : (s==2 ? high[dst+c] : NaN);
+                        }
+                    }
+                }
+            });
+            return out;
+        };
+
+        float ofs1 = 0.f, ofs2 = 0.f;
+        std::vector<float> mergedA, finalZ;
+        if (m_exposureCount == 2) {
+            ofs1   = globalOffset(lo, hi);
+            finalZ = runStage(lo, hi, ofs1, nBands);
+        } else {
+            ofs1    = globalOffset(lo, mid);
+            mergedA = runStage(lo, mid, ofs1, nBands);
+            ofs2    = globalOffset(mergedA, hi);
+            finalZ  = runStage(mergedA, hi, ofs2, nBands);
+        }
+
+        auto makeHM = [&](const std::vector<float>& d) {
             auto z = std::make_shared<HeightMap>();
             z->width=w; z->height=n;
-            z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
-            z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->originCol=zm.originCol; z->originRow=zm.originRow;
-            z->data=std::move(half);
+            z->xResMm=hmLo->xResMm; z->yResMm=hmLo->yResMm;
+            z->zResMm=hmLo->zResMm; z->zZeroCount=hmLo->zZeroCount;
+            z->originCol=hmLo->originCol; z->originRow=hmLo->originRow;
+            z->frameId=hmLo->frameId; z->data=d;
             return z;
         };
 
-        static const char* const label2[] = { "1. 저노출", "2. 장노출" };
-        static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
-        const char* const* labels = (sc == 3) ? label3 : label2;
-
+        auto zFinal = makeHM(std::move(finalZ));
         auto data = std::make_shared<VisionData>();
+        data->setHeightMap(zFinal);
         data->sourceId = input->sourceId;
-        // 주 출력 = 항상 stage 0 (저노출)
-        auto z0 = makeZRaw(extract(0));
-        data->setHeightMap(z0);
+        data->frames = input->frames;
+
         if (!m_noPreview) {
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
-            data->stages->push_back({ labels[0], z0 });
-            for (int p = 1; p < sc; ++p)
-                data->stages->push_back({ labels[p], makeZRaw(extract(p)) });
+            data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
+            if (m_exposureCount == 2) {
+                data->stages->push_back({ "2. 저노출", makeHM(lo) });
+                data->stages->push_back({ "3. 장노출", makeHM(hi) });
+            } else {
+                data->stages->push_back({ "2. 저·중 머지", makeHM(mergedA) });
+                data->stages->push_back({ "3. 저노출",     makeHM(lo) });
+                data->stages->push_back({ "4. 중노출",     makeHM(mid) });
+                data->stages->push_back({ "5. 장노출",     makeHM(hi) });
+            }
         }
-        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
+
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("ExposureMerge({}): {}x{}, ofs1={:.1f} ofs2={:.1f}cnt  [{:.1f} ms]",
+                        m_exposureCount, w, n, ofs1, ofs2, _ms);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -296,6 +372,7 @@ public:
     std::string name() const override { return "PointCloudSplit"; }
 
     ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
         if (!input || !input->inCloud(0))
             return { ToolStatus::Fail, "PointCloudSplit: PointCloud3D 입력이 필요합니다" };
 
@@ -328,8 +405,9 @@ public:
         for (auto& o : outputs)
             data->clouds.push_back(std::make_shared<PointCloud3D>(std::move(o)));
 
-        VISION_LOG_INFO("PointCloudSplit: {} pts → {}분할, 행{}개",
-            cloud.size(), m_splitCount, (int)rows.size());
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("PointCloudSplit: {} pts → {}분할, 행{}개  [{:.1f} ms]",
+            cloud.size(), m_splitCount, (int)rows.size(), _ms);
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -362,6 +440,7 @@ public:
     std::string name() const override { return "CloudZReduce"; }
 
     ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
         if (!input || !input->inCloud(0))
             return { ToolStatus::Fail, "CloudZReduce: PointCloud3D 입력이 필요합니다" };
 
@@ -454,8 +533,9 @@ public:
         // ROI 외부 점 합산
         out->points.insert(out->points.end(), passPts.begin(), passPts.end());
 
-        VISION_LOG_INFO("CloudZReduce: {} pts → {} pts (roi={} pass={})",
-            cloud.size(), out->size(), bins.size(), passPts.size());
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("CloudZReduce: {} pts → {} pts (roi={} pass={})  [{:.1f} ms]",
+            cloud.size(), out->size(), bins.size(), passPts.size(), _ms);
         auto data = std::make_shared<VisionData>();
         data->sourceId = input->sourceId;
         data->setCloud(out);
@@ -465,12 +545,62 @@ public:
 
 // RowStretchTool → VisionTools/RowStretchTool.{h,cpp} 로 이동 (A2)
 
-// ── DualExposureMerge (이중노출 머지, 재구현): 인터리브 홀짝 → 오프셋보정 →
-//    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
-//    규칙: 겹침은 저노출 우선(리플 자동배제), fill은 신뢰 씨앗에서 연결성으로 검증.
-//    [증분1] ① 연속성 주력. ② 신뢰표면편차+I/LLT 게이팅, I중앙값 홀짝판별, 자동보정은 추후.
-// A5-1: halfRes=true → 새 프레임 정의(nodeId가 있을 때).
-// A5-2: chunkMode/chunkRows/overlapRows 레시피에서 제거 → 엔진 자동 판단(n > 4096 시 청크).
+// ── ExposureSplit: 인터리브 다중노출 HeightMap → 노출별 분리.
+//   splitCount=2: 짝/홀 행 = 저/장. splitCount=3: r%3=0/1/2 = 저/중/장.
+//   출력: 주 출력=저노출(phase 0), stages=전체 노출(noPreview 시 생략).
+//   출력 yResMm = 입력 yResMm × splitCount (물리 피치 복원).
+class ExposureSplitTool : public IAlgorithmTool {
+    int  m_splitCount;
+    bool m_noPreview;
+public:
+    ExposureSplitTool(int splitCount, bool noPreview)
+        : m_splitCount(std::clamp(splitCount, 2, 3)), m_noPreview(noPreview) {}
+    std::string name() const override { return "ExposureSplit"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->inHeightMap(0))
+            return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->inHeightMap(0);
+        const int w = zm.width, h = zm.height, sc = m_splitCount;
+        if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
+        const int n = h / sc;
+
+        auto extract = [&](int phase) {
+            std::vector<float> buf((size_t)n * w);
+            for (int r = 0; r < n; ++r)
+                for (int c = 0; c < w; ++c)
+                    buf[(size_t)r*w + c] = zm.data[(size_t)(r*sc + phase)*w + c];
+            return buf;
+        };
+        auto makeHM = [&](std::vector<float> d) {
+            auto z = std::make_shared<HeightMap>();
+            z->width=w; z->height=n;
+            z->xResMm=zm.xResMm; z->yResMm=zm.yResMm*(float)sc;
+            z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
+            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            z->data=std::move(d);
+            return z;
+        };
+        static const char* const label2[] = { "1. 저노출", "2. 장노출" };
+        static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
+        const char* const* labels = (sc == 3) ? label3 : label2;
+
+        auto z0 = makeHM(extract(0));
+        auto data = std::make_shared<VisionData>();
+        data->sourceId = input->sourceId;
+        data->setHeightMap(z0);
+        if (!m_noPreview) {
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
+            data->stages->push_back({ labels[0], z0 });
+            for (int p = 1; p < sc; ++p)
+                data->stages->push_back({ labels[p], makeHM(extract(p)) });
+        }
+        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// (구) DualExposureMergeTool — ExposureMerge2 타입 제거됨. ExposureMerge 사용.
 class DualExposureMergeTool : public IAlgorithmTool {
     float m_matchTol;
     float m_reflTol;
@@ -1375,6 +1505,7 @@ public:
     std::string name() const override { return "CloudToHeightMap"; }
 
     ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
         if (!input || !input->inCloud(0))
             return { ToolStatus::Fail, "CloudToHeightMap: PointCloud3D 입력 필요" };
         const auto& pts = input->inCloud(0)->points;
@@ -1449,7 +1580,8 @@ public:
 
         const size_t valid = std::count_if(hm->data.begin(), hm->data.end(),
                                            [](float v) { return !std::isnan(v); });
-        VISION_LOG_INFO("CloudToHeightMap: {}x{} grid, {} 유효픽셀 / {} 총픽셀", W, H, valid, N);
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("CloudToHeightMap: {}x{} grid, {} 유효픽셀 / {} 총픽셀  [{:.1f} ms]", W, H, valid, N, _ms);
         auto out = std::make_shared<VisionData>();
         out->sourceId = input->sourceId;
         out->setHeightMap(hm);
@@ -1792,19 +1924,21 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "ExposureMerge") {
         return std::make_shared<ExposureMergeTool>(
+            p.value("exposureCount", 2),
+            p.value("matchTol", 20.0f),
+            p.value("reflTol", -1.0f),
+            p.value("tolX", 5.0f),
+            p.value("tolY", 30.0f),
+            p.value("gapK", 0),
+            p.value("removeReflection", true),
+            noPreview,
+            p.value("bands", 0),
+            p.value("_nodeId", std::string()));
+    }
+    if (type == "ExposureSplit") {
+        return std::make_shared<ExposureSplitTool>(
             p.value("splitCount", 2),
             noPreview);
-    }
-    if (type == "ExposureMerge2") {
-        return std::make_shared<DualExposureMergeTool>(
-            p.value("matchTol", 20.0f),
-            p.value("reflTol",  -1.0f),
-            p.value("tolX",     10.0f),
-            p.value("tolY",     100.0f),
-            p.value("gapK",     2),
-            p.value("halfRes",  true),
-            noPreview,
-            p.value("_nodeId",  std::string()));
     }
     if (type == "ExposureMerge3") {
         return std::make_shared<TripleExposureMergeTool>(
