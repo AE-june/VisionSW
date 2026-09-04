@@ -16,6 +16,7 @@ export interface ToolDef {
   outputs: PortDecl[]
   inputLabels?: string[]    // 포트 표시 라벨 (없으면 타입명)
   outputLabels?: string[]
+  getOutputs?: (params: Record<string, unknown>) => PortDecl[]  // 파라미터 기반 동적 출력 포트
   defaultParams: Record<string, unknown>
   description?: string      // 툴박스 툴팁 (hover 시 표시)
   tooltip?: string          // description 대신 쓸 수 있는 별칭
@@ -46,7 +47,6 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'ExposureMerge', label: 'Exposure Merge', category: 'SDC 전용',
     inputs: ['HeightMap', 'HeightMap', { type: 'HeightMap', optional: true }],
     outputs: ['HeightMap'],
-    inputLabels: ['저노출', '장노출(2노출) / 중노출(3노출)', '장노출(3노출만)'],
     defaultParams: { exposureCount: 2, matchTol: 20, reflTol: -1, tolX: 5, tolY: 30, gapK: 0, removeReflection: true, bands: 0 },
     description: '분리된 다중노출 HeightMap 머지 + 리플렉션 제거',
   },
@@ -59,9 +59,13 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'ExposureSplit', label: 'Exposure Split', category: 'SDC 전용',
-    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    inputs: ['HeightMap'],
+    outputs: ['HeightMap', 'HeightMap', 'HeightMap'],
+    getOutputs: (p) => (p.splitCount as number) === 3
+      ? ['HeightMap', 'HeightMap', 'HeightMap']
+      : ['HeightMap', 'HeightMap'],
     defaultParams: { splitCount: 2 },
-    description: '인터리브 다중노출 HeightMap을 노출별로 분리. 주 출력=저노출, 결과창에서 전체 노출 미리보기',
+    description: '인터리브 다중노출 HeightMap을 노출별로 분리. 행 순서대로 노출1/2/3 출력',
   },
   {
     type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: 'SDC 전용',

@@ -86,8 +86,18 @@ void heightmapCachePut(const std::string& path, const std::shared_ptr<HeightMap>
 
 std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
                                        float xRes, float yRes, float zRes) {
+    namespace fs = std::filesystem;
+    // Read via u8path so Korean/Unicode paths work on Windows (fopen uses ANSI otherwise)
+    std::ifstream ifs(fs::u8path(path), std::ios::binary | std::ios::ate);
+    if (!ifs) return nullptr;
+    auto fileSize = static_cast<size_t>(ifs.tellg());
+    ifs.seekg(0);
+    std::vector<stbi_uc> fileBuf(fileSize);
+    ifs.read(reinterpret_cast<char*>(fileBuf.data()), static_cast<std::streamsize>(fileSize));
+    ifs.close();
+
     int w, h, ch;
-    uint16_t* raw16 = stbi_load_16(path.c_str(), &w, &h, &ch, 1);
+    uint16_t* raw16 = stbi_load_16_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
     if (raw16) {
         auto heightmap = std::make_shared<HeightMap>();
         heightmap->width=w; heightmap->height=h;
@@ -100,7 +110,7 @@ std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
         stbi_image_free(raw16);
         return heightmap;
     }
-    unsigned char* raw8 = stbi_load(path.c_str(), &w, &h, &ch, 1);
+    unsigned char* raw8 = stbi_load_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
     if (!raw8) return nullptr;
     auto heightmap = std::make_shared<HeightMap>();
     heightmap->width=w; heightmap->height=h;
@@ -585,15 +595,14 @@ public:
         static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
         const char* const* labels = (sc == 3) ? label3 : label2;
 
-        auto z0 = makeHM(extract(0));
         auto data = std::make_shared<VisionData>();
         data->sourceId = input->sourceId;
-        data->setHeightMap(z0);
+        for (int p = 0; p < sc; ++p)
+            data->heightmaps.push_back(makeHM(extract(p)));
         if (!m_noPreview) {
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
-            data->stages->push_back({ labels[0], z0 });
-            for (int p = 1; p < sc; ++p)
-                data->stages->push_back({ labels[p], makeHM(extract(p)) });
+            for (int p = 0; p < sc; ++p)
+                data->stages->push_back({ labels[p], data->heightmaps[p] });
         }
         VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
         return { ToolStatus::Ok, "", data };
@@ -1298,6 +1307,14 @@ public:
         const bool ext16 = (ext == "png" || ext == "tif" || ext == "tiff");
         const size_t N = (size_t)zm.width * zm.height;
 
+        auto writeImg = [&](const cv::Mat& mat) -> bool {
+            namespace fs = std::filesystem;
+            std::vector<uchar> buf;
+            if (!cv::imencode("." + ext, mat, buf)) return false;
+            std::ofstream ofs(fs::u8path(savePath), std::ios::binary);
+            return ofs && ofs.write(reinterpret_cast<const char*>(buf.data()), buf.size());
+        };
+
         try {
             if (ext16) {
                 cv::Mat m16(zm.height, zm.width, CV_16U);
@@ -1306,7 +1323,7 @@ public:
                     float v = zm.data[i];
                     d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0
                 }
-                if (!cv::imwrite(savePath, m16)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
+                if (!writeImg(m16)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
             } else {
                 float lo = 1e30f, hi = -1e30f;
                 for (size_t i = 0; i < N; ++i) { float v = zm.data[i]; if (!std::isnan(v)) { lo = std::min(lo,v); hi = std::max(hi,v); } }
@@ -1316,7 +1333,7 @@ public:
                     float v = zm.data[i];
                     m8.data[i] = std::isnan(v) ? 0 : (uchar)std::clamp((v-lo)/span*255.f, 0.f, 255.f);
                 }
-                if (!cv::imwrite(savePath, m8)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
+                if (!writeImg(m8)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
             }
         } catch (const std::exception& e) {
             return { ToolStatus::Fail, std::string("HeightMapSaver: ") + e.what() };

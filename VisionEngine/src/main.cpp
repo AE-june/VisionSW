@@ -225,8 +225,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 }
             }
 
-            // 2. 캐시 체크
-            if (useCache && !upstreamDirty && nodeId != forceNode) {
+            // 2. 캐시 체크 — 파일 저장 사이드이펙트가 있는 saver 노드는 항상 실행
+            const bool isSaver = (ns.type == "HeightMapSaver" || ns.type == "CloudSaver");
+            if (!isSaver && useCache && !upstreamDirty && nodeId != forceNode) {
                 std::lock_guard<std::mutex> lk(nodeCacheMtx);
                 auto cit = g_nodeCache.find(nodeId);
                 if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {

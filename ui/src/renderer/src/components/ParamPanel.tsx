@@ -285,16 +285,16 @@ function ExposureMergeParams({ params, onChange }: { params: Record<string, unkn
         value={exposureCount}
         onChange={e => set('exposureCount', Number(e.target.value))}
       >
-        <option value={2}>2노출 (저·장)</option>
-        <option value={3}>3노출 (저·중·장)</option>
+        <option value={2}>2노출 (노출1/노출2)</option>
+        <option value={3}>3노출 (노출1/2/3)</option>
       </select>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
-      포트0=저노출, 포트1=장노출(2) 또는 중노출(3), 포트2=장노출(3노출만)
+      포트 인덱스 = 행 순서 (0=노출1, 1=노출2, 2=노출3)
     </div>
     <div className="param-section">오프셋 / 씨앗</div>
     <NumField label="매칭 허용 (cnt)" value={(params.matchTol as number) ?? 20} step={5} onChange={v => set('matchTol', v)}
-      tooltip="저·장노출 두 값이 모두 유효하고 |차이| ≤ 이 값이면 겹침 일치 판정. 전역 오프셋(두 노출 간 Z 바이어스) 추정에 사용. 너무 작으면 오프셋 표본 부족, 너무 크면 리플렉션도 포함. 단위: raw count" />
+      tooltip="두 노출 값이 모두 유효하고 |차이| ≤ 이 값이면 겹침 일치 판정. 전역 오프셋(노출 간 Z 바이어스) 추정에 사용. 너무 작으면 오프셋 표본 부족, 너무 크면 리플렉션도 포함. 단위: raw count" />
     <NumField label="리플 씨앗 허용 (cnt)" value={(params.reflTol as number) ?? -1} step={5} onChange={v => set('reflTol', v)}
       tooltip="-1이면 매칭 허용(matchTol)과 동일값 사용. 따로 설정 시 이 값 이하 차이만 신뢰 씨앗으로 인정 → 클수록 씨앗↑·덜 제거, 작을수록 더 제거. 단위: raw count" />
     <div className="param-section">연속성 확장</div>
@@ -309,7 +309,7 @@ function ExposureMergeParams({ params, onChange }: { params: Record<string, unkn
       <label className="param-label">리플렉션 제거</label>
       <input type="checkbox" checked={(params.removeReflection as boolean) ?? true}
         onChange={e => set('removeReflection', e.target.checked)}
-        title="끄면 오프셋 보정 + 저노출 우선 머지만 수행(BFS 연속성 필터 생략). 리플렉션이 없는 데이터에서 빠르게 확인용." />
+        title="끄면 오프셋 보정 + 노출1 우선 머지만 수행(BFS 연속성 필터 생략). 리플렉션이 없는 데이터에서 빠르게 확인용." />
     </div>
     <NumField label="밴드 수 (0=자동)" value={(params.bands as number) ?? 0} step={1} onChange={v => set('bands', Math.round(v))}
       tooltip="병렬 처리 밴드 수. 0이면 CPU 스레드 수 자동. 높일수록 행 분할↑ — 단 밴드 경계 컨텍스트(OV=160행)가 겹쳐 재연산됨. 보통 기본값이 최적." />
@@ -359,13 +359,13 @@ function ExposureSplitParams({ params, onChange }: { params: Record<string, unkn
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
   const splitCount = (params.splitCount as number) ?? 2
   return <>
-    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 Z PNG를 연결하세요. 주 출력=저노출. 결과창 드롭다운에서 다른 노출 확인 가능.</div>
+    <div className="param-empty" style={{ fontSize: 10 }}>인터리브 Z PNG를 연결하세요. 출력 포트 인덱스 = 행 순서 (0부터).</div>
     <div className="param-section">분리</div>
     <div className="param-row">
       <label className="param-label">노출 수</label>
       <select className="param-select" value={splitCount} onChange={e => set('splitCount', Number(e.target.value))}>
-        <option value={2}>2노출 (저/장)</option>
-        <option value={3}>3노출 (저/중/장)</option>
+        <option value={2}>2노출 (노출1/노출2)</option>
+        <option value={3}>3노출 (노출1/2/3)</option>
       </select>
     </div>
   </>
@@ -627,9 +627,9 @@ function CloudSaverParams({ params, onChange }: { params: Record<string, unknown
     <div className="param-row">
       <label className="param-label">Cloud 인덱스</label>
       <select className="param-select" value={cloudIdx} onChange={e => set('cloudIdx', Number(e.target.value))}>
-        <option value={0}>0 — 저노출</option>
-        <option value={1}>1 — 장노출 (2-way) / 중노출 (3-way)</option>
-        <option value={2}>2 — 장노출 (3-way)</option>
+        <option value={0}>0 — 노출1</option>
+        <option value={1}>1 — 노출2</option>
+        <option value={2}>2 — 노출3</option>
       </select>
     </div>
     <div className="param-empty" style={{ fontSize: 10 }}>
