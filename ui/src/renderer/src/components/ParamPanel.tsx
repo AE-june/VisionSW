@@ -35,7 +35,7 @@ function RoiField({ label, value, onChange, tooltip }: {
   )
 }
 
-function Tip({ text }: { text?: string }) {
+export function Tip({ text }: { text?: string }) {
   if (!text) return null
   return <span className="param-tip" data-tip={text}>ⓘ</span>
 }

@@ -39,6 +39,7 @@ add_library(VisionTools STATIC
     src/HeightMapMathTool.cpp
     src/GradientMapTool.cpp
     src/ProfileSmoothTool.cpp
+    src/ProfileCaliperTool.cpp
 )
 
 target_include_directories(VisionTools
