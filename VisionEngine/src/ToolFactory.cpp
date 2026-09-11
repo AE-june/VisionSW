@@ -27,6 +27,18 @@
 #include "ProfileFeatureTool.h"
 #include "CompareTool.h"
 #include "CombineDecisionTool.h"
+#include "ConnectedComponentsTool.h"
+#include "RegionFilterTool.h"
+#include "RegionSelectTool.h"
+#include "RegionBooleanTool.h"
+#include "RegionMorphologyTool.h"
+#include "ScalarMathTool.h"
+#include "GeometryMeasureTool.h"
+#include "CountRegionsTool.h"
+#include "CircleFitTool.h"
+#include "HeightMapMathTool.h"
+#include "GradientMapTool.h"
+#include "ProfileSmoothTool.h"
 #include "ExposureMergeCore.h"
 #include "ExposureFilterCore.h"
 #include "HeightMapSidecar.h"
@@ -1655,22 +1667,50 @@ public:
 //   inputs[0..N-1]에 들어온 모든 측정값·판정을 합쳐 단일 VisionData로 출력.
 //   첫 번째 비-null HeightMap/Cloud를 주 출력으로 사용.
 class CollectTool : public IAlgorithmTool {
+    std::string m_prefix;
 public:
+    explicit CollectTool(std::string prefix = {}) : m_prefix(std::move(prefix)) {}
     std::string name() const override { return "Collect"; }
     ToolResult execute(VisionDataPtr input) override {
         if (!input) return { ToolStatus::Fail, "Collect: 입력이 없습니다" };
         auto out = std::make_shared<VisionData>();
         out->sourceId = input->sourceId;
         out->frames   = input->frames;
-        for (const auto& inp : input->inputs) {
+
+        // 이름 충돌 감지용 집합
+        std::unordered_set<std::string> measNames, decNames;
+
+        for (std::size_t port = 0; port < input->inputs.size(); ++port) {
+            const auto& inp = input->inputs[port];
             if (!inp) continue;
+
             if (!out->heightmap0() && inp->heightmap0())
                 out->setHeightMap(inp->heightmap0());
             if (!out->cloud0() && inp->cloud0())
                 out->setCloud(inp->cloud0());
-            for (const auto& m  : inp->measurements) out->measurements.push_back(m);
-            for (const auto& d  : inp->decisions)    out->decisions.push_back(d);
-            for (const auto& ov : inp->overlays)      out->overlays.push_back(ov);
+            for (const auto& rg : inp->regions)
+                out->regions.push_back(rg);
+            for (const auto& ov : inp->overlays)
+                out->overlays.push_back(ov);
+
+            // prefix: 명시 prefix > 충돌 시 포트 인덱스 > 없음
+            auto applyPrefix = [&](const std::string& n,
+                                   std::unordered_set<std::string>& seen) -> std::string {
+                if (!m_prefix.empty()) return m_prefix + "." + n;
+                if (seen.count(n))     return std::to_string(port) + "." + n;
+                return n;
+            };
+
+            for (auto m : inp->measurements) {
+                m.name = applyPrefix(m.name, measNames);
+                measNames.insert(m.name);
+                out->measurements.push_back(std::move(m));
+            }
+            for (auto d : inp->decisions) {
+                d.name = applyPrefix(d.name, decNames);
+                decNames.insert(d.name);
+                out->decisions.push_back(std::move(d));
+            }
         }
         return { ToolStatus::Ok, "", out };
     }
@@ -2272,8 +2312,57 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         return std::make_shared<RegionMeasureTool>(params);
     }
 
+    if (type == "ConnectedComponents") {
+        ConnectedComponentsParams params;
+        params.connectivity = p.value("connectivity", 8);
+        params.minAreaPx    = p.value("minAreaPx",    1);
+        params.maxAreaPx    = p.value("maxAreaPx",    0);
+        return std::make_shared<ConnectedComponentsTool>(params);
+    }
+    if (type == "RegionFilter") {
+        RegionFilterParams params;
+        params.metric = p.value("metric", std::string("area"));
+        params.minVal = p.value("minVal", 0.0);
+        params.maxVal = p.value("maxVal", 0.0);
+        return std::make_shared<RegionFilterTool>(params);
+    }
+    if (type == "RegionSelect") {
+        RegionSelectParams params;
+        params.mode  = p.value("mode",  std::string("index"));
+        params.index = p.value("index", 0);
+        return std::make_shared<RegionSelectTool>(params);
+    }
+    if (type == "GeometryMeasure") {
+        GeometryMeasureParams params;
+        params.kind       = p.value("kind",       std::string("angle"));
+        params.outputName = p.value("outputName", std::string());
+        params.outputUnit = p.value("outputUnit", std::string());
+        return std::make_shared<GeometryMeasureTool>(params);
+    }
+    if (type == "RegionBoolean") {
+        RegionBooleanParams params;
+        params.op = p.value("op", std::string("and"));
+        return std::make_shared<RegionBooleanTool>(params);
+    }
+    if (type == "RegionMorphology") {
+        RegionMorphologyParams params;
+        params.op     = p.value("op",     std::string("dilate"));
+        params.radius = p.value("radius", 3);
+        params.shape  = p.value("shape",  std::string("rect"));
+        return std::make_shared<RegionMorphologyTool>(params);
+    }
+    if (type == "ScalarMath") {
+        ScalarMathParams params;
+        params.op         = p.value("op",         std::string("subtract"));
+        params.nameA      = p.value("nameA",      std::string());
+        params.nameB      = p.value("nameB",      std::string());
+        params.outputName = p.value("outputName", std::string("result"));
+        params.outputUnit = p.value("outputUnit", std::string());
+        return std::make_shared<ScalarMathTool>(params);
+    }
+
     if (type == "Collect") {
-        return std::make_shared<CollectTool>();
+        return std::make_shared<CollectTool>(p.value("prefix", std::string{}));
     }
     if (type == "SurfaceSubtract") {
         SurfaceSubtractParams params;
@@ -2383,6 +2472,34 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         np.edgeSlopeTolUmPerMm = p.value("edgeSlopeTolUmPerMm", 30.0);
         np.edgeSlopeWindowPts  = p.value("edgeSlopeWindowPts",  5);
         return std::make_shared<NotchMeasureV2Tool>(np);
+    }
+
+    if (type == "CountRegions") {
+        CountRegionsParams params;
+        params.outputName = p.value("outputName", std::string("count"));
+        return std::make_shared<CountRegionsTool>(params);
+    }
+    if (type == "CircleFit") {
+        return std::make_shared<CircleFitTool>();
+    }
+    if (type == "HeightMapMath") {
+        HeightMapMathParams params;
+        params.op     = p.value("op",     std::string("abs"));
+        params.factor = p.value("factor", 1.0);
+        return std::make_shared<HeightMapMathTool>(params);
+    }
+    if (type == "GradientMap") {
+        GradientMapParams params;
+        params.output_mode = p.value("output_mode", std::string("magnitude"));
+        params.ksize       = p.value("ksize",       3);
+        return std::make_shared<GradientMapTool>(params);
+    }
+    if (type == "ProfileSmooth") {
+        ProfileSmoothParams params;
+        params.method     = p.value("method",     std::string("gaussian"));
+        params.windowSize = p.value("windowSize", 5);
+        params.sigma      = p.value("sigma",      1.0);
+        return std::make_shared<ProfileSmoothTool>(params);
     }
 
     VISION_LOG_WARN("ToolFactory: unknown tool type '{}'", type);

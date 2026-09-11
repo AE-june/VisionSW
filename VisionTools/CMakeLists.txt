@@ -27,6 +27,18 @@ add_library(VisionTools STATIC
     src/NotchMeasureTool.cpp
     src/NotchMeasureV2Tool.cpp
     src/ProfileToCloudTool.cpp
+    src/ConnectedComponentsTool.cpp
+    src/RegionFilterTool.cpp
+    src/RegionSelectTool.cpp
+    src/RegionBooleanTool.cpp
+    src/RegionMorphologyTool.cpp
+    src/ScalarMathTool.cpp
+    src/GeometryMeasureTool.cpp
+    src/CountRegionsTool.cpp
+    src/CircleFitTool.cpp
+    src/HeightMapMathTool.cpp
+    src/GradientMapTool.cpp
+    src/ProfileSmoothTool.cpp
 )
 
 target_include_directories(VisionTools

@@ -32,6 +32,7 @@ add_executable(ToolsTests
     Tools/RegionMeasureTest.cpp
     Tools/HeightMapMetaTest.cpp
     Tools/InvariantTests.cpp
+    Tools/InspectionWorkflowTest.cpp
 )
 target_link_libraries(ToolsTests PRIVATE
     VisionTools

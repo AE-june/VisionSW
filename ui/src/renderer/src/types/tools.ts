@@ -93,46 +93,46 @@ export const TOOL_DEFS: ToolDef[] = [
     description: 'split 없이 3노출 인터리브를 노출 datum 정규화 → 대칭 일관성 리플렉션 제거 → gap fill. EM3 대체 실험용(저노출 리플렉션도 대칭 제거)',
   },
   {
-    type: 'Threshold', label: 'Threshold', category: '분할',
+    type: 'Threshold', label: 'Threshold', category: '영역',
     inputs: ['HeightMap'], outputs: ['Region'],
     defaultParams: { channel: 0, thresholdMode: 'mm', thresholdMm: 0, thresholdRaw: 0, keepAbove: true },
     description: '임계값(mm 또는 raw 픽셀값)으로 HeightMap을 Region(마스크)으로 분할',
   },
   {
-    type: 'ValidRegion', label: 'Valid Region', category: '분할',
+    type: 'ValidRegion', label: 'Valid Region', category: '영역',
     inputs: ['HeightMap'], outputs: ['Region'],
     defaultParams: { channel: 0, invert: false },
     description: 'NaN이 아닌 유효 픽셀 영역을 Region으로 추출',
   },
   {
-    type: 'Level', label: 'Level', category: '변환',
-    inputs: ['HeightMap', 'Plane'], outputs: ['HeightMap'],
-    inputLabels: ['HeightMap', 'Plane'],
+    type: 'Level', label: 'Level', category: '기준/정렬',
+    inputs: ['HeightMap', 'Plane', { type: 'Region', optional: true }], outputs: ['HeightMap'],
+    inputLabels: ['HeightMap', 'Plane', 'Region(선택)'],
     defaultParams: { mode: 'distance', keepInvalid: true, offsetMm: 0.0 },
-    description: 'Plane 기준으로 HeightMap을 평탄화하거나 수직 거리로 변환',
+    description: 'Plane 기준으로 HeightMap을 평탄화하거나 수직 거리로 변환. Region 연결 시 Region 밖 픽셀 → NaN',
   },
   {
-    type: 'SurfaceCrop', label: 'Surface Crop', category: '변환',
+    type: 'SurfaceCrop', label: 'Surface Crop', category: '전처리',
     inputs: ['HeightMap', 'Region'], outputs: ['HeightMap'],
     inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: { mode: 'rect', rect: { x: 0, y: 0, w: 0, h: 0 }, outsideNaN: true },
     description: '사각형 또는 Region 마스크로 HeightMap을 잘라냄',
   },
   {
-    type: 'SurfaceResample', label: 'Surface Resample', category: '변환',
+    type: 'SurfaceResample', label: 'Surface Resample', category: '전처리',
     inputs: ['HeightMap'], outputs: ['HeightMap'],
     defaultParams: { mode: 'factor', factor: 2, targetXResMm: 0, targetYResMm: 0, method: 'decimate' },
     description: 'HeightMap 해상도를 배율 또는 목표 분해능으로 다운샘플 (측정 경로 비권장)',
   },
   {
-    type: 'CreateROI', label: 'Create ROI', category: '분할',
+    type: 'CreateROI', label: 'Create ROI', category: '영역',
     inputs: ['HeightMap', { type: 'Line', optional: true }], outputs: [{ type: 'Region', isArray: true }],
     inputLabels: ['HeightMap', 'Line(선택)'],
     defaultParams: { rois: [], bandWidthMm: 5, bandOffsetMm: 3, bandSide: 'both', bandLenMode: 'line', bandLengthMm: 10 },
     description: '사각·원·폴리곤 ROI → Region[]. 포트1에 Line 연결 시 라인 좌/우 밴드 ROI 자동 생성',
   },
   {
-    type: 'ReduceDomain', label: 'Reduce Domain', category: '변환',
+    type: 'ReduceDomain', label: 'Reduce Domain', category: '기준/정렬',
     inputs: ['HeightMap', { type: 'Region', isArray: true }], outputs: ['HeightMap'],
     inputLabels: ['HeightMap', 'Region[ ]'],
     defaultParams: { invert: false },
@@ -157,20 +157,21 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '스캔 방향으로 라인 엣지를 검출해 중심 좌표(Point) 반환. SDC 정렬용',
   },
   {
-    type: 'NoiseFilter', label: 'Noise Filter', category: '필터',
+    type: 'NoiseFilter', label: 'Noise Filter', category: '전처리',
     inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['HeightMap'],
     inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: { filterType: 'median', kernelSizeX: 3, kernelSizeY: 3, stdRatio: 2.0, sigmaRangeMm: 0.02, radius: 1.0, minNeighbors: 5 },
     tooltip: '포트 1에 Region 연결 시 해당 영역만 필터. 없으면 전체 적용.',
   },
   {
-    type: 'GapFill', label: 'Gap Fill', category: '필터',
-    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    type: 'GapFill', label: 'Gap Fill', category: '전처리',
+    inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['HeightMap'],
+    inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: { method: 'neighbor', maxGap: 5, minValidNeighbors: 3, idwRadius: 8, idwPower: 2, edgeSigma: 30 },
-    description: '유효하지 않은 픽셀(NaN·갭)을 이웃값 또는 IDW 보간으로 채움',
+    description: '유효하지 않은 픽셀(NaN·갭)을 이웃값 또는 IDW 보간으로 채움. Region 연결 시 해당 영역 내 NaN만 채움',
   },
   {
-    type: 'PlaneFit', label: 'Plane Fit', category: '측정',
+    type: 'PlaneFit', label: 'Plane Fit', category: '기준/정렬',
     inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['Plane'],
     inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: {
@@ -316,20 +317,20 @@ export const TOOL_DEFS: ToolDef[] = [
     description: 'V1과 동일한 검출 알고리즘(chunk 머지+3차 다항식 강건 피팅+flat/corner 바닥 탐색+이웃 안정화)을 V2 출력 스키마로 포팅. 출력: Profile[](깊이+절대높이 6종) + land/floor로 분류된 필터링 PointCloud3D',
   },
   {
-    type: 'Collect', label: 'Collect', category: '축약',
+    type: 'Collect', label: 'Collect', category: '출력',
     inputs: [{ type: 'Any', isArray: true }], outputs: [{ type: 'Any' }],
     defaultParams: {},
     description: '여러 노드의 측정값·판정을 하나의 출력으로 수집',
   },
   {
-    type: 'SurfaceSubtract', label: 'Surface Subtract', category: '표면 변환',
+    type: 'SurfaceSubtract', label: 'Surface Subtract', category: '표면 연산',
     inputs: ['HeightMap', 'HeightMap'], outputs: ['HeightMap'],
     inputLabels: ['A', 'B'],
     defaultParams: { absolute: false, nanPolicy: 'propagate' },
     tooltip: 'A - B 높이맵 차이 (단위: mm)',
   },
   {
-    type: 'ExtractProfile', label: 'Extract Profile', category: '변환',
+    type: 'ExtractProfile', label: 'Extract Profile', category: '프로파일',
     inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['Profile'],
     inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: {
@@ -353,13 +354,102 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '판정 결합. mode: all(AND) | any(OR) | count(N개 이상)',
   },
   {
-    type: 'ProfileFeature', label: 'Profile Feature', category: '측정',
+    type: 'ProfileFeature', label: 'Profile Feature', category: '프로파일',
     inputs: [{ type: 'Profile', isArray: true }], outputs: ['Measurements'],
     defaultParams: {
       kind: 'maxZ', searchFromMm: 0, searchToMm: 0, nth: 0, percentile: 50,
       edgeDir: 'any', edgeThresholdMm: 0.05, smoothWindow: 3,
     },
     tooltip: 'Profile 단면 → 집계·특징점 측정. kind: maxZ|minZ|maxS|minS|mean|median|stdDev|percentile|highTail|edge|ridge|valley|corner',
+  },
+
+  // ── 영역 분석 ──────────────────────────────────────────────────────
+  {
+    type: 'ConnectedComponents', label: 'Connected Components', category: '영역 분석',
+    inputs: [{ type: 'Region', isArray: true }], outputs: [{ type: 'Region', isArray: true }],
+    defaultParams: { connectivity: 8, minAreaPx: 1, maxAreaPx: 0 },
+    description: '이진 마스크에서 연결 성분(블롭)을 분리. HALCON connection 상당. connectivity: 4|8',
+  },
+  {
+    type: 'RegionFilter', label: 'Region Filter', category: '영역 분석',
+    inputs: [{ type: 'Region', isArray: true }], outputs: [{ type: 'Region', isArray: true }],
+    defaultParams: { metric: 'area', minVal: 0, maxVal: 0 },
+    description: 'Region[]을 메트릭(area|width|height|density) 범위로 필터링. HALCON select_shape 상당. maxVal=0이면 상한 없음',
+  },
+  {
+    type: 'RegionSelect', label: 'Region Select', category: '영역 분석',
+    inputs: [{ type: 'Region', isArray: true }], outputs: [{ type: 'Region', isArray: true }],
+    defaultParams: { mode: 'index', index: 0 },
+    description: 'Region[]에서 인덱스 또는 최대/최소 메트릭 기준으로 하나 선택. mode: index|largest|smallest',
+  },
+  {
+    type: 'RegionBoolean', label: 'Region Boolean', category: '영역 분석',
+    inputs: ['Region', 'Region'], outputs: ['Region'],
+    inputLabels: ['A', 'B'],
+    defaultParams: { op: 'and' },
+    description: '두 Region 사이에 불리언 연산. op: and(교집합)|or(합집합)|not_a(A∖B)|not_b(B∖A)|xor(대칭차)',
+  },
+  {
+    type: 'RegionMorphology', label: 'Region Morphology', category: '영역 분석',
+    inputs: ['Region'], outputs: ['Region'],
+    defaultParams: { op: 'dilate', radius: 3, shape: 'rect' },
+    description: 'Region 형태학 연산. op: dilate(팽창)|erode(침식)|open(열기)|close(닫기). shape: rect|ellipse',
+  },
+  {
+    type: 'CountRegions', label: 'Count Regions', category: '영역 분석',
+    inputs: [{ type: 'Region', isArray: true }], outputs: ['Measurements'],
+    defaultParams: { outputName: 'count' },
+    description: 'Region[] 개수 → Measurement. HALCON count_obj 상당. ConnectedComponents 이후 블롭 수 판정',
+  },
+
+  // ── 측정 ───────────────────────────────────────────────────────────
+  {
+    type: 'CircleFit', label: 'Circle Fit', category: '측정',
+    inputs: [{ type: 'Region', isArray: true }, { type: 'HeightMap', optional: true }],
+    outputs: ['Geometry', 'Measurements'],
+    inputLabels: ['Region', 'HeightMap(선택)'],
+    outputLabels: ['Geometry(Circle)', 'Measurements'],
+    defaultParams: {},
+    description: '경계 픽셀에 최소제곱 원 피팅 → Geometry(Circle). HALCON fit_circle_contour_xld 상당. 출력: radius/diameter/residual',
+  },
+  {
+    type: 'GeometryMeasure', label: 'Geometry Measure', category: '측정',
+    inputs: ['Any', { type: 'Any', optional: true }],
+    outputs: ['Measurements'],
+    inputLabels: ['A (Line/Plane)', 'B (Line/Plane, 선택)'],
+    defaultParams: { kind: 'angle', outputName: '', outputUnit: '' },
+    description: '기하 프리미티브 간 측정. kind(Line): angle|lineDistance|intersectX|intersectY|centerDistance|posX|posY. kind(Plane): planeAngle|planeDistance',
+  },
+  {
+    type: 'ScalarMath', label: 'Scalar Math', category: '측정',
+    inputs: ['Measurements', 'Measurements'],
+    outputs: ['Measurements'],
+    inputLabels: ['A', 'B'],
+    defaultParams: { op: 'subtract', nameA: '', nameB: '', outputName: 'result', outputUnit: '' },
+    description: '두 측정값 사이 사칙연산. op: add|subtract|multiply|divide. nameA/B 비면 첫 번째 값 사용',
+  },
+
+  // ── 변환 ───────────────────────────────────────────────────────────
+  {
+    type: 'HeightMapMath', label: 'HeightMap Math', category: '표면 연산',
+    inputs: ['HeightMap', { type: 'HeightMap', optional: true }], outputs: ['HeightMap'],
+    inputLabels: ['A', 'B(선택)'],
+    defaultParams: { op: 'abs', factor: 1.0 },
+    description: 'per-pixel 산술 연산. op=abs: |A|. op=add/subtract: A±B. op=multiply: A×factor(B없을때) 또는 A×B',
+  },
+  {
+    type: 'GradientMap', label: 'Gradient Map', category: '표면 연산',
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    defaultParams: { output_mode: 'magnitude', ksize: 3 },
+    description: 'Sobel 필터로 X·Y 편미분 → 기울기 맵. HALCON derivate_image 상당. output_mode: magnitude|gx|gy. 결함·엣지·스크래치 검출 전처리',
+  },
+
+  // ── 필터 ───────────────────────────────────────────────────────────
+  {
+    type: 'ProfileSmooth', label: 'Profile Smooth', category: '프로파일',
+    inputs: [{ type: 'Profile', isArray: true }], outputs: [{ type: 'Profile', isArray: true }],
+    defaultParams: { method: 'gaussian', windowSize: 5, sigma: 1.0 },
+    description: 'Profile 1D 스무딩. HALCON smooth_funct_1d_gauss 상당. method: gaussian|mean. ProfileFeature 엣지 검출 전처리용',
   },
 ]
 

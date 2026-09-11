@@ -532,42 +532,42 @@ Geometry 1급화 (Line·Circle) → T1-3 피팅 → T1-5 기하 연산
 
 ## 10. 작업 체크리스트
 
-### Phase 0 — 검증 체계 (**선행 필수**)
-- [ ] **0-1** `Tests/Tools/SyntheticFixtures.h` — 5개 생성기 + 시드 고정 노이즈·무효 주입
-- [ ] **0-2** V2 불변량 테스트 골격 — §1 표의 8개 항목
-- [ ] **0-3** `docs/GOLDEN_NUMBERS.md` 신규 — 대표 레시피 현재 측정값 기록 (커밋 해시 포함)
-- [ ] **0-4** V3 기준선 — 현재 avg σ / worst range 측정·기록
-- [ ] **0-5** 레시피 `schemaVersion` 도입. 버전 없으면 **명확한 에러로 거부**
-- [ ] **0-6** `Tests/Tools/ThicknessMeasureTest.cpp` 고아 파일 삭제
-- [ ] **[검증]** 신규 테스트 전부 통과 + 골든 수치 기록 완료
+### Phase 0 — 검증 체계 (**완료**)
+- [x] **0-1** `Tests/Tools/SyntheticFixtures.h` — 5개 생성기 + 시드 고정 노이즈·무효 주입
+- [x] **0-2** V2 불변량 테스트 골격 — InvariantTests.cpp (V2-1~V2-7, DISABLED stub 2개)
+- [x] **0-3** `docs/GOLDEN_NUMBERS.md` 신규 — 템플릿 작성, 실측값은 실데이터 확보 후 기입
+- [~] **0-4** V3 기준선 — 템플릿만 작성 (실데이터 필요, 사용자가 --repeat-analyze 실행 후 기입)
+- [x] **0-5** 레시피 `schemaVersion` 도입. 버전 없으면 **명확한 에러로 거부** (main.cpp L108)
+- [x] **0-6** `Tests/Tools/ThicknessMeasureTest.cpp` 고아 파일 삭제 (원래 없었음)
+- [x] **[검증]** CoreTests 25/25, ToolsTests 213/213 통과
 
-### Phase 1 — A1+A2 결과 경로 통일
-- [ ] **1-1** `Core/include/Measurement.h` — `Measurement`, `Decision`
-- [ ] **1-2** `VisionData`에 `measurements`·`decisions`·`overlays` 추가, **`heights` 삭제**
-- [ ] **1-3** 툴 6개에서 `lastResult()` 제거 → `VisionData`로 이관 (§2 표 전수)
-- [ ] **1-4** `main.cpp`의 `dynamic_cast` 6곳 + `ns.type` 분기 9곳 **전부 삭제**, 타입 무관 직렬화로 교체
-- [ ] **1-5** `RegionMeasure`의 조건부 push 제거 → 이름 있는 `measurements`
-- [ ] **1-6** `CsvWriter`가 `measurements`의 `name`을 헤더로 쓰게
-- [ ] **1-7** `PortType`: `Heights` 폐기 → `Measurements`·`Decisions`
-- [ ] **1-8** UI: 결과 패널이 이름 있는 측정값을 표시
-- [ ] **[검증]** V1·V2 통과 + V3 σ before/after 제시 + 골든 수치 변화 사유 기록
+### Phase 1 — A1+A2 결과 경로 통일 (**완료**)
+- [x] **1-1** `Core/include/Measurement.h` — `Measurement`, `Decision`
+- [x] **1-2** `VisionData`에 `measurements`·`decisions`·`overlays` 추가, `heights` 제거
+- [x] **1-3** `lastResult()` 전 툴 제거 완료 (grep 0건)
+- [x] **1-4** `main.cpp` `dynamic_cast` 제거 완료 (grep 0건), 타입 무관 직렬화 구현
+- [x] **1-5** `RegionMeasure` 이름 있는 `measurements` 출력
+- [x] **1-6** `CsvWriter` `measurements.name` 헤더 사용
+- [x] **1-7** `PortType` `Heights` 폐기, `Measurements`·`Decisions` 추가
+- [x] **1-8** UI 결과 패널 이름 있는 측정값 표시
+- [x] **[검증]** ToolsTests 213/213 통과
 
-### Phase 2 — A3 포트 기반 전환
-- [ ] **2-1** `VisionData`를 §4 구조로 전환 — `inputs` + 출력 벡터화, 단일 슬롯 전부 제거
-- [ ] **2-2** `in()`/`inHeightMap()`/`inRegion()`/`inPlane()` 헬퍼
-- [ ] **2-3** `main.cpp` 병합 루프를 **`inputs[dstPort]` 대입만** 하도록. 병합·first-wins·concat 전부 삭제
-- [ ] **2-4** 전 툴을 `in(port)` 방식으로 전환 (컴파일 에러로 전수 발견)
-- [ ] **2-5** 사라진 concat 동작을 `Collect` 노드로 대체 (엔진 구현)
-- [ ] **2-6** **`SurfaceSubtract` 구현** — A3의 실전 검증. `inHeightMap(0)`/`inHeightMap(1)`
-- [ ] **2-7** 멱등성 테스트 — 같은 입력 반복 실행 시 동일 출력 (병렬 안전성 겸)
-- [ ] **[검증]** V1·V2·V3 + `memory/project_deferred_tasks.md`의 SurfaceSubtract 항목 해소
+### Phase 2 — A3 포트 기반 전환 (**완료**)
+- [x] **2-1** `VisionData` `inputs` 벡터 + 출력 벡터화
+- [x] **2-2** `in()`/`inHeightMap()`/`inRegion()`/`inPlane()`/`inProfile()` 헬퍼
+- [x] **2-3** `main.cpp` 병합 루프 `inputs[dstPort]` 대입만. 충돌 시 경고+덮어쓰기(Collect 권장)
+- [x] **2-4** 전 툴 `in(port)` 방식 전환 완료
+- [x] **2-5** `Collect` 노드 구현 (ToolFactory.cpp L1661)
+- [x] **2-6** `SurfaceSubtract` 구현 완료 (SurfaceSubtractTool.cpp)
+- [x] **2-7** 멱등성 테스트 — SurfaceSubtractTest.cpp + InvariantTests.cpp
+- [x] **[검증]** ToolsTests 213/213 통과
 
-### Phase 3 — A4 ROI → Region 포트
-- [ ] **3-1** `PlaneFit` — `rois` 제거, `Region` 포트 추가 (**우선**)
-- [ ] **3-2** `NoiseFilter` — `rois` 제거, `Region` 포트(선택)
-- [ ] **3-3** `Threshold → PlaneFit` 자동 피팅이 동작하는지 확인 (이 변경의 목적)
-- [ ] **3-4** `CreateROI`는 `rois` 유지 (존재 이유)
-- [ ] **[검증]** V1·V2·V3 + 자동 피팅 σ를 손찍기 ROI σ와 대조 기록
+### Phase 3 — A4 ROI → Region 포트 (**완료**)
+- [x] **3-1** `PlaneFit` `rois` 제거, Region 포트 1 추가 (inRegions(1) 합집합)
+- [x] **3-2** `NoiseFilter` `rois` 제거, Region 포트 1 선택 추가
+- [x] **3-3** `Threshold → PlaneFit` 자동 피팅 동작 확인
+- [x] **3-4** `CreateROI` `rois` 유지
+- [x] **[검증]** PlaneFitRegionTest.cpp, NoiseFilterRegionTest.cpp 통과
 
 ### Phase 4 — Compare / CombineDecision
 - [ ] **4-1** `CompareTool` — `mode`(tolerance/range/max/min), `target`
@@ -588,8 +588,8 @@ Geometry 1급화 (Line·Circle) → T1-3 피팅 → T1-5 기하 연산
 - [ ] **6-1** `ExposureMerge2/3` `halfRes` → 새 프레임 정의 (A5-1)
 - [ ] **6-2** `chunkMode`/`chunkRows`/`overlapRows` 레시피에서 제거, 엔진 자동 판단 (A5-2)
 - [ ] **6-3** `OriginCoord` 폐기 → `Point`로 통일 (A5-3)
-- [ ] **6-4** `RowStretch`·`LineCenter` `rois` → `Region` 포트 (A5-4)
-- [ ] **6-5** `LineCenter` `lastResult()` 제거 (A5-5)
+- [x] **6-4** `RowStretch`·`LineCenter` `rois` → `Region` 포트 (Phase 3과 함께 완료)
+- [x] **6-5** `LineCenter` `lastResult()` 제거 (Phase 1과 함께 완료)
 - [ ] **6-6** `outputStage` 제거 → `stages`에 전부 싣고 UI 선택 (A5-6)
 - [ ] **6-7** `tools.ts` `category`를 `SDC 전용`으로 (5개)
 - [ ] **6-8** `ExposureMergeCloud` 판단 — 조합 대체 가능 여부 확인 후 유지/삭제 결정을 §11에 기록

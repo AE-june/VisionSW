@@ -65,21 +65,29 @@ ToolResult LevelTool::execute(VisionDataPtr input) {
     const double off_mm   = m_params.offsetMm;
     const float  nan_val  = std::numeric_limits<float>::quiet_NaN();
 
+    // 포트 2: 선택적 Region 마스크 — 연결 시 Region 밖 픽셀은 NaN
+    const auto rgn = input->inRegion(2);
+
     float* outPtr = out_hm->data.data();   // 채널0은 오프셋 0
 
     for (int r = 0; r < h; ++r) {
         const double by  = b * (r - (double)map.originRow) * map.yResMm;
         double       ax  = ax_start;
         for (int c = 0; c < w; ++c, ax += ax_step) {
+            const size_t idx = static_cast<size_t>(r) * w + c;
+            if (rgn && !rgn->contains(c, r)) {
+                outPtr[idx] = nan_val;
+                continue;
+            }
             float raw0 = map.rawAt(c, r, 0);
             if (std::isnan(raw0)) {
-                outPtr[static_cast<size_t>(r) * w + c] = m_params.keepInvalid ? nan_val : 0.f;
+                outPtr[idx] = m_params.keepInvalid ? nan_val : 0.f;
                 continue;
             }
             double z_mm   = (raw0 - (double)map.zZeroCount) * map.zResMm;
             double dz     = z_mm - (ax + by + c_pl);
             double out_mm = (is_dist ? dz * inv_norm : dz) + off_mm;
-            outPtr[static_cast<size_t>(r) * w + c] = static_cast<float>(out_mm * inv_zRes);
+            outPtr[idx] = static_cast<float>(out_mm * inv_zRes);
         }
     }
 

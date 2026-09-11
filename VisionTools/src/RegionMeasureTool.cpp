@@ -2,6 +2,7 @@
 #include "Aggregate.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 #include <vector>
 
 #ifndef M_PI
@@ -87,6 +88,27 @@ static std::vector<Measurement> measureOne(
 
     const double volumeMm3 = (hasHM && nz > 0) ? sumZ * map->xResMm * map->yResMm : 0;
 
+    // 둘레 — 경계 엣지 수 카운트 (4-방향)
+    int horizEdges = 0, vertEdges = 0;
+    for (int r = 0; r < rg.height; ++r) {
+        for (int c = 0; c < rg.width; ++c) {
+            if (!rg.mask[static_cast<size_t>(r) * rg.width + c]) continue;
+            auto nb = [&](int nc, int nr) -> bool {
+                if (nc < 0 || nc >= rg.width || nr < 0 || nr >= rg.height) return false;
+                return rg.mask[static_cast<size_t>(nr) * rg.width + nc] != 0;
+            };
+            if (!nb(c, r-1)) ++horizEdges;
+            if (!nb(c, r+1)) ++horizEdges;
+            if (!nb(c-1, r)) ++vertEdges;
+            if (!nb(c+1, r)) ++vertEdges;
+        }
+    }
+    const double perimMm = hasHM
+        ? (horizEdges * static_cast<double>(map->xResMm) + vertEdges * static_cast<double>(map->yResMm))
+        : static_cast<double>(horizEdges + vertEdges);
+    const double circularity = (perimMm > 0)
+        ? (4.0 * M_PI * areaMm2) / (perimMm * perimMm) : 0;
+
     auto name = [&](const char* key) -> std::string {
         return prefix.empty() ? key : (prefix + "." + key);
     };
@@ -103,11 +125,18 @@ static std::vector<Measurement> measureOne(
         {name("zMm"),          zRes.valid ? zRes.value : 0.0,       "mm",  nz > 0},
         {name("volumeMm3"),    volumeMm3,                           "mm3", hasHM && nz > 0},
         {name("flatnessMm"),   flatRes.valid ? flatRes.value : 0.0, "mm",  nz > 1},
+        {name("perimMm"),      perimMm,                             "mm",  true},
+        {name("circularity"),  circularity,                         "",    hasHM && areaMm2 > 0},
     };
 }
 
 ToolResult RegionMeasureTool::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "RegionMeasure: 입력이 없습니다." };
+
+    static const std::unordered_set<std::string> kValidAgg =
+        {"Mean","Median","Max","Min","StdDev","HighTail","Percentile"};
+    if (!kValidAgg.count(m_params.aggregation))
+        return { ToolStatus::Fail, "RegionMeasure: 알 수 없는 aggregation: " + m_params.aggregation };
 
     const auto& regions = input->inRegions(0);
     if (regions.empty())

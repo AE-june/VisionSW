@@ -110,24 +110,22 @@ ToolResult PlaneFitTool::execute(VisionDataPtr input) {
 // ─────────────────────────────────────────────────────────────────────
 PlaneFitTool::Plane PlaneFitTool::fitLS(const std::vector<Pt3>& pts) const {
     if (pts.size() < 3) return {};
-    const Eigen::Index n = static_cast<Eigen::Index>(pts.size());
 
-    double cx = 0, cy = 0, cz = 0;
-    for (const auto& p : pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
-    cx /= pts.size(); cy /= pts.size(); cz /= pts.size();
-
-    // (z-cz) = a·(x-cx) + b·(y-cy)
-    Eigen::MatrixXd A(n, 2);
-    Eigen::VectorXd rhs(n);
-    for (Eigen::Index i = 0; i < n; ++i) {
-        A(i, 0) = pts[i][0] - cx;
-        A(i, 1) = pts[i][1] - cy;
-        rhs(i)  = pts[i][2] - cz;
+    // 정규방정식: 3×3 누적 → O(n) 메모리/연산, 대규모 HeightMap에서 QR 대비 수백배 빠름
+    double sx=0,sy=0,sz=0,sxx=0,sxy=0,syy=0,sxz=0,syz=0;
+    const double n = static_cast<double>(pts.size());
+    for (const auto& p : pts) {
+        sx  += p[0]; sy  += p[1]; sz  += p[2];
+        sxx += p[0]*p[0]; sxy += p[0]*p[1]; syy += p[1]*p[1];
+        sxz += p[0]*p[2]; syz += p[1]*p[2];
     }
-    const Eigen::Vector2d sol = A.colPivHouseholderQr().solve(rhs);
-    const double a = sol(0), b = sol(1);
-    const double c = cz - a * cx - b * cy;   // 원좌표 평면으로 복원
-    return { a, b, c, true, static_cast<int>(pts.size()) };
+    Eigen::Matrix3d A;
+    A << sxx, sxy, sx,
+         sxy, syy, sy,
+         sx,  sy,  n;
+    Eigen::Vector3d b_vec(sxz, syz, sz);
+    const Eigen::Vector3d sol = A.ldlt().solve(b_vec);
+    return { sol(0), sol(1), sol(2), true, static_cast<int>(pts.size()) };
 }
 
 // ─────────────────────────────────────────────────────────────────────

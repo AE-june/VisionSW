@@ -25,11 +25,19 @@ ToolResult GapFillTool::execute(VisionDataPtr input) {
     cv::Mat dist;      cv::distanceTransform(holeMask, dist, cv::DIST_L2, 3);  // 구멍=가장 가까운 유효까지 거리
     const float* dp = dist.ptr<float>();
 
-    // 채울 대상: NaN 이고 거리 ≤ maxGap
+    // 포트 1: 선택적 Region 마스크 — 연결 시 Region 안의 NaN만 채움
+    const auto rgn = input->inRegion(1);
+
+    // 채울 대상: NaN 이고 거리 ≤ maxGap (Region 있으면 내부만)
     std::vector<uint8_t> fillable(N, 0);
     long target = 0;
-    for (size_t i = 0; i < N; ++i)
-        if (std::isnan(src[i]) && dp[i] <= (float)m_maxGap) { fillable[i] = 1; ++target; }
+    for (int r = 0; r < h; ++r)
+        for (int c = 0; c < w; ++c) {
+            const size_t i = static_cast<size_t>(r) * w + c;
+            if (!std::isnan(src[i]) || dp[i] > (float)m_maxGap) continue;
+            if (rgn && !rgn->contains(c, r)) continue;
+            fillable[i] = 1; ++target;
+        }
 
     std::vector<float> out = src;   // 유효 픽셀은 그대로 유지
 

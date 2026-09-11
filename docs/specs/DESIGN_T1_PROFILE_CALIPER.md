@@ -470,10 +470,10 @@ after.csv의 avg σ ≤ baseline × 1.10  및  worst range ≤ baseline × 1.10
 
 ## 8. 작업 체크리스트
 
-### Phase 0 — 선행 확인
-- [ ] **0-1** ARCH Phase 0(검증체계)·1(Measurement)·2(포트기반)·3(Region 포트) 완료 확인. **미완이면 중단·보고**
-- [ ] **0-2** §1의 전제 규약이 실제 코드와 일치하는지 확인. 다르면 보고
-- [ ] **0-3** ARCH Phase 0의 합성 픽스처에 `makeStep`이 있는지 확인. 없으면 추가
+### Phase 0 — 선행 확인 (**완료**)
+- [x] **0-1** ARCH Phase 0~3 완료 확인 (CoreTests 25/25, ToolsTests 213/213)
+- [x] **0-2** §1 전제 규약 코드 일치 확인 (in(port) 패턴, VisionData-only 결과 경로)
+- [x] **0-3** `makeStep` SyntheticFixtures.h에 존재 확인
 
 ### Phase 1 — `Aggregate.h`
 - [ ] **1-1** `VisionTools/include/Aggregate.h` — mean/median/max/min/stdDev/percentile/highTail

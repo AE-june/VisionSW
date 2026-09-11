@@ -268,17 +268,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                             if (k != s) copy->heightmaps.push_back(o->heightmaps[k]);
                         routed = copy;
                     }
-                    if (!merged->inputs[dstPort]) {
-                        merged->inputs[dstPort] = routed;
-                    } else {
-                        VISION_LOG_WARN("[pipeline] {} port{} 충돌 — 내용 병합", nodeId, dstPort);
-                        auto combined = std::make_shared<VisionData>(*merged->inputs[dstPort]);
-                        for (auto& hm : routed->heightmaps) combined->heightmaps.push_back(hm);
-                        for (auto& rg : routed->regions)    combined->regions.push_back(rg);
-                        for (auto& pl : routed->planes)     combined->planes.push_back(pl);
-                        for (auto& ln : routed->lines)      combined->lines.push_back(ln);
-                        merged->inputs[dstPort] = combined;
-                    }
+                    if (merged->inputs[dstPort])
+                        VISION_LOG_WARN("[pipeline] {} port{} 에 엣지 충돌 — 마지막 연결로 덮어씀 (Collect 노드 사용 권장)", nodeId, dstPort);
+                    merged->inputs[dstPort] = routed;
                     if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
                 }
                 if (any) inputData = merged;

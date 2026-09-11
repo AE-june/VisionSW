@@ -219,11 +219,69 @@
 }
 
 .category-label {
-  padding: 4px 12px 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px 3px;
   font-size: 10px;
   color: #555;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.category-label:hover { color: #777; }
+.category-arrow { font-size: 9px; color: #444; flex-shrink: 0; }
+.category-name { flex: 1; }
+.category-count {
+  font-size: 9px;
+  color: #3a3a3a;
+  background: #222;
+  border-radius: 8px;
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ── 툴박스 검색 ── */
+.toolbox-search {
+  position: relative;
+  padding: 6px 8px;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+}
+.toolbox-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #111;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 12px;
+  padding: 5px 24px 5px 8px;
+  outline: none;
+}
+.toolbox-search-input::placeholder { color: #444; }
+.toolbox-search-input:focus { border-color: #00bcd4; }
+.toolbox-search-clear {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.toolbox-search-clear:hover { color: #aaa; }
+.toolbox-no-result {
+  padding: 16px 12px;
+  font-size: 11px;
+  color: #444;
+  text-align: center;
 }
 
 .toolbox-item {

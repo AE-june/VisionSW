@@ -1012,6 +1012,361 @@ function SurfaceResampleNodeParams({ params, onChange }: { params: Record<string
   </>
 }
 
+// ── 신규 툴 파라미터 패널 ───────────────────────────────────────────────
+
+function ThresholdParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.thresholdMode as string) ?? 'mm'
+  return <>
+    <div className="param-section">임계값 분할</div>
+    <SelectField label="임계 방식" value={mode} options={['mm', 'raw']} onChange={v => set('thresholdMode', v)}
+      tooltip="mm=실제 높이(mm) 기준 · raw=헤이트맵 raw count 기준" />
+    {mode === 'mm'
+      ? <NumField label="임계값 (mm)" value={(params.thresholdMm as number) ?? 0} step={0.01} onChange={v => set('thresholdMm', v)}
+          tooltip="이 높이를 기준으로 Region 생성. keepAbove=true면 이 값 이상인 픽셀이 Region" />
+      : <NumField label="임계값 (raw)" value={(params.thresholdRaw as number) ?? 0} step={1} onChange={v => set('thresholdRaw', v)}
+          tooltip="raw count 기준 임계값" />}
+    <NumField label="Channel" value={(params.channel as number) ?? 0} step={1} onChange={v => set('channel', v)}
+      tooltip="다채널 HeightMap에서 기준 채널 인덱스" />
+    <CheckField label="임계값 이상 포함" value={(params.keepAbove as boolean) ?? true} onChange={v => set('keepAbove', v)}
+      tooltip="true=임계값 이상인 픽셀 → Region(마스크=1). false=이하인 픽셀 → Region" />
+  </>
+}
+
+function CompareParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'tolerance'
+  return <>
+    <div className="param-section">판정 설정</div>
+    <div className="param-row">
+      <span className="param-label">측정값 이름</span>
+      <input className="param-input" type="text" value={(params.target as string) ?? ''}
+        placeholder="비우면 첫 번째 측정값" onChange={e => set('target', e.target.value)} />
+    </div>
+    <SelectField label="판정 방식" value={mode} options={['tolerance', 'range', 'max', 'min']} onChange={v => set('mode', v)}
+      tooltip="tolerance=공칭±공차 범위 · range=min~max 범위 · max=이 값 이하 · min=이 값 이상" />
+    {mode === 'tolerance' && <>
+      <NumField label="공칭값 (nominal)" value={(params.nominal as number) ?? 0} step={0.01} onChange={v => set('nominal', v)}
+        tooltip="목표 측정값. 이 값을 중심으로 ±tolerance 범위 내면 PASS" />
+      <NumField label="공차 (tolerance)" value={(params.tolerance as number) ?? 0.05} step={0.001} onChange={v => set('tolerance', v)}
+        tooltip="허용 편차(mm). 측정값이 nominal±tolerance 내면 PASS" />
+    </>}
+    {mode === 'range' && <>
+      <NumField label="최솟값 (min)" value={(params.min as number) ?? 0} step={0.01} onChange={v => set('min', v)}
+        tooltip="범위 하한. min ≤ 측정값 ≤ max 이면 PASS" />
+      <NumField label="최댓값 (max)" value={(params.max as number) ?? 0} step={0.01} onChange={v => set('max', v)}
+        tooltip="범위 상한" />
+    </>}
+    {mode === 'max' && <NumField label="상한 (max)" value={(params.max as number) ?? 0} step={0.01} onChange={v => set('max', v)}
+      tooltip="측정값이 이 값 이하면 PASS" />}
+    {mode === 'min' && <NumField label="하한 (min)" value={(params.min as number) ?? 0} step={0.01} onChange={v => set('min', v)}
+      tooltip="측정값이 이 값 이상이면 PASS" />}
+  </>
+}
+
+function CombineDecisionParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'all'
+  return <>
+    <div className="param-section">판정 결합</div>
+    <SelectField label="결합 방식" value={mode} options={['all', 'any', 'count']} onChange={v => set('mode', v)}
+      tooltip="all=전부 PASS여야 PASS(AND) · any=하나라도 PASS면 PASS(OR) · count=N개 이상 PASS면 PASS" />
+    {mode === 'count' && <NumField label="최소 PASS 수" value={(params.count as number) ?? 1} step={1} onChange={v => set('count', v)}
+      tooltip="이 수 이상의 Decision이 PASS면 전체 PASS" />}
+    <div className="param-row">
+      <span className="param-label">출력 이름</span>
+      <input className="param-input" type="text" value={(params.name as string) ?? 'combined'}
+        onChange={e => set('name', e.target.value)} />
+    </div>
+  </>
+}
+
+function CollectParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">측정값 수집</div>
+    <div className="param-row">
+      <span className="param-label">Prefix</span>
+      <input className="param-input" type="text" value={(params.prefix as string) ?? ''}
+        placeholder="비우면 자동(충돌 시 포트번호)" onChange={e => set('prefix', e.target.value)} />
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      여러 포트의 measurements+decisions+regions를 하나로 병합. 이름 충돌 시 "포트번호.이름"으로 자동 prefix.
+      prefix 명시 시 모든 이름에 "prefix.이름" 적용.
+    </div>
+  </>
+}
+
+function SurfaceSubtractParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">HeightMap 차이 (A − B)</div>
+    <CheckField label="절댓값 출력" value={(params.absolute as boolean) ?? false} onChange={v => set('absolute', v)}
+      tooltip="true=|A-B|, false=A-B (부호 유지)" />
+    <SelectField label="NaN 처리" value={(params.nanPolicy as string) ?? 'propagate'}
+      options={['propagate', 'zero', 'skip']} onChange={v => set('nanPolicy', v)}
+      tooltip="propagate=어느 한쪽 NaN이면 결과 NaN · zero=NaN을 0 취급 · skip=유효한 쪽 값 그대로" />
+  </>
+}
+
+function ExtractProfileParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'axisX'
+  return <>
+    <div className="param-section">단면 추출</div>
+    <SelectField label="모드" value={mode} options={['axisX', 'axisY', 'line']} onChange={v => set('mode', v)}
+      tooltip="axisX=지정 행 그대로 추출 · axisY=지정 열 그대로 추출 · line=두 점 사이 임의 경로 보간" />
+    {(mode === 'axisX' || mode === 'axisY') && <>
+      <NumField label="인덱스" value={(params.index as number) ?? 0} step={1} onChange={v => set('index', v)}
+        tooltip="추출할 행(axisX) 또는 열(axisY) 번호(0-based). repeat>1이면 이 인덱스부터 시작" />
+      <NumField label="Span(px)" value={(params.span as number) ?? 1} step={1} onChange={v => set('span', v)}
+        tooltip="추출 행/열 폭(픽셀). 1이면 1행, N이면 N행 평균" />
+      <NumField label="Repeat" value={(params.repeat as number) ?? 1} step={1} onChange={v => set('repeat', v)}
+        tooltip="이 간격으로 N개 Profile 추출. 1이면 단일. 여러 개면 Profile[]로 출력" />
+    </>}
+    {mode === 'line' && <>
+      <div className="param-empty" style={{ fontSize: 10 }}>시작점(P0)과 끝점(P1)을 설정하세요.</div>
+      <NumField label="P0 X" value={(params.p0x as number) ?? 0} step={0.1} onChange={v => set('p0x', v)} />
+      <NumField label="P0 Y" value={(params.p0y as number) ?? 0} step={0.1} onChange={v => set('p0y', v)} />
+      <NumField label="P1 X" value={(params.p1x as number) ?? 0} step={0.1} onChange={v => set('p1x', v)} />
+      <NumField label="P1 Y" value={(params.p1y as number) ?? 0} step={0.1} onChange={v => set('p1y', v)} />
+      <SelectField label="좌표 단위" value={(params.unit as string) ?? 'mm'} options={['mm', 'px']} onChange={v => set('unit', v)}
+        tooltip="mm=실제 좌표(mm) · px=픽셀 인덱스" />
+      <NumField label="샘플 수" value={(params.count as number) ?? 0} step={1} onChange={v => set('count', v)}
+        tooltip="0이면 선 길이/픽셀 분해능으로 자동 결정" />
+      <SelectField label="보간" value={(params.interp as string) ?? 'bilinear'} options={['bilinear', 'nearest']} onChange={v => set('interp', v)}
+        tooltip="bilinear=쌍선형 보간(부드러움) · nearest=최근접(빠름)" />
+    </>}
+    <NumField label="Channel" value={(params.channel as number) ?? 0} step={1} onChange={v => set('channel', v)}
+      tooltip="다채널 HeightMap에서 추출할 채널" />
+  </>
+}
+
+function ProfileFeatureParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const kind = (params.kind as string) ?? 'maxZ'
+  const isEdge = kind === 'edge'
+  const isPercentile = kind === 'percentile'
+  const isHighTail = kind === 'highTail'
+  const needsSearch = ['edge', 'ridge', 'valley', 'corner'].includes(kind)
+  return <>
+    <div className="param-section">Profile 측정</div>
+    <SelectField label="측정 종류" value={kind}
+      options={['maxZ', 'minZ', 'mean', 'median', 'stdDev', 'percentile', 'highTail', 'maxS', 'minS', 'edge', 'ridge', 'valley', 'corner']}
+      onChange={v => set('kind', v)}
+      tooltip="maxZ/minZ=최대/최소 높이 · mean/median/stdDev=통계 · edge=계단 엣지 위치 · ridge=능선 · valley=골 · corner=코너" />
+    {needsSearch && <>
+      <NumField label="탐색 시작 (mm)" value={(params.searchFromMm as number) ?? 0} step={0.1} onChange={v => set('searchFromMm', v)}
+        tooltip="Profile 호장(s) 기준 탐색 시작 위치. 0이면 처음부터" />
+      <NumField label="탐색 끝 (mm)" value={(params.searchToMm as number) ?? 0} step={0.1} onChange={v => set('searchToMm', v)}
+        tooltip="탐색 끝 위치. 0이면 끝까지" />
+      <NumField label="N번째" value={(params.nth as number) ?? 0} step={1} onChange={v => set('nth', v)}
+        tooltip="0=첫 번째 발견, 1=두 번째 ..." />
+    </>}
+    {isEdge && <>
+      <SelectField label="엣지 방향" value={(params.edgeDir as string) ?? 'any'} options={['any', 'rising', 'falling']}
+        onChange={v => set('edgeDir', v)}
+        tooltip="rising=낮→높 교차 · falling=높→낮 교차 · any=양방향" />
+      <NumField label="엣지 임계 (mm)" value={(params.edgeThresholdMm as number) ?? 0.05} step={0.005} onChange={v => set('edgeThresholdMm', v)}
+        tooltip="단차가 이 값(mm) 이상이어야 엣지로 인정" />
+    </>}
+    {(isEdge || needsSearch) && <NumField label="스무딩 윈도우" value={(params.smoothWindow as number) ?? 3} step={1} onChange={v => set('smoothWindow', v)}
+      tooltip="엣지/능선 검출 전 이동평균 창 크기. 클수록 노이즈 억제" />}
+    {isPercentile && <NumField label="백분위 (%)" value={(params.percentile as number) ?? 50} step={1} onChange={v => set('percentile', v)}
+      tooltip="0~100. 50=중앙값" />}
+    {isHighTail && <NumField label="상위 (%)" value={(params.percentile as number) ?? 20} step={1} onChange={v => set('percentile', v)}
+      tooltip="상위 N% 샘플의 평균값" />}
+  </>
+}
+
+function ConnectedComponentsParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">연결 성분 분리</div>
+    <SelectField label="연결성" value={String((params.connectivity as number) ?? 8)} options={['4', '8']}
+      onChange={v => set('connectivity', Number(v))}
+      tooltip="4=상하좌우만 연결 · 8=대각선 포함(더 넓게 연결)" />
+    <NumField label="최소 면적 (px)" value={(params.minAreaPx as number) ?? 1} step={1} onChange={v => set('minAreaPx', v)}
+      tooltip="이 픽셀 수 미만인 블롭 제거. 노이즈 점 제거용" />
+    <NumField label="최대 면적 (px)" value={(params.maxAreaPx as number) ?? 0} step={1} onChange={v => set('maxAreaPx', v)}
+      tooltip="이 픽셀 수 초과인 블롭 제거. 0=제한 없음" />
+    <div className="param-empty" style={{ fontSize: 10 }}>출력: Region[]. CountRegions로 개수, RegionFilter로 크기 기준 선택</div>
+  </>
+}
+
+function RegionFilterParams2({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">Region 필터링</div>
+    <SelectField label="기준 메트릭" value={(params.metric as string) ?? 'area'} options={['area', 'width', 'height', 'density']}
+      onChange={v => set('metric', v)}
+      tooltip="area=픽셀 면적 · width=BBox 폭 · height=BBox 높이 · density=면적/BBox면적(충전율)" />
+    <NumField label="최솟값" value={(params.minVal as number) ?? 0} step={1} onChange={v => set('minVal', v)}
+      tooltip="이 값 이상인 Region만 통과" />
+    <NumField label="최댓값" value={(params.maxVal as number) ?? 0} step={1} onChange={v => set('maxVal', v)}
+      tooltip="이 값 이하인 Region만 통과. 0=상한 없음" />
+  </>
+}
+
+function RegionSelectParams2({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'index'
+  return <>
+    <div className="param-section">Region 선택</div>
+    <SelectField label="선택 방식" value={mode} options={['index', 'largest', 'smallest']}
+      onChange={v => set('mode', v)}
+      tooltip="index=인덱스 지정 · largest=가장 큰 블롭 · smallest=가장 작은 블롭" />
+    {mode === 'index' && <NumField label="인덱스" value={(params.index as number) ?? 0} step={1} onChange={v => set('index', v)}
+      tooltip="0-based. ConnectedComponents 출력은 raster 순(상단-좌측 픽셀 기준) 정렬" />}
+  </>
+}
+
+function RegionBooleanParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">불리언 연산 (A op B)</div>
+    <SelectField label="연산" value={(params.op as string) ?? 'and'} options={['and', 'or', 'not_a', 'not_b', 'xor']}
+      onChange={v => set('op', v)}
+      tooltip="and=A∩B(교집합) · or=A∪B(합집합) · not_a=A∖B(A에서 B 제거) · not_b=B∖A · xor=대칭차(A∪B−A∩B)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>포트0=A, 포트1=B. 출력: Region 1개</div>
+  </>
+}
+
+function RegionMorphologyParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">형태학 연산</div>
+    <SelectField label="연산" value={(params.op as string) ?? 'dilate'} options={['dilate', 'erode', 'open', 'close']}
+      onChange={v => set('op', v)}
+      tooltip="dilate=팽창(외곽 확장) · erode=침식(외곽 축소) · open=열기(erode→dilate, 작은 돌기 제거) · close=닫기(dilate→erode, 작은 구멍 채움)" />
+    <NumField label="반경 (px)" value={(params.radius as number) ?? 3} step={1} onChange={v => set('radius', v)}
+      tooltip="구조 요소 반경(픽셀). 클수록 더 강하게 팽창/침식" />
+    <SelectField label="형태" value={(params.shape as string) ?? 'rect'} options={['rect', 'ellipse']}
+      onChange={v => set('shape', v)}
+      tooltip="rect=사각형 구조 요소 · ellipse=타원형(등방성)" />
+  </>
+}
+
+function CountRegionsParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">Region 개수 측정</div>
+    <div className="param-row">
+      <span className="param-label">출력 이름</span>
+      <input className="param-input" type="text" value={(params.outputName as string) ?? 'count'}
+        onChange={e => set('outputName', e.target.value)} />
+    </div>
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      ConnectedComponents → RegionFilter → CountRegions 순서로 연결해 블롭 수 판정.
+    </div>
+  </>
+}
+
+function GeometryMeasureParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const kind = (params.kind as string) ?? 'angle'
+  const planeKinds = ['planeAngle', 'planeDistance']
+  const isPlane = planeKinds.includes(kind)
+  return <>
+    <div className="param-section">기하 측정</div>
+    <SelectField label="측정 종류 (kind)" value={kind}
+      options={['angle', 'lineDistance', 'intersectX', 'intersectY', 'centerDistance', 'posX', 'posY', 'planeAngle', 'planeDistance']}
+      onChange={v => set('kind', v)}
+      tooltip="Line계: angle=사잇각(deg) · lineDistance=두 평행라인 거리(mm) · intersectX/Y=교점좌표 · centerDistance=중심간 거리 · posX/Y=라인중심 좌표. Plane계: planeAngle=두 평면 법선 각도(deg) · planeDistance=두 평행평면 오프셋(mm)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      {isPlane ? '포트0=Plane A, 포트1=Plane B (PlaneFit 출력 연결)' : '포트0=Line A, 포트1=Line B (LineFit 출력 연결). posX/Y는 포트0만 사용'}
+    </div>
+    <div className="param-row">
+      <span className="param-label">출력 이름</span>
+      <input className="param-input" type="text" value={(params.outputName as string) ?? ''}
+        placeholder="비우면 kind로 자동" onChange={e => set('outputName', e.target.value)} />
+    </div>
+    <div className="param-row">
+      <span className="param-label">출력 단위</span>
+      <input className="param-input" type="text" value={(params.outputUnit as string) ?? ''}
+        placeholder="비우면 자동(deg/mm)" onChange={e => set('outputUnit', e.target.value)} />
+    </div>
+  </>
+}
+
+function ScalarMathParams2({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">스칼라 산술 연산 (A op B)</div>
+    <SelectField label="연산" value={(params.op as string) ?? 'subtract'} options={['add', 'subtract', 'multiply', 'divide']}
+      onChange={v => set('op', v)}
+      tooltip="A+B · A-B · A×B · A÷B. 포트0=A(Measurements), 포트1=B(Measurements)" />
+    <div className="param-row">
+      <span className="param-label">측정값 A 이름</span>
+      <input className="param-input" type="text" value={(params.nameA as string) ?? ''}
+        placeholder="비우면 첫 번째 값" onChange={e => set('nameA', e.target.value)} />
+    </div>
+    <div className="param-row">
+      <span className="param-label">측정값 B 이름</span>
+      <input className="param-input" type="text" value={(params.nameB as string) ?? ''}
+        placeholder="비우면 첫 번째 값" onChange={e => set('nameB', e.target.value)} />
+    </div>
+    <div className="param-row">
+      <span className="param-label">출력 이름</span>
+      <input className="param-input" type="text" value={(params.outputName as string) ?? 'result'}
+        onChange={e => set('outputName', e.target.value)} />
+    </div>
+    <div className="param-row">
+      <span className="param-label">출력 단위</span>
+      <input className="param-input" type="text" value={(params.outputUnit as string) ?? ''}
+        placeholder="비우면 A 단위 그대로" onChange={e => set('outputUnit', e.target.value)} />
+    </div>
+  </>
+}
+
+function HeightMapMathParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const op = (params.op as string) ?? 'abs'
+  return <>
+    <div className="param-section">HeightMap 픽셀 연산</div>
+    <SelectField label="연산" value={op} options={['abs', 'add', 'subtract', 'multiply']}
+      onChange={v => set('op', v)}
+      tooltip="abs=|포트0| · add=포트0+포트1 · subtract=포트0-포트1 · multiply=포트0×포트1(포트1 연결 시) 또는 포트0×factor" />
+    {op === 'multiply' && <NumField label="배율 (factor)" value={(params.factor as number) ?? 1.0} step={0.1} onChange={v => set('factor', v)}
+      tooltip="포트1 미연결 시 포트0 전체에 이 값을 곱함. 단위 변환·스케일 조정용" />}
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      {op === 'abs' ? '포트0만 필요. 차이맵 절댓값으로 결함 분포 시각화에 사용' : '포트0=A, 포트1=B. 두 HeightMap 크기가 동일해야 함'}
+    </div>
+  </>
+}
+
+function GradientMapParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">기울기 맵 생성</div>
+    <SelectField label="출력 종류" value={(params.output_mode as string) ?? 'magnitude'} options={['magnitude', 'gx', 'gy']}
+      onChange={v => set('output_mode', v)}
+      tooltip="magnitude=√(gx²+gy²) 기울기 크기 · gx=X방향 편미분 · gy=Y방향 편미분. 결함/스크래치 검출에는 magnitude 권장" />
+    <SelectField label="커널 크기" value={String((params.ksize as number) ?? 3)} options={['3', '5']}
+      onChange={v => set('ksize', Number(v))}
+      tooltip="Sobel 필터 커널. 3=빠르고 세밀 · 5=더 매끈한 기울기" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      출력: HeightMap(기울기 크기, mm/mm 단위). 이후 Threshold→ConnectedComponents로 엣지/결함 영역 추출
+    </div>
+  </>
+}
+
+function ProfileSmoothParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const method = (params.method as string) ?? 'gaussian'
+  return <>
+    <div className="param-section">Profile 스무딩</div>
+    <SelectField label="방법" value={method} options={['gaussian', 'mean']}
+      onChange={v => set('method', v)}
+      tooltip="gaussian=가우시안 가중 평균(부드럽고 엣지 보존) · mean=단순 이동 평균(빠름)" />
+    <NumField label="윈도우 크기" value={(params.windowSize as number) ?? 5} step={1} onChange={v => set('windowSize', v)}
+      tooltip="스무딩 반경(±halfWindow). 클수록 더 매끈. 홀수 권장" />
+    {method === 'gaussian' && <NumField label="Sigma" value={(params.sigma as number) ?? 1.0} step={0.1} onChange={v => set('sigma', v)}
+      tooltip="가우시안 표준편차. 클수록 넓게 평활화. 일반적으로 windowSize/3 정도" />}
+    <div className="param-empty" style={{ fontSize: 10 }}>ProfileFeature 엣지 검출 전처리용. NaN 샘플은 가중치 0으로 자동 처리</div>
+  </>
+}
+
 export default function ParamPanel({ nodeId, toolType, label, params, onParamChange, onClose, embedded }: Props) {
   const def = TOOL_DEF_MAP[toolType]
   if (!def) return null
@@ -1053,6 +1408,25 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasureV2'   && <NotchMeasureV2Params params={params} onChange={handleChange} />}
+        {toolType === 'Threshold'         && <ThresholdParams params={params} onChange={handleChange} />}
+        {toolType === 'Compare'           && <CompareParams params={params} onChange={handleChange} />}
+        {toolType === 'CombineDecision'   && <CombineDecisionParams params={params} onChange={handleChange} />}
+        {toolType === 'Collect'           && <CollectParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceSubtract'   && <SurfaceSubtractParams params={params} onChange={handleChange} />}
+        {toolType === 'ExtractProfile'    && <ExtractProfileParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileFeature'    && <ProfileFeatureParams params={params} onChange={handleChange} />}
+        {toolType === 'ConnectedComponents' && <ConnectedComponentsParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionFilter'      && <RegionFilterParams2 params={params} onChange={handleChange} />}
+        {toolType === 'RegionSelect'      && <RegionSelectParams2 params={params} onChange={handleChange} />}
+        {toolType === 'RegionBoolean'     && <RegionBooleanParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionMorphology'  && <RegionMorphologyParams params={params} onChange={handleChange} />}
+        {toolType === 'CountRegions'      && <CountRegionsParams params={params} onChange={handleChange} />}
+        {toolType === 'CircleFit'         && <div className="param-empty">파라미터 없음. Region 연결 시 원 피팅(경계 픽셀→최소제곱), HeightMap 선택 연결 시 Z 평균도 출력</div>}
+        {toolType === 'GeometryMeasure'   && <GeometryMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'ScalarMath'        && <ScalarMathParams2 params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapMath'     && <HeightMapMathParams params={params} onChange={handleChange} />}
+        {toolType === 'GradientMap'       && <GradientMapParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileSmooth'     && <ProfileSmoothParams params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -1096,6 +1470,25 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'ProfileToCloud'   && <ProfileToCloudParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasure'     && <NotchMeasureParams params={params} onChange={handleChange} />}
         {toolType === 'NotchMeasureV2'   && <NotchMeasureV2Params params={params} onChange={handleChange} />}
+        {toolType === 'Threshold'         && <ThresholdParams params={params} onChange={handleChange} />}
+        {toolType === 'Compare'           && <CompareParams params={params} onChange={handleChange} />}
+        {toolType === 'CombineDecision'   && <CombineDecisionParams params={params} onChange={handleChange} />}
+        {toolType === 'Collect'           && <CollectParams params={params} onChange={handleChange} />}
+        {toolType === 'SurfaceSubtract'   && <SurfaceSubtractParams params={params} onChange={handleChange} />}
+        {toolType === 'ExtractProfile'    && <ExtractProfileParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileFeature'    && <ProfileFeatureParams params={params} onChange={handleChange} />}
+        {toolType === 'ConnectedComponents' && <ConnectedComponentsParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionFilter'      && <RegionFilterParams2 params={params} onChange={handleChange} />}
+        {toolType === 'RegionSelect'      && <RegionSelectParams2 params={params} onChange={handleChange} />}
+        {toolType === 'RegionBoolean'     && <RegionBooleanParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionMorphology'  && <RegionMorphologyParams params={params} onChange={handleChange} />}
+        {toolType === 'CountRegions'      && <CountRegionsParams params={params} onChange={handleChange} />}
+        {toolType === 'CircleFit'         && <div className="param-empty">파라미터 없음. Region 연결 시 원 피팅(경계 픽셀→최소제곱), HeightMap 선택 연결 시 Z 평균도 출력</div>}
+        {toolType === 'GeometryMeasure'   && <GeometryMeasureParams params={params} onChange={handleChange} />}
+        {toolType === 'ScalarMath'        && <ScalarMathParams2 params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapMath'     && <HeightMapMathParams params={params} onChange={handleChange} />}
+        {toolType === 'GradientMap'       && <GradientMapParams params={params} onChange={handleChange} />}
+        {toolType === 'ProfileSmooth'     && <ProfileSmoothParams params={params} onChange={handleChange} />}
       </div>
     </div>
   )

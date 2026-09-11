@@ -92,10 +92,10 @@ ToolResult CsvWriterTool::execute(VisionDataPtr input) {
         }
     }
 
-    // ── Measurement 모드: 포트 0 입력의 measurements[] 기준 한 행 append (기존 동작) ──
+    // ── Measurement / Decision 모드: 포트 0 입력의 measurements+decisions 기준 한 행 append ──
     auto src0 = input->in(0);
-    if (!src0 || src0->measurements.empty())
-        return { ToolStatus::Fail, "CsvWriter: 입력에 measurements도 profiles도 없습니다." };
+    if (!src0 || (src0->measurements.empty() && src0->decisions.empty()))
+        return { ToolStatus::Fail, "CsvWriter: 입력에 measurements도 profiles도 decisions도 없습니다." };
 
     std::error_code ec;
     const bool isEmpty = !std::filesystem::exists(u8p, ec)
@@ -106,26 +106,40 @@ ToolResult CsvWriterTool::execute(VisionDataPtr input) {
         return { ToolStatus::Fail, "CsvWriter: 파일을 열 수 없습니다: " + outPath };
 
     const auto& meas = src0->measurements;
+    const auto& decs = src0->decisions;
+
     if (isEmpty) {
         if (!m_params.label.empty()) ofs << "label,";
-        for (std::size_t i = 0; i < meas.size(); ++i) {
-            if (i) ofs << ",";
-            ofs << meas[i].name;
+        bool first = true;
+        for (const auto& m : meas) {
+            if (!first) ofs << ",";
+            ofs << m.name; first = false;
+        }
+        for (const auto& d : decs) {
+            if (!first) ofs << ",";
+            ofs << d.name << "_pass," << d.name << "_value"; first = false;
         }
         ofs << "\n";
     }
 
     if (!m_params.label.empty()) ofs << m_params.label << ",";
     ofs << std::fixed << std::setprecision(6);
-    for (std::size_t i = 0; i < meas.size(); ++i) {
-        if (i) ofs << ",";
-        ofs << meas[i].value;
+    bool first = true;
+    for (const auto& m : meas) {
+        if (!first) ofs << ",";
+        ofs << m.value; first = false;
+    }
+    for (const auto& d : decs) {
+        if (!first) ofs << ",";
+        ofs << (d.pass ? 1 : 0) << "," << d.measured; first = false;
     }
     ofs << "\n";
 
-    VISION_LOG_INFO("CsvWriter: {}개 측정값을 한 행으로 추가 → {}", meas.size(), outPath);
+    VISION_LOG_INFO("CsvWriter: {}개 측정값 + {}개 판정을 한 행으로 추가 → {}",
+                    meas.size(), decs.size(), outPath);
     auto out = std::make_shared<VisionData>();
-    out->measurements.push_back({"rowCount", static_cast<double>(meas.size()), "cols", true});
+    out->measurements.push_back({"colCount",
+        static_cast<double>(meas.size() + decs.size() * 2), "cols", true});
     out->sourceId = input->sourceId;
     return { ToolStatus::Ok, outPath, out };
 }
