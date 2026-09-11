@@ -1,13 +1,7 @@
 import { useState, useCallback } from 'react'
 import { NumField, Tip } from './ParamPanel'
-import ImageViewer from './ImageViewer'
-import type { Roi } from './ImageViewer'
 import ProfileChart, { type CaliperFeature, type CaliperLineFit, type ProfileRange } from './ProfileChart'
 
-interface ScanParams {
-  mode: string; index: number; span: number; channel: number
-  p0x?: number; p0y?: number; p1x?: number; p1y?: number
-}
 interface FeatureDef {
   kind: string; dir: string; threshold: number; smoothWindow: number
   searchFromMm: number; searchToMm: number; nth: number
@@ -23,10 +17,6 @@ interface ProfileData { label: string; n: number; x: number[]; z: (number | null
 interface Props {
   params: Record<string, unknown>
   onChange: (next: Record<string, unknown>) => void
-  preview?: string
-  zMin?: number; zMax?: number
-  resXMm?: number; resYMm?: number
-  viewKey?: string
   resultMeasurements?: NodeMeasurement[]
   resultProfiles?: ProfileData[]
 }
@@ -64,18 +54,14 @@ function SelectRow({ label, value, onChange, tooltip, children }: {
 
 export default function ProfileCaliperEditor({
   params, onChange,
-  preview, zMin, zMax, resXMm, resYMm, viewKey,
   resultMeasurements, resultProfiles,
 }: Props) {
-  const scan      = (params.scan      as ScanParams)    ?? { mode: 'axisX', index: 0, span: 1, channel: 0 }
   const features  = (params.features  as FeatureDef[])  ?? []
   const lineFits  = (params.lineFits  as LineFitDef[])  ?? []
   const distances = (params.distances as DistanceDef[]) ?? []
 
-  const [imgSize, setImgSize]     = useState({ w: 0, h: 0 })
   const [rangeTarget, setRangeTarget] = useState<RangeTarget>({ kind: 'none' })
 
-  const setScan  = (s: ScanParams)     => onChange({ ...params, scan: s })
   const setFeats = (f: FeatureDef[])   => onChange({ ...params, features: f })
   const setFits  = (f: LineFitDef[])   => onChange({ ...params, lineFits: f })
   const setDists = (d: DistanceDef[])  => onChange({ ...params, distances: d })
@@ -86,47 +72,6 @@ export default function ProfileCaliperEditor({
   const delFit   = (i: number) => setFits(lineFits.filter((_, j) => j !== i))
   const setDist  = (i: number, d: DistanceDef) => { const a = [...distances]; a[i] = d; setDists(a) }
   const delDist  = (i: number) => setDists(distances.filter((_, j) => j !== i))
-
-  // ── HeightMap 스캔 ROI ─────────────────────────────────────────────────────
-  // axisX: yPct/hPct → index/span,  axisY: xPct/wPct → index/span
-  const scanRoi: Roi | null = (() => {
-    if (!imgSize.w || !imgSize.h) return null
-    if (scan.mode === 'axisX') {
-      const idx = scan.index ?? 0
-      const sp  = Math.max(1, scan.span ?? 1)
-      return {
-        id: 'scan', type: 'scan',
-        xPct: 0, wPct: 1,
-        yPct: (idx - sp / 2) / imgSize.h,
-        hPct: sp / imgSize.h,
-      }
-    }
-    if (scan.mode === 'axisY') {
-      const idx = scan.index ?? 0
-      const sp  = Math.max(1, scan.span ?? 1)
-      return {
-        id: 'scan', type: 'scan',
-        yPct: 0, hPct: 1,
-        xPct: (idx - sp / 2) / imgSize.w,
-        wPct: sp / imgSize.w,
-      }
-    }
-    return null
-  })()
-
-  const handleRoiChange = useCallback((rois: Roi[]) => {
-    const r = rois.find(r => r.id === 'scan')
-    if (!r || !imgSize.w || !imgSize.h) return
-    if (scan.mode === 'axisX') {
-      const centerRow = (r.yPct + r.hPct / 2) * imgSize.h
-      const sp = Math.max(1, Math.round(r.hPct * imgSize.h))
-      setScan({ ...scan, index: Math.round(centerRow), span: sp })
-    } else if (scan.mode === 'axisY') {
-      const centerCol = (r.xPct + r.wPct / 2) * imgSize.w
-      const sp = Math.max(1, Math.round(r.wPct * imgSize.w))
-      setScan({ ...scan, index: Math.round(centerCol), span: sp })
-    }
-  }, [scan, imgSize])
 
   // ── 프로파일 차트 — 결과 파싱 ────────────────────────────────────────────
   const caliperFeatures: CaliperFeature[] | undefined = (() => {
@@ -191,90 +136,7 @@ export default function ProfileCaliperEditor({
 
   return (
     <div>
-      {/* ══ 1단: HeightMap + 스캔 ROI 편집 ══════════════════════════════════ */}
-      <div className="param-section">
-        스캔 위치
-        <Tip text="HeightMap에서 프로파일을 추출할 위치. 파란 밴드를 드래그해 위치/폭 조절. 또는 아래 수치 직접 입력." />
-      </div>
-
-      <div className="param-row">
-        <span className="param-label">모드<Tip text="axisX=가로 행 평균, axisY=세로 열 평균, line=임의 경로" /></span>
-        <select className="param-select" value={scan.mode}
-          onChange={e => setScan({ ...scan, mode: e.target.value })}>
-          <option value="axisX" title="Y방향 행을 추출. 밴드를 위아래로 드래그해 행 선택">axisX (행)</option>
-          <option value="axisY" title="X방향 열을 추출. 밴드를 좌우로 드래그해 열 선택">axisY (열)</option>
-          <option value="line"  title="P0→P1 경로 보간 추출">line</option>
-        </select>
-      </div>
-
-      <div className="param-row">
-        <span className="param-label">방식<Tip text="추출 방식. 현재는 span 행/열 평균 → 프로파일 1개. 추후 개별 지원 예정." /></span>
-        <select className="param-select" value="mean" disabled>
-          <option value="mean">평균 1개</option>
-        </select>
-      </div>
-
-      <NumField label="채널" value={scan.channel ?? 0} step={1}
-        tooltip="멀티채널 HeightMap 채널 인덱스. 일반적으로 0"
-        onChange={v => setScan({ ...scan, channel: v })} />
-
-      {(scan.mode === 'axisX' || scan.mode === 'axisY') && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
-          <div style={{ flex: 1 }}>
-            <NumField label={scan.mode === 'axisX' ? 'row index' : 'col index'}
-              value={scan.index ?? 0} step={1}
-              tooltip="스캔 중심 행/열. 이미지 위 밴드 드래그로도 변경 가능"
-              onChange={v => setScan({ ...scan, index: v })} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <NumField label="span(px)"
-              value={scan.span ?? 1} step={1}
-              tooltip="평균할 인접 행/열 수. 클수록 노이즈 감소"
-              onChange={v => setScan({ ...scan, span: v })} />
-          </div>
-        </div>
-      )}
-
-      {scan.mode === 'line' && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1 }}>
-            <NumField label="P0 X(mm)" value={scan.p0x ?? 0} step={0.1}
-              tooltip="시작점 X(mm). 이미지에 파란 원"
-              onChange={v => setScan({ ...scan, p0x: v })} />
-            <NumField label="P0 Y(mm)" value={scan.p0y ?? 0} step={0.1}
-              tooltip="시작점 Y(mm)" onChange={v => setScan({ ...scan, p0y: v })} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <NumField label="P1 X(mm)" value={scan.p1x ?? 0} step={0.1}
-              tooltip="끝점 X(mm). 이미지에 노란 원"
-              onChange={v => setScan({ ...scan, p1x: v })} />
-            <NumField label="P1 Y(mm)" value={scan.p1y ?? 0} step={0.1}
-              tooltip="끝점 Y(mm)" onChange={v => setScan({ ...scan, p1y: v })} />
-          </div>
-        </div>
-      )}
-
-      {/* HeightMap 이미지 */}
-      {preview && (
-        <div style={{ marginBottom: 8 }}>
-          <ImageViewer
-            preview={preview}
-            zMin={zMin} zMax={zMax}
-            resXMm={resXMm} resYMm={resYMm}
-            viewKey={viewKey ? `${viewKey}:scan` : undefined}
-            canvasHeight={200}
-            rois={scanRoi ? [scanRoi] : []}
-            onRoisChange={handleRoiChange}
-            roiTypeLabel={() => '스캔 밴드'}
-            onImageSize={(w, h) => setImgSize({ w, h })}
-          />
-          <div className="param-empty" style={{ fontSize: 10 }}>
-            밴드 드래그: 위치 이동 · 테두리 드래그: 폭(span) 조절 · 이미지 우클릭 드래그: 팬
-          </div>
-        </div>
-      )}
-
-      {/* ══ 2단: 프로파일 차트 + 범위 편집 ══════════════════════════════════ */}
+      {/* ══ 프로파일 차트 + 범위 편집 ══════════════════════════════════ */}
       <div className="param-section">
         프로파일 편집
         <Tip text="실행 후 단면 프로파일이 표시됩니다. 차트를 드래그해 피처 검색범위 또는 라인피팅 구간을 지정하세요." />
@@ -344,7 +206,7 @@ export default function ProfileCaliperEditor({
               <button className="param-btn" style={{ fontSize: 10, padding: '1px 4px' }}
                 title="이 피처 범위 편집"
                 onClick={() => setRangeTarget({ kind: 'feature', idx: i })}>
-                {rangeTarget.kind === 'feature' && rangeTarget.idx === i ? '✏️편집중' : '편집'}
+                {rangeTarget.kind === 'feature' && rangeTarget.idx === i ? '편집중' : '편집'}
               </button>
               <button className="param-btn" style={{ fontSize: 10, padding: '1px 4px', marginLeft: 2 }}
                 onClick={() => delFeat(i)}>삭제</button>
@@ -411,7 +273,7 @@ export default function ProfileCaliperEditor({
               </span>
               <button className="param-btn" style={{ fontSize: 10, padding: '1px 4px' }}
                 onClick={() => setRangeTarget({ kind: 'lineFit', idx: i })}>
-                {rangeTarget.kind === 'lineFit' && rangeTarget.idx === i ? '✏️편집중' : '편집'}
+                {rangeTarget.kind === 'lineFit' && rangeTarget.idx === i ? '편집중' : '편집'}
               </button>
               <button className="param-btn" style={{ fontSize: 10, padding: '1px 4px', marginLeft: 2 }}
                 onClick={() => delFit(i)}>삭제</button>

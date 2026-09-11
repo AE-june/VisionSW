@@ -12,24 +12,29 @@ ProfileCaliperTool::ProfileCaliperTool(Params p)
     : m_params(std::move(p)) {}
 
 ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
-    if (!input || !input->inHeightMap(0))
-        return {ToolStatus::Fail, "ProfileCaliper: HeightMap(포트 0)이 없습니다."};
+    if (!input)
+        return {ToolStatus::Fail, "ProfileCaliper: 입력이 없습니다."};
 
-    // ── 1. 프로파일 추출 (ExtractProfileTool 재사용) ──────────────────────
-    ExtractProfileTool extractor(m_params.scan);
-    auto extractResult = extractor.execute(input);
-    if (extractResult.status != ToolStatus::Ok || !extractResult.output
-            || extractResult.output->profiles.empty())
-        return {ToolStatus::Fail, "ProfileCaliper: 프로파일 추출 실패 — " + extractResult.message};
+    // Profile from port 0 (upstream ExtractProfile/CloudToProfiles)
+    std::shared_ptr<Profile> profPtr;
+    if (!input->profiles.empty()) {
+        profPtr = input->profiles[0];
+    } else if (!input->inputs.empty() && input->inputs[0] && !input->inputs[0]->profiles.empty()) {
+        profPtr = input->inputs[0]->profiles[0];
+    }
+    if (!profPtr)
+        return {ToolStatus::Fail, "ProfileCaliper: Profile(포트 0)이 없습니다."};
 
-    const auto& prof = *extractResult.output->profiles[0];
+    const auto& prof = *profPtr;
 
     auto out = std::make_shared<VisionData>();
     out->sourceId = input->sourceId;
     out->frames   = input->frames;
 
-    // 추출 프로파일 그대로 출력 → UI ProfileChart 시각화
-    out->profiles = extractResult.output->profiles;
+    // 입력 프로파일 그대로 출력 → UI ProfileChart 시각화
+    out->profiles = input->profiles.empty()
+        ? input->inputs[0]->profiles
+        : input->profiles;
 
     // 피처 결과 저장 (distances 계산용)
     struct FeatResult { double sMm = 0, zMm = 0; bool valid = false; };
@@ -37,7 +42,7 @@ ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
 
     // ProfileFeatureTool이 읽을 포트 0 VisionData
     auto profHolder = std::make_shared<VisionData>();
-    profHolder->profiles = extractResult.output->profiles;
+    profHolder->profiles = out->profiles;
 
     // ── 2. 피처 검출 (ProfileFeatureTool 재사용) ─────────────────────────
     for (std::size_t fi = 0; fi < m_params.features.size(); ++fi) {

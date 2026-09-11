@@ -355,10 +355,9 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     type: 'ProfileCaliper', label: 'Profile Caliper', category: '측정',
-    inputs: ['HeightMap', { type: 'Region', optional: true }],
+    inputs: ['Profile'],
     outputs: ['Measurements'],
     defaultParams: {
-      scan: { mode: 'axisX', index: 0, span: 1, channel: 0 },
       features: [
         { kind: 'edge', dir: 'rising',  threshold: 0.05, smoothWindow: 3, searchFromMm: 0, searchToMm: 0, nth: 0 },
         { kind: 'edge', dir: 'falling', threshold: 0.05, smoothWindow: 3, searchFromMm: 0, searchToMm: 0, nth: 0 },
@@ -368,7 +367,7 @@ export const TOOL_DEFS: ToolDef[] = [
         { from: 0, to: 1, mode: 'deltaS', nominalMm: 0, plusMm: 0, minusMm: 0 },
       ],
     },
-    tooltip: 'HeightMap 단면 프로파일에서 엣지/피크 검출 + 라인피팅 + 거리측정을 하나의 노드로',
+    tooltip: 'Profile 단면에서 엣지/피크 검출 + 라인피팅 + 거리측정. ExtractProfile/CloudToProfiles 이후 연결',
   },
   {
     type: 'ProfileFeature', label: 'Profile Feature', category: '측정',

@@ -2404,19 +2404,6 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
 
     if (type == "ProfileCaliper") {
         ProfileCaliperTool::Params params;
-        // scan
-        auto sc = p.value("scan", nlohmann::json::object());
-        params.scan.mode    = sc.value("mode",    std::string("axisX"));
-        params.scan.index   = sc.value("index",   0);
-        params.scan.span    = sc.value("span",    1);
-        params.scan.channel = sc.value("channel", 0);
-        params.scan.p0x     = sc.value("p0x",     0.0);
-        params.scan.p0y     = sc.value("p0y",     0.0);
-        params.scan.p1x     = sc.value("p1x",     0.0);
-        params.scan.p1y     = sc.value("p1y",     0.0);
-        params.scan.unit    = sc.value("unit",    std::string("mm"));
-        params.scan.count   = sc.value("count",   0);
-        params.scan.interp  = sc.value("interp",  std::string("bilinear"));
         // features
         for (const auto& f : p.value("features", nlohmann::json::array())) {
             CaliperFeatureDef fd;

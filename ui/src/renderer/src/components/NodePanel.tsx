@@ -120,6 +120,19 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   const meta = result?.profileMeta
   const metaLen = meta?.length ?? 0
 
+  const extractProfLabel = (() => {
+    const useMeta = meta && metaLen > 0
+    if (useMeta) {
+      const idx = Math.min(profRow, metaLen - 1)
+      return meta![idx]?.label ?? ''
+    }
+    if (result?.profiles && result.profiles.length > 0) {
+      const idx = Math.min(profRow, result.profiles.length - 1)
+      return result.profiles[idx]?.label ?? ''
+    }
+    return ''
+  })()
+
   // profileMeta가 있으면 온디맨드 fetch
   useEffect(() => {
     if (!meta || metaLen === 0) return
@@ -270,6 +283,35 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
       </svg>
     : undefined
 
+  // ExtractProfile / CloudToProfiles: 선택된 프로파일 위치 오버레이
+  const extractProfileOverlay = (toolType === 'ExtractProfile' || toolType === 'CloudToProfiles') && result?.imgW && result?.imgH
+    ? (() => {
+        const rowMatch = extractProfLabel.match(/^row:(\d+)$/)
+        const colMatch = extractProfLabel.match(/^col:(\d+)$/)
+        if (rowMatch) {
+          const row = parseInt(rowMatch[1])
+          return (
+            <svg viewBox={`0 0 ${result.imgW} ${result.imgH}`} preserveAspectRatio="none"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+              <line x1={0} y1={row} x2={result.imgW} y2={row}
+                stroke="#00e5ff" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            </svg>
+          )
+        }
+        if (colMatch) {
+          const col = parseInt(colMatch[1])
+          return (
+            <svg viewBox={`0 0 ${result.imgW} ${result.imgH}`} preserveAspectRatio="none"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+              <line x1={col} y1={0} x2={col} y2={result.imgH}
+                stroke="#00e5ff" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            </svg>
+          )
+        }
+        return undefined
+      })()
+    : undefined
+
   // PlaneFit 평면 파라미터
   const planeA = getMeas(result.measurements, 'planeA')
   const planeB = getMeas(result.measurements, 'planeB')
@@ -323,10 +365,10 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               resXMm={dispResX}
               resYMm={dispResY}
               viewKey={viewKey}
-              canvasHeight={360}
+              canvasHeight={(toolType === 'ExtractProfile' || toolType === 'CloudToProfiles') && (meta || result.profiles) ? 200 : 360}
               rois={toolType === 'HeightMeasure' ? measureRois : undefined}
               roiTypeLabel={() => 'ROI'}
-              overlay={lineOverlay ?? alignOverlay ?? measureOverlay ?? lineFitOverlay}
+              overlay={lineOverlay ?? alignOverlay ?? measureOverlay ?? lineFitOverlay ?? extractProfileOverlay}
               overlayFor={(_roi, idx) => {
                 const m = heightMeasures?.[idx]
                 return m ? (
@@ -945,12 +987,6 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
             <ProfileCaliperEditor
               params={params}
               onChange={(next) => onParamChange(nodeId, next)}
-              preview={upstreamPreview ?? result?.preview}
-              zMin={upstreamZMin ?? result?.zMin}
-              zMax={upstreamZMax ?? result?.zMax}
-              resXMm={upstreamResX ?? result?.xResMm}
-              resYMm={upstreamResY ?? result?.yResMm}
-              viewKey={nodeId}
               resultMeasurements={result?.measurements}
               resultProfiles={result?.profiles}
             />

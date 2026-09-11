@@ -1,6 +1,5 @@
 #pragma once
 #include "IAlgorithmTool.h"
-#include "ExtractProfileTool.h"
 #include <string>
 #include <vector>
 
@@ -36,7 +35,6 @@ struct CaliperDistanceDef {
 class ProfileCaliperTool : public IAlgorithmTool {
 public:
     struct Params {
-        ExtractProfileParams            scan;
         std::vector<CaliperFeatureDef>  features;
         std::vector<CaliperLineFitDef>  lineFits;
         std::vector<CaliperDistanceDef> distances;
