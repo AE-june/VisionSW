@@ -25,6 +25,7 @@
 #include "NotchMeasureV2Tool.h"
 #include "ExtractProfileTool.h"
 #include "ProfileFeatureTool.h"
+#include "ProfileCaliperTool.h"
 #include "CompareTool.h"
 #include "CombineDecisionTool.h"
 #include "ExposureMergeCore.h"
@@ -2310,6 +2311,54 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.edgeThresholdMm = p.value("edgeThresholdMm", 0.05);
         params.smoothWindow = p.value("smoothWindow",  3);
         return std::make_shared<ProfileFeatureTool>(params);
+    }
+
+    if (type == "ProfileCaliper") {
+        ProfileCaliperTool::Params params;
+        // scan
+        auto sc = p.value("scan", nlohmann::json::object());
+        params.scan.mode    = sc.value("mode",    std::string("axisX"));
+        params.scan.index   = sc.value("index",   0);
+        params.scan.span    = sc.value("span",    1);
+        params.scan.channel = sc.value("channel", 0);
+        params.scan.p0x     = sc.value("p0x",     0.0);
+        params.scan.p0y     = sc.value("p0y",     0.0);
+        params.scan.p1x     = sc.value("p1x",     0.0);
+        params.scan.p1y     = sc.value("p1y",     0.0);
+        params.scan.unit    = sc.value("unit",    std::string("mm"));
+        params.scan.count   = sc.value("count",   0);
+        params.scan.interp  = sc.value("interp",  std::string("bilinear"));
+        // features
+        for (const auto& f : p.value("features", nlohmann::json::array())) {
+            CaliperFeatureDef fd;
+            fd.kind        = f.value("kind",        std::string("edge"));
+            fd.dir         = f.value("dir",         std::string("any"));
+            fd.threshold   = f.value("threshold",   0.05);
+            fd.smoothWindow= f.value("smoothWindow", 3);
+            fd.searchFromMm= f.value("searchFromMm",0.0);
+            fd.searchToMm  = f.value("searchToMm",  0.0);
+            fd.nth         = f.value("nth",          0);
+            params.features.push_back(fd);
+        }
+        // lineFits
+        for (const auto& lf : p.value("lineFits", nlohmann::json::array())) {
+            CaliperLineFitDef ld;
+            ld.fromMm = lf.value("fromMm", 0.0);
+            ld.toMm   = lf.value("toMm",   0.0);
+            params.lineFits.push_back(ld);
+        }
+        // distances
+        for (const auto& dd : p.value("distances", nlohmann::json::array())) {
+            CaliperDistanceDef d;
+            d.from      = dd.value("from",      0);
+            d.to        = dd.value("to",        1);
+            d.mode      = dd.value("mode",      std::string("deltaS"));
+            d.nominalMm = dd.value("nominalMm", 0.0);
+            d.plusMm    = dd.value("plusMm",    0.0);
+            d.minusMm   = dd.value("minusMm",   0.0);
+            params.distances.push_back(d);
+        }
+        return std::make_shared<ProfileCaliperTool>(params);
     }
 
     if (type == "Compare") {

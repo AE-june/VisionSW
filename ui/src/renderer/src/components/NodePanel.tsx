@@ -11,7 +11,8 @@ import CreateRoiEditor, { type CreateRoiSettings } from './CreateRoiEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
-import ProfileChart from './ProfileChart'
+import ProfileChart, { type CaliperFeature, type CaliperLineFit } from './ProfileChart'
+import ProfileCaliperEditor from './ProfileCaliperEditor'
 import NotchProfileChart from './NotchProfileChart'
 import NotchChunkChart from './NotchChunkChart'
 import RoiCanvas, { type Roi } from './RoiCanvas'
@@ -686,7 +687,39 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
               </select>
             </div>
             {profLoading && <div className="param-empty" style={{ fontSize: 11 }}>로딩 중…</div>}
-            {chartData && <ProfileChart x={chartData.x} z={chartData.z} mode={profMode} />}
+            {chartData && (() => {
+              // ProfileCaliper: measurements에서 피처/라인피팅 파싱 → 오버레이
+              let caliperFeatures: CaliperFeature[] | undefined
+              let caliperLineFits: CaliperLineFit[] | undefined
+              if (toolType === 'ProfileCaliper' && result.measurements) {
+                const mmap: Record<string, number> = {}
+                for (const m of result.measurements)
+                  if (m.valid) mmap[m.name] = m.value
+                const feats: CaliperFeature[] = []
+                for (let fi = 0; ; fi++) {
+                  const sMm = mmap[`feat[${fi}].sMm`]
+                  const zMm = mmap[`feat[${fi}].zMm`]
+                  if (sMm === undefined) break
+                  feats.push({ sMm, zMm: zMm ?? 0, kind: 'feat', label: `F${fi}` })
+                }
+                caliperFeatures = feats.length > 0 ? feats : undefined
+                const fits: CaliperLineFit[] = []
+                for (let li = 0; ; li++) {
+                  const fromMm    = mmap[`lineFit[${li}].fromMm`]
+                  const toMm      = mmap[`lineFit[${li}].toMm`]
+                  const slope     = mmap[`lineFit[${li}].slope`]
+                  const intercept = mmap[`lineFit[${li}].intercept`]
+                  if (fromMm === undefined) break
+                  if (slope !== undefined && intercept !== undefined)
+                    fits.push({ fromMm, toMm: toMm ?? fromMm, slope, intercept })
+                }
+                caliperLineFits = fits.length > 0 ? fits : undefined
+              }
+              return (
+                <ProfileChart x={chartData.x} z={chartData.z} mode={profMode}
+                  features={caliperFeatures} lineFits={caliperLineFits} />
+              )
+            })()}
           </div>
         )
       })()}
@@ -907,6 +940,19 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               originRow={upstreamOriginRow}
               viewKey={nodeId}
               onChange={(next) => onParamChange(nodeId, next)}
+            />
+          ) : toolType === 'ProfileCaliper' ? (
+            <ProfileCaliperEditor
+              params={params}
+              onChange={(next) => onParamChange(nodeId, next)}
+              preview={upstreamPreview ?? result?.preview}
+              zMin={upstreamZMin ?? result?.zMin}
+              zMax={upstreamZMax ?? result?.zMax}
+              resXMm={upstreamResX ?? result?.xResMm}
+              resYMm={upstreamResY ?? result?.yResMm}
+              viewKey={nodeId}
+              resultMeasurements={result?.measurements}
+              resultProfiles={result?.profiles}
             />
           ) : toolType === 'RowStretch' ? (
             <RowStretchEditor
