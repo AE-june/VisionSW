@@ -97,6 +97,35 @@ void heightmapCachePut(const std::string& path, const std::shared_ptr<HeightMap>
     }
 }
 
+static std::shared_ptr<HeightMap> loadTiffFromMemory(
+        const uint8_t* data, size_t size, float xRes, float yRes, float zRes) {
+    // OpenCV가 이미 의존성으로 존재 — imdecode로 TIFF(압축 포함) 처리
+    cv::Mat buf(1, static_cast<int>(size), CV_8U, const_cast<uint8_t*>(data));
+    cv::Mat img = cv::imdecode(buf, cv::IMREAD_ANYDEPTH | cv::IMREAD_ANYCOLOR);
+    if (img.empty()) return nullptr;
+    if (img.channels() > 1) cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
+
+    auto hm = std::make_shared<HeightMap>();
+    hm->width = img.cols; hm->height = img.rows;
+    hm->xResMm = xRes; hm->yResMm = yRes; hm->zResMm = zRes;
+    hm->data.resize(static_cast<size_t>(img.cols) * img.rows);
+
+    if (img.depth() == CV_16U) {
+        hm->zZeroCount = 32768.f;
+        const uint16_t* src = reinterpret_cast<const uint16_t*>(img.data);
+        for (size_t i = 0; i < hm->data.size(); ++i)
+            hm->data[i] = (src[i] == 0) ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(src[i]);
+    } else if (img.depth() == CV_8U) {
+        hm->zZeroCount = 128.f;
+        const uint8_t* src = img.data;
+        for (size_t i = 0; i < hm->data.size(); ++i)
+            hm->data[i] = (src[i] == 0) ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(src[i]);
+    } else {
+        return nullptr;
+    }
+    return hm;
+}
+
 std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
                                        float xRes, float yRes, float zRes) {
     namespace fs = std::filesystem;
@@ -108,6 +137,13 @@ std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
     std::vector<stbi_uc> fileBuf(fileSize);
     ifs.read(reinterpret_cast<char*>(fileBuf.data()), static_cast<std::streamsize>(fileSize));
     ifs.close();
+
+    // TIFF magic: II\x2A\x00 (LE) or MM\x00\x2A (BE)
+    if (fileSize >= 4 &&
+        ((fileBuf[0]=='I' && fileBuf[1]=='I' && fileBuf[2]==0x2A && fileBuf[3]==0x00) ||
+         (fileBuf[0]=='M' && fileBuf[1]=='M' && fileBuf[2]==0x00 && fileBuf[3]==0x2A))) {
+        return loadTiffFromMemory(fileBuf.data(), fileSize, xRes, yRes, zRes);
+    }
 
     int w, h, ch;
     uint16_t* raw16 = stbi_load_16_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
@@ -149,7 +185,8 @@ int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes)
         // folder는 UTF-8 문자열 — u8path로 넣어야 한글 등 비-ASCII 경로를 찾을 수 있고,
         // u8string으로 꺼내야 나중에 stbi_load(UTF-8 가정)로 다시 넘길 때 왕복이 맞는다.
         for (auto& e : fs::directory_iterator(fs::u8path(folder), ec)) {
-            if (e.path().extension() == ".png") {
+            auto ext = e.path().extension().string();
+            if (ext == ".png" || ext == ".tif" || ext == ".tiff") {
                 std::string fp = e.path().u8string();
                 if (!g_heightmapFileCache.count(fp))
                     toLoad.push_back(fp);
@@ -2375,9 +2412,7 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     if (type == "ExtractProfile") {
         ExtractProfileParams params;
         params.mode    = p.value("mode",    std::string("axisX"));
-        params.index   = p.value("index",   0);
-        params.span    = p.value("span",    1);
-        params.repeat  = p.value("repeat",  1);
+        params.span    = p.value("span",    10);
         params.channel = p.value("channel", 0);
         params.p0x     = p.value("p0x",     0.0);
         params.p0y     = p.value("p0y",     0.0);
@@ -2385,8 +2420,9 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         params.p1y     = p.value("p1y",     0.0);
         params.unit    = p.value("unit",    std::string("mm"));
         params.count   = p.value("count",   0);
-        params.interp  = p.value("interp",  std::string("bilinear"));
-        params.nodeId  = p.value("nodeId",  std::string(""));
+        params.interp       = p.value("interp",       std::string("bilinear"));
+        params.aggregation  = p.value("aggregation",  std::string("mean"));
+        params.nodeId       = p.value("nodeId",       std::string(""));
         return std::make_shared<ExtractProfileTool>(params);
     }
     if (type == "ProfileFeature") {
@@ -2404,35 +2440,34 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
 
     if (type == "ProfileCaliper") {
         ProfileCaliperTool::Params params;
-        // features
-        for (const auto& f : p.value("features", nlohmann::json::array())) {
-            CaliperFeatureDef fd;
-            fd.kind        = f.value("kind",        std::string("edge"));
-            fd.dir         = f.value("dir",         std::string("any"));
-            fd.threshold   = f.value("threshold",   0.05);
-            fd.smoothWindow= f.value("smoothWindow", 3);
-            fd.searchFromMm= f.value("searchFromMm",0.0);
-            fd.searchToMm  = f.value("searchToMm",  0.0);
-            fd.nth         = f.value("nth",          0);
-            params.features.push_back(fd);
+        params.profileIndex = p.value("profileIndex", 0);
+        // 캐시 키 = 파이프라인 노드 id. main.cpp가 toolParams["_nodeId"]로 주입하며
+        // 이 값이 g_profileCache / fetchProfile 의 nodeId와 정확히 일치한다.
+        params.nodeId       = p.value("_nodeId", std::string(""));
+        for (const auto& e : p.value("elements", nlohmann::json::array())) {
+            CaliperElementDef ed;
+            ed.fromMm       = e.value("fromMm", 0.0);
+            ed.toMm         = e.value("toMm", 0.0);
+            ed.zFromMm      = e.value("zFromMm", 0.0);
+            ed.zToMm        = e.value("zToMm", 0.0);
+            ed.type         = e.value("type", std::string("point"));
+            ed.kind         = e.value("kind", std::string("edge"));
+            ed.dir          = e.value("dir", std::string("any"));
+            ed.threshold    = e.value("threshold", 0.05);
+            ed.smoothWindow = e.value("smoothWindow", 3);
+            ed.nth          = e.value("nth", 0);
+            params.elements.push_back(ed);
         }
-        // lineFits
-        for (const auto& lf : p.value("lineFits", nlohmann::json::array())) {
-            CaliperLineFitDef ld;
-            ld.fromMm = lf.value("fromMm", 0.0);
-            ld.toMm   = lf.value("toMm",   0.0);
-            params.lineFits.push_back(ld);
-        }
-        // distances
-        for (const auto& dd : p.value("distances", nlohmann::json::array())) {
-            CaliperDistanceDef d;
-            d.from      = dd.value("from",      0);
-            d.to        = dd.value("to",        1);
-            d.mode      = dd.value("mode",      std::string("deltaS"));
-            d.nominalMm = dd.value("nominalMm", 0.0);
-            d.plusMm    = dd.value("plusMm",    0.0);
-            d.minusMm   = dd.value("minusMm",   0.0);
-            params.distances.push_back(d);
+        for (const auto& m : p.value("measurements", nlohmann::json::array())) {
+            CaliperMeasurementDef md;
+            md.combo     = m.value("combo", std::string("pp"));
+            md.metric    = m.value("metric", std::string("euclidean"));
+            md.refA      = m.value("refA", 0);
+            md.refB      = m.value("refB", 1);
+            md.nominalMm = m.value("nominalMm", 0.0);
+            md.plusMm    = m.value("plusMm", 0.0);
+            md.minusMm   = m.value("minusMm", 0.0);
+            params.measurements.push_back(md);
         }
         return std::make_shared<ProfileCaliperTool>(params);
     }

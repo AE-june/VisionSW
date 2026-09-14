@@ -334,10 +334,10 @@ export const TOOL_DEFS: ToolDef[] = [
     inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['Profile'],
     inputLabels: ['HeightMap', 'Region(선택)'],
     defaultParams: {
-      mode: 'axisX', index: 0, span: 1, repeat: 1, channel: 0,
-      p0x: 0, p0y: 0, p1x: 0, p1y: 0, unit: 'mm', count: 0, interp: 'bilinear',
+      mode: 'axisX', span: 10, channel: 0,
+      p0x: 0, p0y: 0, p1x: 0, p1y: 0, unit: 'mm', count: 0, interp: 'bilinear', aggregation: 'mean',
     },
-    tooltip: '높이맵 단면 → Profile. axisX/Y: 행/열 그대로 추출(보간 없음). line: 임의 경로 보간.',
+    tooltip: 'HeightMap를 N줄씩 평균내어 여러 Profile로 타일 추출. span=평균 라인수. ROI로 범위 제한 가능.',
   },
   {
     type: 'Compare', label: 'Compare', category: '판정',
@@ -358,16 +358,16 @@ export const TOOL_DEFS: ToolDef[] = [
     inputs: ['Profile'],
     outputs: ['Measurements'],
     defaultParams: {
-      features: [
-        { kind: 'edge', dir: 'rising',  threshold: 0.05, smoothWindow: 3, searchFromMm: 0, searchToMm: 0, nth: 0 },
-        { kind: 'edge', dir: 'falling', threshold: 0.05, smoothWindow: 3, searchFromMm: 0, searchToMm: 0, nth: 0 },
+      profileIndex: 0,
+      elements: [
+        { fromMm: 0, toMm: 5,  type: 'point', kind: 'edge', dir: 'rising', threshold: 0.05, smoothWindow: 3, nth: 0 },
+        { fromMm: 10, toMm: 20, type: 'line', kind: 'edge', dir: 'any', threshold: 0.05, smoothWindow: 3, nth: 0 },
       ],
-      lineFits: [],
-      distances: [
-        { from: 0, to: 1, mode: 'deltaS', nominalMm: 0, plusMm: 0, minusMm: 0 },
+      measurements: [
+        { combo: 'pl', metric: 'perpDist', refA: 0, refB: 1, nominalMm: 0, plusMm: 0, minusMm: 0 },
       ],
     },
-    tooltip: 'Profile 단면에서 엣지/피크 검출 + 라인피팅 + 거리측정. ExtractProfile/CloudToProfiles 이후 연결',
+    tooltip: 'Profile 단면에서 element(point/line) 추출 + 측정. point는 엣지/피크 검출, line은 직선 피팅. ExtractProfile/CloudToProfiles 이후 연결',
   },
   {
     type: 'ProfileFeature', label: 'Profile Feature', category: '측정',

@@ -5,45 +5,41 @@
 
 namespace vision {
 
-// 단일 피처 검출 정의
-struct CaliperFeatureDef {
-    std::string kind        = "edge";  // edge|ridge|valley|corner
-    std::string dir         = "any";   // rising|falling|any (edge 전용)
-    double threshold        = 0.05;    // 검출 임계값 (mm)
-    int    smoothWindow     = 3;
-    double searchFromMm     = 0;       // 검색 구간 s 시작 (0,0=전체)
-    double searchToMm       = 0;       // 검색 구간 s 끝
-    int    nth              = 0;       // n번째 검출 (0-based, 음수=뒤에서)
+// 기하 요소 정의 (point 추출 또는 line 피팅)
+struct CaliperElementDef {
+    double fromMm = 0, toMm = 0;      // 검색 구간 (0,0=전체)
+    double zFromMm = 0, zToMm = 0;   // z(높이) 범위 (0,0 = 제한 없음)
+    std::string type = "point";       // "point" | "line"
+    // type="point" 전용 (ProfileFeatureTool 위임)
+    std::string kind  = "edge";       // edge|ridge|valley|corner|maxZ|minZ|mean
+    std::string dir   = "any";        // rising|falling|any (edge 전용)
+    double threshold  = 0.05;
+    int    smoothWindow = 3;
+    int    nth = 0;
+    // type="line": 추가 필드 없음 (fromMm/toMm 범위 최소제곱 피팅)
 };
 
-// 라인피팅 세그먼트 정의 (z = slope*s + intercept)
-struct CaliperLineFitDef {
-    double fromMm = 0;
-    double toMm   = 0;
-};
-
-// 두 피처 간 거리 정의
-struct CaliperDistanceDef {
-    int    from      = 0;        // 피처 인덱스
-    int    to        = 1;        // 피처 인덱스
-    std::string mode = "deltaS"; // deltaS|deltaZ|euclidean
-    double nominalMm = 0;
-    double plusMm    = 0;
-    double minusMm   = 0;
+// element 조합 측정 정의
+struct CaliperMeasurementDef {
+    std::string combo  = "pp";   // pp|pl|ll|l|p (target 조합)
+    std::string metric = "euclidean";
+    // pp: euclidean|deltaS|deltaZ    pl: perpDist
+    // ll: angle|offset               l: tilt|flatness    p: absS|absZ
+    int refA = 0, refB = 1;      // element 인덱스 (단일 combo는 refA만 사용)
+    double nominalMm = 0, plusMm = 0, minusMm = 0;
 };
 
 class ProfileCaliperTool : public IAlgorithmTool {
 public:
     struct Params {
-        std::vector<CaliperFeatureDef>  features;
-        std::vector<CaliperLineFitDef>  lineFits;
-        std::vector<CaliperDistanceDef> distances;
+        int                                profileIndex = 0;  // 분석할 입력 프로파일(타일) 인덱스
+        std::string                        nodeId;            // CaliperResultCache 키 (온디맨드 오버레이용)
+        std::vector<CaliperElementDef>     elements;
+        std::vector<CaliperMeasurementDef> measurements;
     };
-
     explicit ProfileCaliperTool(Params p = {});
     std::string name() const override { return "ProfileCaliper"; }
     ToolResult  execute(VisionDataPtr input) override;
-
 private:
     Params m_params;
 };

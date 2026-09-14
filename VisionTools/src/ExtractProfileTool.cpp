@@ -9,7 +9,7 @@ namespace vision {
 
 // ── line 모드 보간 헬퍼 ──────────────────────────────────────────────────
 
-// nearest: float 산술 → double (extractAxis와 동일 연산, bit-identical 보장)
+// nearest: float 산술 → double (axis 밴드 평균과 동일 연산, bit-identical 보장)
 static double sampleNearest(const HeightMap& map, double px, double py, int ch) {
     const int col = static_cast<int>(std::round(px));
     const int row = static_cast<int>(std::round(py));
@@ -105,38 +105,32 @@ ExtractProfileTool::ExtractProfileTool(ExtractProfileParams params)
     : m_params(std::move(params)) {}
 
 // ─────────────────────────────────────────────────────────────────────
-//  extractAxis — axisX(row) 또는 axisY(col) 단면 추출 (보간 없음)
-//  span>1: 이웃 span줄의 유효 픽셀만 평균. NaN은 제외.
+//  averageBand — axisX(row) 또는 axisY(col) 방향으로 [lo, hi) 라인 범위를
+//  하나의 Profile로 평균. 유효 픽셀만 평균, NaN은 제외 (보간 없음).
+//    axisX: lo..hi 는 행(row) 범위, 프로파일은 열(col) 방향 길이 W
+//    axisY: lo..hi 는 열(col) 범위, 프로파일은 행(row) 방향 길이 H
+//  midLine: 라벨용 대표 라인 인덱스(밴드 중앙).
 // ─────────────────────────────────────────────────────────────────────
-static std::shared_ptr<Profile> extractAxis(
+static std::shared_ptr<Profile> averageBand(
     const HeightMap& map, const Region* rgn,
-    bool axisX,        // true=행(X축 프로파일), false=열(Y축 프로파일)
-    int index, int span, int channel)
+    bool axisX, int lo, int hi, int midLine, int channel,
+    const std::string& aggregation)
 {
     const int W = map.width, H = map.height;
-    const int len   = axisX ? W : H;    // 프로파일 길이
-    const int total = axisX ? H : W;    // 수직 방향 크기
-
-    // index 클램프
-    index = std::clamp(index, 0, total - 1);
-    const int half  = span / 2;
-    const int r0    = std::max(0, index - half);
-    const int r1    = std::min(total - 1, index + half);
+    const int len = axisX ? W : H;    // 프로파일 길이
 
     auto prof = std::make_shared<Profile>();
     prof->frameId = map.frameId;
-    prof->label   = (axisX ? "row:" : "col:") + std::to_string(index);
+    prof->label   = (axisX ? "row:" : "col:") + std::to_string(midLine);
     prof->s.resize(len);
     prof->x.resize(len);
     prof->y.resize(len);
     prof->z.resize(len, std::numeric_limits<double>::quiet_NaN());
 
-    const float NaN = std::numeric_limits<float>::quiet_NaN();
-
     for (int i = 0; i < len; ++i) {
-        // 물리 좌표
-        const int col = axisX ? i      : index;
-        const int row = axisX ? index  : i;
+        // 물리 좌표 (대표 라인 기준)
+        const int col = axisX ? i        : midLine;
+        const int row = axisX ? midLine  : i;
         prof->x[i] = map.xMm(col);
         prof->y[i] = map.yMm(row);
         prof->s[i] = i * (axisX ? map.xResMm : map.yResMm);  // 호장(arc length)
@@ -144,18 +138,90 @@ static std::shared_ptr<Profile> extractAxis(
         // Region 마스크 — 길이 유지, 밖은 NaN
         if (rgn && !rgn->contains(col, row)) continue;
 
-        // span 평균 (유효 픽셀만)
-        double sum = 0; int cnt = 0;
-        for (int j = r0; j <= r1; ++j) {
-            const int c = axisX ? i : j;
-            const int r = axisX ? j : i;
-            if (!map.inBounds(c, r)) continue;
-            const float raw = map.rawAt(c, r, channel);
-            if (std::isnan(raw)) continue;
-            sum += (raw - map.zZeroCount) * map.zResMm;
-            ++cnt;
+        // 밴드 집계 (유효 픽셀만, NaN 제외)
+        if (aggregation == "mean") {
+            double sum = 0; int cnt = 0;
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                sum += (raw - map.zZeroCount) * map.zResMm;
+                ++cnt;
+            }
+            if (cnt > 0) prof->z[i] = sum / cnt;
+        } else if (aggregation == "min") {
+            double result = std::numeric_limits<double>::quiet_NaN();
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                const double v = (raw - map.zZeroCount) * map.zResMm;
+                if (std::isnan(result) || v < result) result = v;
+            }
+            prof->z[i] = result;
+        } else if (aggregation == "max") {
+            double result = std::numeric_limits<double>::quiet_NaN();
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                const double v = (raw - map.zZeroCount) * map.zResMm;
+                if (std::isnan(result) || v > result) result = v;
+            }
+            prof->z[i] = result;
+        } else if (aggregation == "median") {
+            std::vector<double> vals;
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                vals.push_back((raw - map.zZeroCount) * map.zResMm);
+            }
+            if (!vals.empty()) {
+                const size_t mid = vals.size() / 2;
+                std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
+                prof->z[i] = vals[mid];
+            }
+        } else if (aggregation == "stddev") {
+            // Welford's online algorithm
+            double mean = 0.0, M2 = 0.0;
+            int cnt = 0;
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                const double v = (raw - map.zZeroCount) * map.zResMm;
+                ++cnt;
+                const double delta = v - mean;
+                mean += delta / cnt;
+                M2 += delta * (v - mean);
+            }
+            if (cnt > 1) prof->z[i] = std::sqrt(M2 / cnt);
+            else if (cnt == 1) prof->z[i] = 0.0;
+        } else {
+            // 알 수 없는 집계 방식 → mean 폴백
+            double sum = 0; int cnt = 0;
+            for (int j = lo; j < hi; ++j) {
+                const int c = axisX ? i : j;
+                const int r = axisX ? j : i;
+                if (!map.inBounds(c, r)) continue;
+                const float raw = map.rawAt(c, r, channel);
+                if (std::isnan(raw)) continue;
+                sum += (raw - map.zZeroCount) * map.zResMm;
+                ++cnt;
+            }
+            if (cnt > 0) prof->z[i] = sum / cnt;
         }
-        if (cnt > 0) prof->z[i] = sum / cnt;
     }
 
     return prof;
@@ -183,24 +249,42 @@ ToolResult ExtractProfileTool::execute(VisionDataPtr input) {
 
     if (mode == "axisX" || mode == "axisY") {
         const bool axisX = (mode == "axisX");
-        const int repeat = std::max(1, m_params.repeat);  // D-3: 현재 1로 강제
 
         auto out = std::make_shared<VisionData>();
         out->sourceId = input->sourceId;
         out->frames   = input->frames;
 
-        // repeat>1이면 index 오름차순으로 repeat개 추출.
-        // D-3 결정 전까지 repeat을 1로 강제(파라미터는 정의, 값만 무시).
+        // 타일링 대상 라인 범위 [lineStart, lineEnd)
+        //   axisX: 행(row) 방향, axisY: 열(col) 방향
         const int total = axisX ? map.height : map.width;
-        for (int k = 0; k < std::min(repeat, 1); ++k) {
-            int idx = m_params.index + k;
-            idx = std::clamp(idx, 0, total - 1);
-            auto prof = extractAxis(map, rgn, axisX, idx, m_params.span, m_params.channel);
+        int lineStart = 0, lineEnd = total;
+        if (rgn) {
+            const Rect2D bb = rgn->boundingBox();
+            if (bb.valid()) {
+                if (axisX) { lineStart = bb.y; lineEnd = bb.bottom(); }
+                else       { lineStart = bb.x; lineEnd = bb.right();  }
+                lineStart = std::clamp(lineStart, 0, total);
+                lineEnd   = std::clamp(lineEnd,   0, total);
+            }
+        }
+
+        const int extent = std::max(0, lineEnd - lineStart);
+        const int N      = std::max(1, m_params.span);   // 밴드당 라인수
+        // 정수 나눗셈 floor. 0이면 최소 1개 밴드.
+        int bands = extent / N;
+        if (bands < 1) bands = 1;
+
+        for (int b = 0; b < bands; ++b) {
+            const int lo  = lineStart + b * N;
+            int       hi  = lo + N;
+            if (hi > lineEnd) hi = lineEnd;   // 마지막 밴드 클램프
+            const int mid = std::clamp(lo + N / 2, 0, total - 1);
+            auto prof = averageBand(map, rgn, axisX, lo, hi, mid, m_params.channel, m_params.aggregation);
             out->profiles.push_back(std::move(prof));
         }
 
-        VISION_LOG_INFO("ExtractProfile: mode={} index={} span={} → {} profiles",
-            mode, m_params.index, m_params.span, out->profiles.size());
+        VISION_LOG_INFO("ExtractProfile: mode={} span={} lines=[{},{}) → {} profiles",
+            mode, m_params.span, lineStart, lineEnd, out->profiles.size());
         return { ToolStatus::Ok, "", out };
     }
 

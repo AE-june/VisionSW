@@ -10,6 +10,7 @@
 #include "LineCenterTool.h"
 #include "AlignTool.h"
 #include "RegionMeasureTool.h"
+#include "CaliperResultCache.h"
 #include <crow.h>
 #include <nlohmann/json.hpp>
 
@@ -928,10 +929,30 @@ int main(int argc, char** argv) {
                         xs.push_back(pr.x[i]);
                         zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
                     }
-                    conn.send_text(json{
+                    json jr = {
                         {"event","profileData"},{"nodeId",nid},{"profileIdx",idx},
                         {"label",pr.label},{"n",(long long)pr.size()},{"x",xs},{"z",zs}
-                    }.dump());
+                    };
+                    // ProfileCaliper 온디맨드 오버레이: 이 프로파일의 element/measurement 분석 첨부
+                    CaliperProfileResult cres;
+                    if (CaliperResultCache::instance().get(nid, idx, cres)) {
+                        json elems = json::array();
+                        for (const auto& e : cres.elems)
+                            elems.push_back({
+                                {"type", e.type}, {"valid", e.valid},
+                                {"sMm", e.sMm}, {"zMm", e.zMm},
+                                {"slope", e.slope}, {"intercept", e.intercept}, {"rmse", e.rmse},
+                                {"fromMm", e.fromMm}, {"toMm", e.toMm}
+                            });
+                        json meas = json::array();
+                        for (const auto& m : cres.meas)
+                            meas.push_back({
+                                {"value", m.value}, {"unit", m.unit},
+                                {"hasDecision", m.hasDecision}, {"pass", m.pass}
+                            });
+                        jr["caliper"] = { {"elems", elems}, {"meas", meas} };
+                    }
+                    conn.send_text(jr.dump());
                     return;
                 }
                 if (cmd == "fetchNotchEnv") {

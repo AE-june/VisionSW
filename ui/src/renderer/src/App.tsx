@@ -654,6 +654,19 @@ export default function App() {
   const upstreamOriginCol = upstreamRes?.originCol ?? upstreamRes?.offCol
   const upstreamOriginRow = upstreamRes?.originRow ?? upstreamRes?.offRow
 
+  // ProfileCaliper: 입력 포트 0의 상류(ExtractProfile 등) 프로파일 — caliper 미실행 상태에서도 표시
+  const upstreamProfile = (() => {
+    if (!selectedNode) return undefined
+    const tt = (selectedNode.data as { toolType: string }).toolType
+    if (tt !== 'ProfileCaliper') return undefined
+    const edge = edges.find(e => e.target === selectedNode.id && (e.targetHandle ?? 'input-0') === 'input-0')
+      ?? edges.find(e => e.target === selectedNode.id)
+    if (!edge) return undefined
+    const r = nodeResults[edge.source] as { profileMeta?: { label: string; n: number }[] } | undefined
+    if (!r?.profileMeta?.length) return undefined
+    return { nodeId: edge.source, profileMeta: r.profileMeta }
+  })()
+
   // NotchMeasureV2/NotchMeasure: 입력 포트 0의 상류 cloud 데이터
   const upstreamCloud = (() => {
     if (!selectedNode) return undefined
@@ -715,6 +728,8 @@ export default function App() {
             upstreamOriginCol={upstreamOriginCol}
             upstreamOriginRow={upstreamOriginRow}
             upstreamCloud={upstreamCloud}
+            upstreamProfileNodeId={upstreamProfile?.nodeId}
+            upstreamProfileMeta={upstreamProfile?.profileMeta}
             width={panelWidth}
             onWidthChange={setPanelWidth}
             onParamChange={onParamChange}

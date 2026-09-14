@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import ParamPanel, { NumField } from './ParamPanel'
 import { getViewState, patchViewState } from './viewStore'
 import PlaneFitEditor, { type PlaneFitROI } from './PlaneFitEditor'
@@ -11,7 +11,7 @@ import CreateRoiEditor, { type CreateRoiSettings } from './CreateRoiEditor'
 import { LineCenterOverlay } from './lineCenterViz'
 import ImageViewer from './ImageViewer'
 import PlaneView3D from './PlaneView3D'
-import ProfileChart, { type CaliperFeature, type CaliperLineFit } from './ProfileChart'
+import ProfileChart, { type CaliperFeature, type CaliperLineFit, type ProfileAnnotation } from './ProfileChart'
 import ProfileCaliperEditor from './ProfileCaliperEditor'
 import NotchProfileChart from './NotchProfileChart'
 import NotchChunkChart from './NotchChunkChart'
@@ -68,6 +68,8 @@ interface Props {
   upstreamOriginCol?: number
   upstreamOriginRow?: number
   upstreamCloud?: [number, number, number][]
+  upstreamProfileNodeId?: string
+  upstreamProfileMeta?: { label: string; n: number }[]
   width: number
   onWidthChange: (w: number) => void
   onParamChange: (nodeId: string, params: Record<string, unknown>) => void
@@ -103,6 +105,441 @@ function extractHeightMeasures(
   return result
 }
 
+// ── ProfileCaliper 결과 뷰 ───────────────────────────────────────────────
+// ROI element 단일 중립색 (많아도 안 정신없게). 구분은 R0/R1 라벨로.
+const CALIPER_COLOR = '#9aa7b4'
+
+interface CaliperElement {
+  type?: 'point' | 'line'
+  fromMm?: number; toMm?: number
+  [k: string]: unknown
+}
+interface CaliperMeasurementDef {
+  combo?: string; metric?: string
+  refA?: number; refB?: number
+  nominalMm?: number; plusMm?: number; minusMm?: number
+  nominal?: number; plus?: number; minus?: number
+  [k: string]: unknown
+}
+
+// 엔진 fetchProfile 응답에 실려오는 per-profile caliper 분석 (온디맨드 오버레이)
+interface CaliperElemView {
+  type: string; valid: boolean
+  sMm: number; zMm: number
+  slope: number; intercept: number; rmse: number
+  fromMm: number; toMm: number
+}
+interface CaliperMeasView { value: number; unit: string; hasDecision: boolean; pass: boolean }
+interface CaliperFetched { elems: CaliperElemView[]; meas: CaliperMeasView[] }
+
+/** 라인 z=ms+b 위로 점(s0,z0)의 수선의 발 */
+function perpFoot(s0: number, z0: number, m: number, b: number): { s: number; z: number } {
+  const sf = (s0 + m * (z0 - b)) / (m * m + 1)
+  return { s: sf, z: m * sf + b }
+}
+
+function ProfileCaliperResult({ x, z, mode, params, measurements, decisions, caliper, rawOpen, onToggleRaw }: {
+  x: number[]; z: (number | null)[]; mode: 'line' | 'points'
+  params: Record<string, unknown>
+  measurements?: NodeMeasurement[]; decisions?: NodeDecision[]
+  caliper?: CaliperFetched
+  rawOpen: boolean; onToggleRaw: () => void
+}) {
+  const elements = (params.elements as CaliperElement[] | undefined) ?? []
+  const measDefs = (params.measurements as CaliperMeasurementDef[] | undefined) ?? []
+
+  // fetchProfile로 받은 이 프로파일의 caliper 분석 우선. 없으면 plain 이름(폴백).
+  const fc = caliper
+
+  // plain-name 폴백 맵 (fc 없을 때만 사용). fc가 있으면 빌드 스킵.
+  const mmap = useMemo<Record<string, number>>(() => {
+    if (fc) return {}
+    const m: Record<string, number> = {}
+    for (const x of measurements ?? []) if (x.valid) m[x.name] = x.value
+    return m
+  }, [fc, measurements])
+  const munit = useMemo<Record<string, string>>(() => {
+    if (fc) return {}
+    const m: Record<string, string> = {}
+    for (const x of measurements ?? []) m[x.name] = x.unit
+    return m
+  }, [fc, measurements])
+  const dmap = useMemo<Record<string, NodeDecision>>(() => {
+    // dmap['allPass'] 폴백은 fc 유무와 무관하게 사용되므로 fc가 있어도 빌드
+    const m: Record<string, NodeDecision> = {}
+    for (const d of decisions ?? []) m[d.name] = d
+    return m
+  }, [decisions])
+
+  // 측정 행 확장 상태 (부수값 펼침)
+  const [expandedMeas, setExpandedMeas] = useState<Record<number, boolean>>({})
+  const toggleMeasRow = (i: number) => setExpandedMeas(m => ({ ...m, [i]: !m[i] }))
+
+  // element 좌표 해석 — fc 우선, 폴백은 mmap
+  interface ElemPoint { kind: 'point'; sMm: number; zMm: number }
+  interface ElemLine { kind: 'line'; slope: number; intercept: number; rmse: number; fromMm: number; toMm: number }
+  const resolved: (ElemPoint | ElemLine | null)[] = elements.map((el, i) => {
+    if (fc) {
+      const ev = fc.elems[i]
+      if (!ev || !ev.valid) return null
+      if (ev.type === 'line')
+        return { kind: 'line', slope: ev.slope, intercept: ev.intercept, rmse: ev.rmse, fromMm: ev.fromMm, toMm: ev.toMm }
+      return { kind: 'point', sMm: ev.sMm, zMm: ev.zMm }
+    }
+    if (el.type === 'point') {
+      const sMm = mmap[`elem[${i}].sMm`]
+      const zMm = mmap[`elem[${i}].zMm`]
+      if (sMm === undefined) return null
+      return { kind: 'point', sMm, zMm: zMm ?? 0 }
+    }
+    if (el.type === 'line') {
+      const slope = mmap[`elem[${i}].slope`]
+      const intercept = mmap[`elem[${i}].intercept`]
+      if (slope === undefined || intercept === undefined) return null
+      return {
+        kind: 'line', slope, intercept,
+        rmse: mmap[`elem[${i}].rmse`] ?? 0,
+        fromMm: mmap[`elem[${i}].fromMm`] ?? el.fromMm ?? 0,
+        toMm: mmap[`elem[${i}].toMm`] ?? el.toMm ?? 0,
+      }
+    }
+    return null
+  })
+
+  // point features
+  const features: CaliperFeature[] = []
+  resolved.forEach((r, i) => {
+    if (r && r.kind === 'point') features.push({ sMm: r.sMm, zMm: r.zMm, kind: 'point', label: `R${i}` })
+  })
+
+  // line fits
+  const lineFits: CaliperLineFit[] = []
+  resolved.forEach(r => {
+    if (r && r.kind === 'line') lineFits.push({ fromMm: r.fromMm, toMm: r.toMm, slope: r.slope, intercept: r.intercept })
+  })
+
+  // 측정값/판정 헬퍼 — fc 우선, 폴백은 mmap/dmap
+  const measValue = (i: number): number | undefined => {
+    const md = measDefs[i]
+    if (fc && md?.combo === 'pl') {
+      const a = resolved[md.refA ?? 0]
+      const b = resolved[md.refB ?? 0]
+      const pt = a?.kind === 'point' ? a : b?.kind === 'point' ? b : null
+      const ln = a?.kind === 'line' ? a : b?.kind === 'line' ? b : null
+      if (pt && ln) {
+        if (md.metric === 'zDist') return Math.abs(pt.zMm - (ln.slope * pt.sMm + ln.intercept))
+        return Math.abs(ln.slope * pt.sMm - pt.zMm + ln.intercept) / Math.sqrt(ln.slope * ln.slope + 1)
+      }
+    }
+    return fc ? fc.meas[i]?.value : mmap[`meas[${i}]`]
+  }
+  const measDecPass = (i: number): boolean | undefined =>
+    fc ? (fc.meas[i]?.hasDecision ? fc.meas[i].pass : undefined) : dmap[`meas[${i}]`]?.pass
+  const measUnit = (i: number): string | undefined => fc ? fc.meas[i]?.unit : munit[`meas[${i}]`]
+  const measHasDec = (i: number): boolean => fc ? !!fc.meas[i]?.hasDecision : !!dmap[`meas[${i}]`]
+  const decColor = (i: number): string => {
+    const pass = measDecPass(i)
+    if (pass === undefined) return '#bbb'  // 공차 없음 → 중립 회색
+    return pass ? '#4caf50' : '#f44336'
+  }
+
+  // annotations from measurement definitions
+  const annotations: ProfileAnnotation[] = []
+  measDefs.forEach((md, i) => {
+    const combo = md.combo ?? ''
+    const a = resolved[md.refA ?? -1]
+    const b = resolved[md.refB ?? -1]
+    const val = measValue(i)
+    const isDeg = (md.metric === 'angle' || md.metric === 'tilt') || measUnit(i) === 'deg'
+    const uStr = isDeg ? '°' : 'mm'
+    const label = `M${i}` + (val !== undefined ? ` ${val.toFixed(2)}${uStr}` : '')
+    const color = decColor(i)
+    if (combo === 'pp') {
+      if (a?.kind === 'point' && b?.kind === 'point')
+        annotations.push({ kind: 'segment', s1: a.sMm, z1: a.zMm, s2: b.sMm, z2: b.zMm, label, color })
+    } else if (combo === 'pl') {
+      // point = refA, line = refB (or swapped)
+      const pt = a?.kind === 'point' ? a : b?.kind === 'point' ? b : null
+      const ln = a?.kind === 'line' ? a : b?.kind === 'line' ? b : null
+      if (pt && ln) {
+        if (md.metric === 'zDist') {
+          const zOnLine = ln.slope * pt.sMm + ln.intercept
+          annotations.push({ kind: 'perp', s1: pt.sMm, z1: pt.zMm, s2: pt.sMm, z2: zOnLine, label, color })
+        } else {
+          const foot = perpFoot(pt.sMm, pt.zMm, ln.slope, ln.intercept)
+          annotations.push({ kind: 'perp', s1: pt.sMm, z1: pt.zMm, s2: foot.s, z2: foot.z, label, color, lineSlope: ln.slope, lineIntercept: ln.intercept })
+        }
+      }
+    } else {
+      // ll / l / p 등: 최소한 라벨을 element 근처에 배치 (segment 형태)
+      if (a?.kind === 'point')
+        annotations.push({ kind: 'segment', s1: a.sMm, z1: a.zMm, s2: a.sMm, z2: a.zMm, label, color })
+    }
+  })
+
+  // verdict — fc가 있으면 이 프로파일의 measurement 판정만 집계, 없으면 dmap['allPass'] 폴백
+  const allPassDec = dmap['allPass']
+  let failCount = 0, totalMeas = 0
+  measDefs.forEach((_md, i) => {
+    if (measHasDec(i)) {
+      totalMeas++
+      if (measDecPass(i) === false) failCount++
+    }
+  })
+  const overallPass = fc ? failCount === 0 : (allPassDec ? allPassDec.pass : failCount === 0)
+  const vColor = overallPass ? '#4caf50' : '#f44336'
+
+  return (
+    <div>
+      {/* 종합 판정 배너 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 5, marginBottom: 10,
+        background: vColor + '18', border: `1px solid ${vColor}55`,
+      }}>
+        <span style={{ fontSize: 20, fontWeight: 700, color: vColor }}>{overallPass ? '✓' : '✕'}</span>
+        <span style={{ fontSize: 16, fontWeight: 700, color: vColor }}>{overallPass ? 'PASS' : 'FAIL'}</span>
+        <span style={{ marginLeft: 'auto', color: '#999', fontSize: 11 }}>
+          measurement {failCount} / {totalMeas} out of tolerance
+        </span>
+      </div>
+
+      {/* 프로파일 차트 */}
+      <div className="rv-sec-title" style={{ color: '#999', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.8px', margin: '0 0 6px' }}>Profile</div>
+      <ProfileChart x={x} z={z} mode={mode}
+        features={features} lineFits={lineFits} annotations={annotations} />
+
+      {/* 측정 목록 — 기본은 실측값만, 확장 시 부수값 표시 */}
+      <div className="rv-sec-title" style={{ color: '#999', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.8px', margin: '12px 0 6px' }}>Measurements</div>
+      <div>
+        {measDefs.map((md, i) => {
+          const dec = dmap[`meas[${i}]`]
+          const val = measValue(i)
+          const isDeg = (md.metric === 'angle' || md.metric === 'tilt') || measUnit(i) === 'deg'
+          const uStr = isDeg ? '°' : 'mm'
+          const pass = measDecPass(i)
+          const c = pass === undefined ? '#bbb' : pass ? '#4caf50' : '#f44336'
+          const nominal = dec?.nominal ?? md.nominalMm ?? md.nominal
+          const plus = md.plusMm ?? md.plus
+          const minus = md.minusMm ?? md.minus
+          const tol = dec?.tolerance
+          const measured = dec?.measured ?? val
+          const dev = (measured !== undefined && nominal !== undefined) ? measured - nominal : undefined
+          const targetStr = nominal !== undefined
+            ? (plus !== undefined || minus !== undefined
+                ? `${nominal.toFixed(2)} +${(plus ?? 0).toFixed(2)}/-${(minus ?? 0).toFixed(2)}`
+                : tol !== undefined ? `${nominal.toFixed(2)} ±${tol.toFixed(2)}` : nominal.toFixed(2))
+            : undefined
+          // 라인 관련 rmse (refA/refB 중 라인 element)
+          const lineRmse = ((): number | undefined => {
+            for (const ref of [md.refA, md.refB]) {
+              const r = ref !== undefined ? resolved[ref] : null
+              if (r && r.kind === 'line') return r.rmse
+            }
+            return undefined
+          })()
+          const open = !!expandedMeas[i]
+          return (
+            <div key={i} style={{ borderBottom: '1px solid #2a2a2a' }}>
+              {/* 기본 행: M{i} + combo·metric + 실측값 + PASS/FAIL */}
+              <div onClick={() => toggleMeasRow(i)} style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', cursor: 'pointer',
+              }}>
+                <span style={{ color: '#555', fontSize: 10, display: 'inline-block', width: 10, transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+                <span style={{ color: '#ddd', fontWeight: 600, minWidth: 26 }}>M{i}</span>
+                <small style={{ color: '#666', fontWeight: 400 }}>{md.combo ?? ''}{md.metric ? '·' + md.metric : ''}</small>
+                <span style={{ marginLeft: 'auto', fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: c }}>
+                  {val !== undefined ? `${val.toFixed(2)}${uStr}` : '—'}
+                </span>
+                {pass !== undefined && (
+                  <span style={{
+                    fontSize: 10, padding: '1px 6px', borderRadius: 3, fontWeight: 600,
+                    background: (pass ? '#4caf50' : '#f44336') + '22', color: pass ? '#4caf50' : '#f44336',
+                    border: `1px solid ${pass ? '#4caf50' : '#f44336'}66`,
+                  }}>{pass ? 'PASS' : 'FAIL'}</span>
+                )}
+              </div>
+              {/* 부수값 (확장 시): target, deviation, refs, rmse */}
+              {open && (
+                <div style={{ padding: '2px 6px 8px 26px', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 10, color: '#999' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>target</span>
+                    <span style={{ fontFamily: 'monospace', color: '#bbb' }}>{targetStr !== undefined ? `${targetStr}${uStr}` : '—'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>deviation</span>
+                    <span style={{ fontFamily: 'monospace', color: c }}>{dev !== undefined ? `${dev >= 0 ? '+' : ''}${dev.toFixed(2)}${uStr}` : '—'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>refs</span>
+                    <span style={{ fontFamily: 'monospace', color: '#bbb' }}>R{md.refA ?? 0}→R{md.refB ?? 0}</span>
+                  </div>
+                  {lineRmse !== undefined && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>rmse</span>
+                      <span style={{ fontFamily: 'monospace', color: '#bbb' }}>{lineRmse.toFixed(3)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {measDefs.length === 0 && <div className="param-empty" style={{ fontSize: 11 }}>측정 정의 없음</div>}
+      </div>
+
+      {/* element 원시값 (접힘) */}
+      <div onClick={onToggleRaw} style={{
+        display: 'flex', alignItems: 'center', gap: 6, padding: 6, cursor: 'pointer',
+        color: '#888', fontSize: 11, background: '#1a1a1a', borderRadius: 4, marginTop: 8,
+      }}>
+        <span style={{ color: '#555', fontSize: 10, display: 'inline-block', transform: rawOpen ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span>Element raw values ({elements.length})</span>
+      </div>
+      {rawOpen && (
+        <div style={{ paddingTop: 6 }}>
+          {elements.map((el, i) => {
+            const color = CALIPER_COLOR
+            const r = resolved[i]
+            let vals: React.ReactNode
+            if (el.type === 'point') {
+              vals = r && r.kind === 'point'
+                ? <><span>s=<em style={{ fontStyle: 'normal', color: '#ddd' }}>{r.sMm.toFixed(3)}mm</em></span><span>z=<em style={{ fontStyle: 'normal', color: '#ddd' }}>{r.zMm.toFixed(3)}mm</em></span></>
+                : <span style={{ color: '#666' }}>—</span>
+            } else {
+              vals = r && r.kind === 'line'
+                ? <><span>slope=<em style={{ fontStyle: 'normal', color: '#ddd' }}>{r.slope.toFixed(4)}</em></span><span>intercept=<em style={{ fontStyle: 'normal', color: '#ddd' }}>{r.intercept.toFixed(3)}</em></span><span>rmse=<em style={{ fontStyle: 'normal', color: '#ddd' }}>{r.rmse.toFixed(3)}</em></span></>
+                : <span style={{ color: '#666' }}>—</span>
+            }
+            return (
+              <div key={i} style={{
+                display: 'flex', gap: 8, padding: '4px 6px', background: '#1e1e1e', borderRadius: 3,
+                marginBottom: 4, borderLeft: `3px solid ${color}`,
+              }}>
+                <span style={{ fontSize: 10, fontWeight: 700, minWidth: 24, color }}>R{i}</span>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#aaa', display: 'flex', gap: 12 }}>{vals}</div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 결과 탭의 행별 프로파일 뷰(슬라이더 + 온디맨드 fetch + 차트)를 소유하는 격리 컴포넌트.
+ * 슬라이더 조작 시 이 컴포넌트만 리렌더되어 ResultView 전체 서브트리 리렌더를 피한다.
+ * 오버레이(ExtractProfile/CloudToProfiles)가 선택 행을 필요로 하는 경우에만 onRowChange로 상위에 통지한다.
+ */
+function ResultProfileSection({ toolType, nodeId, params, meta, metaLen, profiles, profileCount, measurements, decisions, onRowChange }: {
+  toolType: string; nodeId: string; params: Record<string, unknown>
+  meta?: { label: string; n: number }[]; metaLen: number
+  profiles?: { label: string; n: number; x: number[]; z: (number | null)[] }[]
+  profileCount?: number
+  measurements?: NodeMeasurement[]; decisions?: NodeDecision[]
+  onRowChange?: (row: number) => void
+}) {
+  const [profRow, setProfRow] = useState(0)
+  const [profMode, setProfMode] = useState<'line' | 'points'>('points')
+  const [profData, setProfData] = useState<{ x: number[]; z: (number | null)[]; label: string; n: number; caliper?: CaliperFetched } | null>(null)
+  const [profLoading, setProfLoading] = useState(false)
+  const [caliperRawOpen, setCaliperRawOpen] = useState(false)
+
+  // profileMeta가 있으면 온디맨드 fetch — 구독 먼저 걸고 요청 (응답 유실 방지, stale 가드)
+  useEffect(() => {
+    if (!meta || metaLen === 0) return
+    const api = window.electronAPI
+    if (!api?.onEngineEvent || !api?.engineFetchProfile) return
+    const clampedRow = Math.min(profRow, metaLen - 1)
+    const unsub = api.onEngineEvent((raw: unknown) => {
+      const d = raw as { event?: string; nodeId?: string; profileIdx?: number; x?: number[]; z?: (number | null)[]; label?: string; n?: number; error?: string; caliper?: CaliperFetched }
+      if (d.event !== 'profileData' || d.nodeId !== nodeId) return
+      if (typeof d.profileIdx === 'number' && d.profileIdx !== clampedRow) return  // stale 응답 무시
+      setProfLoading(false)
+      if (d.error) { setProfData(null); return }
+      setProfData({ x: d.x ?? [], z: d.z ?? [], label: d.label ?? '', n: d.n ?? 0, caliper: d.caliper })
+    })
+    setProfLoading(true)
+    api.engineFetchProfile(nodeId, clampedRow)
+    return unsub
+  }, [profRow, meta, metaLen, nodeId])
+
+  // 선택 행 변경을 상위(오버레이)에 통지
+  const setRow = (r: number) => {
+    setProfRow(r)
+    onRowChange?.(r)
+  }
+
+  const useMeta = meta && metaLen > 0
+  const useOld = !useMeta && profiles && profiles.length > 0
+  if (!useMeta && !useOld) return null
+
+  const totalRows = useMeta ? metaLen : profiles!.length
+  const idx = Math.min(profRow, totalRows - 1)
+  const curMeta = useMeta ? meta![idx] : { label: profiles![idx].label, n: profiles![idx].n }
+  const chartData = useMeta ? profData : profiles![idx]
+
+  return (
+    <div className="node-result-measures">
+      <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
+        <span className="node-result-label">프로파일</span>
+        <span className="node-result-val">{profileCount ?? totalRows}개</span>
+      </div>
+      <div className="param-row">
+        <span className="param-label">행</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+          <button
+            style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
+            disabled={idx === 0}
+            onClick={() => setRow(idx - 1)}
+          >◀</button>
+          <input type="range" min={0} max={totalRows - 1} step={1} value={idx}
+            style={{ flex: 1 }}
+            onChange={e => setRow(parseInt(e.target.value))} />
+          <button
+            style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
+            disabled={idx === totalRows - 1}
+            onClick={() => setRow(idx + 1)}
+          >▶</button>
+          <input
+            type="number"
+            min={0}
+            max={totalRows - 1}
+            value={idx}
+            style={{ width: 52, fontSize: 12, textAlign: 'center', flexShrink: 0 }}
+            onChange={e => {
+              const v = parseInt(e.target.value)
+              if (!isNaN(v)) setRow(Math.max(0, Math.min(totalRows - 1, v)))
+            }}
+          />
+          <span className="node-result-val" style={{ whiteSpace: 'nowrap', minWidth: 72, textAlign: 'right' }}>
+            {curMeta.label || ''} ({curMeta.n}점)
+          </span>
+        </div>
+      </div>
+      <div className="param-row">
+        <span className="param-label">표시</span>
+        <select className="param-select" value={profMode}
+          onChange={e => setProfMode(e.target.value as 'line' | 'points')}>
+          <option value="points">점</option>
+          <option value="line">선</option>
+        </select>
+      </div>
+      {profLoading && <div className="param-empty" style={{ fontSize: 11 }}>로딩 중…</div>}
+      {chartData && toolType === 'ProfileCaliper' && (
+        <ProfileCaliperResult
+          x={chartData.x} z={chartData.z} mode={profMode}
+          params={params} measurements={measurements} decisions={decisions}
+          caliper={useMeta ? profData?.caliper : undefined}
+          rawOpen={caliperRawOpen} onToggleRaw={() => setCaliperRawOpen(o => !o)} />
+      )}
+      {chartData && toolType !== 'ProfileCaliper' && (
+        <ProfileChart x={chartData.x} z={chartData.z} mode={profMode} />
+      )}
+    </div>
+  )
+}
+
 function ResultView({ toolType, result, rois, nodeId, params, onParamChange, originCol, originRow, viewKey, upstreamCloud }: {
   toolType: string; result?: NodeResult; rois?: Roi[]
   nodeId: string; params: Record<string, unknown>
@@ -112,10 +549,8 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
 }) {
   const [stageIdx, setStageIdx] = useState(0)
   const [cloudView, setCloudView] = useState(toolType === 'HeightMapToCloud' || toolType === 'ExposureMergeCloud')
-  const [profRow, setProfRow] = useState(0)
-  const [profMode, setProfMode] = useState<'line' | 'points'>('points')
-  const [profData, setProfData] = useState<{ x: number[]; z: (number | null)[]; label: string; n: number } | null>(null)
-  const [profLoading, setProfLoading] = useState(false)
+  // 프로파일 슬라이더 상태는 ResultProfileSection이 소유한다. 여기서는 오버레이용으로 선택 행만 동기화 유지.
+  const [overlayProfRow, setOverlayProfRow] = useState(0)
 
   const meta = result?.profileMeta
   const metaLen = meta?.length ?? 0
@@ -123,40 +558,15 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   const extractProfLabel = (() => {
     const useMeta = meta && metaLen > 0
     if (useMeta) {
-      const idx = Math.min(profRow, metaLen - 1)
+      const idx = Math.min(overlayProfRow, metaLen - 1)
       return meta![idx]?.label ?? ''
     }
     if (result?.profiles && result.profiles.length > 0) {
-      const idx = Math.min(profRow, result.profiles.length - 1)
+      const idx = Math.min(overlayProfRow, result.profiles.length - 1)
       return result.profiles[idx]?.label ?? ''
     }
     return ''
   })()
-
-  // profileMeta가 있으면 온디맨드 fetch
-  useEffect(() => {
-    if (!meta || metaLen === 0) return
-    const clampedRow = Math.min(profRow, metaLen - 1)
-    const api = window.electronAPI
-    if (!api?.engineFetchProfile) return
-    setProfLoading(true)
-    api.engineFetchProfile(nodeId, clampedRow)
-  }, [profRow, meta, metaLen, nodeId])
-
-  // profileData 이벤트 수신
-  useEffect(() => {
-    if (!meta || metaLen === 0) return
-    const api = window.electronAPI
-    if (!api?.onEngineEvent) return
-    const unsub = api.onEngineEvent((raw: unknown) => {
-      const d = raw as { event?: string; nodeId?: string; profileIdx?: number; x?: number[]; z?: (number | null)[]; label?: string; n?: number; error?: string }
-      if (d.event !== 'profileData' || d.nodeId !== nodeId) return
-      setProfLoading(false)
-      if (d.error) { setProfData(null); return }
-      setProfData({ x: d.x ?? [], z: d.z ?? [], label: d.label ?? '', n: d.n ?? 0 })
-    })
-    return unsub
-  }, [meta, metaLen, nodeId])
 
   const [chunkRow, setChunkRow] = useState(0)
   const [notchView, setNotchView] = useState<'inputCloud' | 'outputCloud' | 'measurements' | 'envelope'>('measurements')
@@ -671,104 +1081,28 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
         )
       })()}
 
-      {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) — NotchMeasureV2 제외 */}
-      {toolType !== 'NotchMeasureV2' && (() => {
-        const useMeta = meta && metaLen > 0
-        const useOld = !useMeta && result.profiles && result.profiles.length > 0
-        if (!useMeta && !useOld) return null
+      {/* 행별 Profile 형상 차트 (CloudToProfiles, ExtractProfile) — NotchMeasureV2 제외.
+          슬라이더 상태를 별도 컴포넌트로 격리하여 조작 시 ResultView 전체 리렌더를 방지한다. */}
+      {toolType !== 'NotchMeasureV2' && (
+        <ResultProfileSection
+          toolType={toolType}
+          nodeId={nodeId}
+          params={params}
+          meta={meta}
+          metaLen={metaLen}
+          profiles={result.profiles}
+          profileCount={result.profileCount}
+          measurements={result.measurements}
+          decisions={result.decisions}
+          onRowChange={(toolType === 'ExtractProfile' || toolType === 'CloudToProfiles')
+            ? setOverlayProfRow : undefined}
+        />
+      )}
 
-        const totalRows = useMeta ? metaLen : result.profiles!.length
-        const idx = Math.min(profRow, totalRows - 1)
-        const curMeta = useMeta ? meta![idx] : { label: result.profiles![idx].label, n: result.profiles![idx].n }
-        const chartData = useMeta ? profData : result.profiles![idx]
-
-        return (
-          <div className="node-result-measures">
-            <div className="node-result-row" style={{ fontWeight: 600, opacity: 0.8 }}>
-              <span className="node-result-label">프로파일</span>
-              <span className="node-result-val">{result.profileCount ?? totalRows}개</span>
-            </div>
-            <div className="param-row">
-              <span className="param-label">행</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
-                <button
-                  style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
-                  disabled={idx === 0}
-                  onClick={() => setProfRow(idx - 1)}
-                >◀</button>
-                <input type="range" min={0} max={totalRows - 1} step={1} value={idx}
-                  style={{ flex: 1 }}
-                  onChange={e => setProfRow(parseInt(e.target.value))} />
-                <button
-                  style={{ padding: '1px 6px', fontSize: 12, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0 }}
-                  disabled={idx === totalRows - 1}
-                  onClick={() => setProfRow(idx + 1)}
-                >▶</button>
-                <input
-                  type="number"
-                  min={0}
-                  max={totalRows - 1}
-                  value={idx}
-                  style={{ width: 52, fontSize: 12, textAlign: 'center', flexShrink: 0 }}
-                  onChange={e => {
-                    const v = parseInt(e.target.value)
-                    if (!isNaN(v)) setProfRow(Math.max(0, Math.min(totalRows - 1, v)))
-                  }}
-                />
-                <span className="node-result-val" style={{ whiteSpace: 'nowrap', minWidth: 72, textAlign: 'right' }}>
-                  {curMeta.label || ''} ({curMeta.n}점)
-                </span>
-              </div>
-            </div>
-            <div className="param-row">
-              <span className="param-label">표시</span>
-              <select className="param-select" value={profMode}
-                onChange={e => setProfMode(e.target.value as 'line' | 'points')}>
-                <option value="points">점</option>
-                <option value="line">선</option>
-              </select>
-            </div>
-            {profLoading && <div className="param-empty" style={{ fontSize: 11 }}>로딩 중…</div>}
-            {chartData && (() => {
-              // ProfileCaliper: measurements에서 피처/라인피팅 파싱 → 오버레이
-              let caliperFeatures: CaliperFeature[] | undefined
-              let caliperLineFits: CaliperLineFit[] | undefined
-              if (toolType === 'ProfileCaliper' && result.measurements) {
-                const mmap: Record<string, number> = {}
-                for (const m of result.measurements)
-                  if (m.valid) mmap[m.name] = m.value
-                const feats: CaliperFeature[] = []
-                for (let fi = 0; ; fi++) {
-                  const sMm = mmap[`feat[${fi}].sMm`]
-                  const zMm = mmap[`feat[${fi}].zMm`]
-                  if (sMm === undefined) break
-                  feats.push({ sMm, zMm: zMm ?? 0, kind: 'feat', label: `F${fi}` })
-                }
-                caliperFeatures = feats.length > 0 ? feats : undefined
-                const fits: CaliperLineFit[] = []
-                for (let li = 0; ; li++) {
-                  const fromMm    = mmap[`lineFit[${li}].fromMm`]
-                  const toMm      = mmap[`lineFit[${li}].toMm`]
-                  const slope     = mmap[`lineFit[${li}].slope`]
-                  const intercept = mmap[`lineFit[${li}].intercept`]
-                  if (fromMm === undefined) break
-                  if (slope !== undefined && intercept !== undefined)
-                    fits.push({ fromMm, toMm: toMm ?? fromMm, slope, intercept })
-                }
-                caliperLineFits = fits.length > 0 ? fits : undefined
-              }
-              return (
-                <ProfileChart x={chartData.x} z={chartData.z} mode={profMode}
-                  features={caliperFeatures} lineFits={caliperLineFits} />
-              )
-            })()}
-          </div>
-        )
-      })()}
-
-      {/* 범용 측정값 테이블 — 커스텀 렌더 없는 툴(RegionMeasure, LineFit 등) */}
+      {/* 범용 측정값 테이블 — 커스텀 렌더 없는 툴(RegionMeasure, LineFit 등).
+          ProfileCaliper는 자체 결과뷰(ProfileCaliperResult)가 처리 + per-profile(prof[j].*) 원시값은 숨김 */}
       {result.measurements && result.measurements.length > 0
-        && !['PlaneFit', 'Align', 'HeightMeasure'].includes(toolType) && (
+        && !['PlaneFit', 'Align', 'HeightMeasure', 'ProfileCaliper'].includes(toolType) && (
         <div className="node-result-measures">
           {result.measurements.map((m, i) => (
             <div className={`node-result-row ${m.valid ? '' : 'fail-val'}`} key={`${m.name}-${i}`}>
@@ -786,7 +1120,7 @@ function ResultView({ toolType, result, rois, nodeId, params, onParamChange, ori
   )
 }
 
-export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, upstreamCloud, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
+export default function NodePanel({ nodeId, toolType, label, params, result, upstreamPreview, upstreamZMin, upstreamZMax, upstreamResX, upstreamResY, upstreamOriginCol, upstreamOriginRow, upstreamCloud, upstreamProfileNodeId, upstreamProfileMeta, width, onWidthChange, onParamChange, onRun, pinned, onTogglePin, onClose }: Props) {
   const [tab, setTab] = useState<'params' | 'result'>(() => getViewState(nodeId).tab ?? 'params')
   useEffect(() => { patchViewState(nodeId, { tab }) }, [nodeId, tab])
   const dragStartRef = useRef<{ mx: number; w: number } | null>(null)
@@ -988,7 +1322,12 @@ export default function NodePanel({ nodeId, toolType, label, params, result, ups
               params={params}
               onChange={(next) => onParamChange(nodeId, next)}
               resultMeasurements={result?.measurements}
+              resultDecisions={result?.decisions}
               resultProfiles={result?.profiles}
+              nodeId={nodeId}
+              profileMeta={result?.profileMeta}
+              upstreamNodeId={upstreamProfileNodeId}
+              upstreamProfileMeta={upstreamProfileMeta}
             />
           ) : toolType === 'RowStretch' ? (
             <RowStretchEditor

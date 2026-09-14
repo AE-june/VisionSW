@@ -96,7 +96,7 @@ function PathField({ label, value, onChange, toolType }: {
     const api = (window as Window & { electronAPI?: { openFile: (f?: Electron.FileFilter[]) => Promise<string | null> } }).electronAPI
     if (!api) return
     const filters = (toolType === 'HeightMapLoader' || toolType === 'ExposureMerge')
-      ? [{ name: 'HeightMap (PNG)', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }]
+      ? [{ name: 'HeightMap', extensions: ['png', 'tif', 'tiff'] }, { name: 'All Files', extensions: ['*'] }]
       : toolType === 'CloudLoader'
       ? [{ name: 'Point Cloud', extensions: ['ply', 'xyz', 'asc', 'pcd', 'bin'] }, { name: 'All Files', extensions: ['*'] }]
       : [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'tiff'] }, { name: 'All Files', extensions: ['*'] }]
@@ -1117,12 +1117,12 @@ function ExtractProfileParams({ params, onChange }: { params: Record<string, unk
     <SelectField label="모드" value={mode} options={['axisX', 'axisY', 'line']} onChange={v => set('mode', v)}
       tooltip="axisX=지정 행 그대로 추출 · axisY=지정 열 그대로 추출 · line=두 점 사이 임의 경로 보간" />
     {(mode === 'axisX' || mode === 'axisY') && <>
-      <NumField label="인덱스" value={(params.index as number) ?? 0} step={1} onChange={v => set('index', v)}
-        tooltip="추출할 행(axisX) 또는 열(axisY) 번호(0-based). repeat>1이면 이 인덱스부터 시작" />
-      <NumField label="Span(px)" value={(params.span as number) ?? 1} step={1} onChange={v => set('span', v)}
-        tooltip="추출 행/열 폭(픽셀). 1이면 1행, N이면 N행 평균" />
-      <NumField label="Repeat" value={(params.repeat as number) ?? 1} step={1} onChange={v => set('repeat', v)}
-        tooltip="이 간격으로 N개 Profile 추출. 1이면 단일. 여러 개면 Profile[]로 출력" />
+      <NumField label="Span(라인수)" value={(params.span as number) ?? 10} step={1} onChange={v => set('span', v)}
+        tooltip="출력 1개당 평균할 라인수. 전체(또는 ROI)를 span줄씩 타일링해 여러 Profile로 출력" />
+      <SelectField label="집계 방식" value={(params.aggregation as string) ?? 'mean'}
+        options={['mean', 'min', 'max', 'median', 'stddev']}
+        onChange={v => set('aggregation', v)}
+        tooltip="mean=평균 · min=최솟값 · max=최댓값 · median=중앙값 · stddev=표준편차" />
     </>}
     {mode === 'line' && <>
       <div className="param-empty" style={{ fontSize: 10 }}>시작점(P0)과 끝점(P1)을 설정하세요.</div>
