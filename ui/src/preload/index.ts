@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   enginePreload: (folder: string, xResMm: number, yResMm: number, zResMm: number) =>
     ipcRenderer.invoke('engine:preload', folder, xResMm, yResMm, zResMm),
 
+  // 특정 노드의 특정 프로파일 행 x/z 데이터 요청 (비동기 — 응답은 onEngineEvent profileData 이벤트)
+  engineFetchProfile: (nodeId: string, profileIdx: number) =>
+    ipcRenderer.invoke('engine:fetchProfile', nodeId, profileIdx),
+
   // NotchMeasureV2 chunk envelope 온디맨드 요청 (응답은 onEngineEvent notchEnvData)
   engineFetchNotchEnv: (nodeId: string, chunkIdx: number) =>
     ipcRenderer.invoke('engine:fetchNotchEnv', nodeId, chunkIdx),

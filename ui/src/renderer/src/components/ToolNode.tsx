@@ -91,6 +91,7 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
 
 export default function ToolNode({ id, data, selected }: NodeProps) {
   const { label, toolType, result, onRun } = data as ToolNodeData
+  const params = (data as ToolNodeData & { params?: Record<string, unknown> }).params ?? {}
   const def = TOOL_DEF_MAP[toolType]
   const [resultOpen, setResultOpen] = useState(false)
   const [hoveredPort, setHoveredPort] = useState<string | null>(null)
@@ -109,7 +110,8 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
     ? (result!.ok !== false && result!.pass !== false ? 'pass' : 'fail')
     : ''
 
-  const portRows = Math.max(def.inputs.length, def.outputs.length)
+  const effectiveOutputs = def.getOutputs?.(params) ?? def.outputs
+  const portRows = Math.max(def.inputs.length, effectiveOutputs.length)
 
   return (
     <div className={`tool-node ${selected ? 'selected' : ''}`}>
@@ -141,7 +143,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
       <div className="tool-node-ports">
         {Array.from({ length: portRows }).map((_, i) => {
           const inD = def.inputs[i]
-          const outD = def.outputs[i]
+          const outD = effectiveOutputs[i]
           const inT = inD !== undefined ? portType(inD) : undefined
           const outT = outD !== undefined ? portType(outD) : undefined
           const inArr = inD !== undefined && portIsArray(inD)

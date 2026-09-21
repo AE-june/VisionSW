@@ -6,6 +6,7 @@
 //                   width, height, channels, frameId
 // ─────────────────────────────────────────────────────────────────────────────
 #include "HeightMap.h"
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -27,7 +28,7 @@ struct HeightMapMeta {
 
 // imgPath + ".meta.json" 에 사이드카 쓰기
 inline bool writeSidecar(const std::string& imgPath, const HeightMap& hm) {
-    std::ofstream f(imgPath + ".meta.json");
+    std::ofstream f(std::filesystem::u8path(imgPath + ".meta.json"));
     if (!f) return false;
     // 부동소수 정밀도 충분히 확보 (float ~7자리)
     f.precision(9);
@@ -48,7 +49,7 @@ inline bool writeSidecar(const std::string& imgPath, const HeightMap& hm) {
 
 // imgPath + ".meta.json" 읽기. 없거나 파싱 실패 시 nullopt.
 inline std::optional<HeightMapMeta> readSidecar(const std::string& imgPath) {
-    std::ifstream f(imgPath + ".meta.json");
+    std::ifstream f(std::filesystem::u8path(imgPath + ".meta.json"));
     if (!f) return std::nullopt;
 
     std::string content((std::istreambuf_iterator<char>(f)),

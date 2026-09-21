@@ -31,6 +31,7 @@
 #include "CompareTool.h"
 #include "CombineDecisionTool.h"
 #include "ExposureMergeCore.h"
+#include "ExposureFilterCore.h"
 #include "HeightMapSidecar.h"
 #include "IHeightMapLoader.h"
 #include "VisionData.h"
@@ -88,8 +89,18 @@ void heightmapCachePut(const std::string& path, const std::shared_ptr<HeightMap>
 
 std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
                                        float xRes, float yRes, float zRes) {
+    namespace fs = std::filesystem;
+    // Read via u8path so Korean/Unicode paths work on Windows (fopen uses ANSI otherwise)
+    std::ifstream ifs(fs::u8path(path), std::ios::binary | std::ios::ate);
+    if (!ifs) return nullptr;
+    auto fileSize = static_cast<size_t>(ifs.tellg());
+    ifs.seekg(0);
+    std::vector<stbi_uc> fileBuf(fileSize);
+    ifs.read(reinterpret_cast<char*>(fileBuf.data()), static_cast<std::streamsize>(fileSize));
+    ifs.close();
+
     int w, h, ch;
-    uint16_t* raw16 = stbi_load_16(path.c_str(), &w, &h, &ch, 1);
+    uint16_t* raw16 = stbi_load_16_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
     if (raw16) {
         auto heightmap = std::make_shared<HeightMap>();
         heightmap->width=w; heightmap->height=h;
@@ -102,7 +113,7 @@ std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
         stbi_image_free(raw16);
         return heightmap;
     }
-    unsigned char* raw8 = stbi_load(path.c_str(), &w, &h, &ch, 1);
+    unsigned char* raw8 = stbi_load_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
     if (!raw8) return nullptr;
     auto heightmap = std::make_shared<HeightMap>();
     heightmap->width=w; heightmap->height=h;
@@ -224,76 +235,384 @@ public:
     }
 };
 
-// ── ExposureSplit (다중노출 분리): 인터리브된 다중노출 HeightMap을 노출별로 행 분리.
-//   splitCount=2: 짝/홀 행 = 저/장 노출. splitCount=3: r%3=0/1/2 = 저/중/장 노출.
-//   행 = r*splitCount + phase. 행확장/보간 없이 각 노출을 n(=h/splitCount)행 그대로 출력.
-//   출력: outputStage로 노출 하나 선택. (머지/리플렉션 제거는 ExposureMerge2/3 노드가 담당)
-// A5-6: outputStage 파라미터 제거 → stages에 전부 싣고 UI가 고른다.
-//   주 출력은 항상 stage 0(저노출). noPreview 시 stages 생략(배치 가속).
+// ── ExposureMerge: 분리된 다중노출 HeightMap 머지 + 리플렉션 제거.
+//   포트0=저노출, 포트1=장노출(2노출) 또는 중노출(3노출), 포트2=장노출(3노출).
+//   exposureCount=2: 1단계. exposureCount=3: 캐스케이드 2단계(저+중→결과+장).
+//   출력 높이 = 입력 높이(행 복제 없음).
 class ExposureMergeTool : public IAlgorithmTool {
-    int   m_splitCount;
+    int   m_exposureCount;
+    float m_matchTol, m_reflTol, m_tolX, m_tolY;
+    int   m_gapK;
+    bool  m_removeReflection;
     bool  m_noPreview;
+    int   m_bands;
+    std::string m_nodeId;
 public:
-    ExposureMergeTool(int splitCount, bool noPreview)
-        : m_splitCount(std::clamp(splitCount, 2, 3)), m_noPreview(noPreview) {}
+    ExposureMergeTool(int exposureCount, float matchTol, float reflTol, float tolX, float tolY,
+                      int gapK, bool removeReflection, bool noPreview, int bands, std::string nodeId)
+        : m_exposureCount(std::clamp(exposureCount, 2, 3))
+        , m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY)
+        , m_gapK(gapK), m_removeReflection(removeReflection), m_noPreview(noPreview)
+        , m_bands(bands), m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->inHeightMap(0))
-            return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
+        const auto _t0 = std::chrono::steady_clock::now();
+        auto hmLo    = input ? input->inHeightMap(0) : nullptr;
+        auto hmMidHi = input ? input->inHeightMap(1) : nullptr;
+        if (!hmLo)    return { ToolStatus::Fail, "ExposureMerge: 포트0 HeightMap(저노출) 필요" };
+        if (!hmMidHi) return { ToolStatus::Fail, "ExposureMerge: 포트1 HeightMap(장/중노출) 필요" };
 
-        const auto& zm = *input->inHeightMap(0);
-        const int w = zm.width, h = zm.height;
-        const int sc = m_splitCount;
-        if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
+        const int w = hmLo->width, n = hmLo->height;
+        if (hmMidHi->width != w || hmMidHi->height != n)
+            return { ToolStatus::Fail, "ExposureMerge: 포트0/1 크기 불일치" };
 
-        const int n = h / sc;
+        std::shared_ptr<HeightMap> hmHi3;
+        if (m_exposureCount == 3) {
+            hmHi3 = input->inHeightMap(2);
+            if (!hmHi3) return { ToolStatus::Fail, "ExposureMerge: 포트2 HeightMap(장노출) 필요(3노출)" };
+            if (hmHi3->width != w || hmHi3->height != n)
+                return { ToolStatus::Fail, "ExposureMerge: 포트2 크기 불일치" };
+        }
 
-        auto extract = [&](int phase) {
-            std::vector<float> half((size_t)n * w);
-            for (int r = 0; r < n; ++r)
-                for (int c = 0; c < w; ++c)
-                    half[(size_t)r*w + c] = zm.data[(size_t)(r*sc + phase)*w + c];
-            return half;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const size_t BN = (size_t)n * w;
+        const std::vector<float>& lo  = hmLo->data;
+        const std::vector<float>& mid = hmMidHi->data;
+        const std::vector<float>& hi  = (m_exposureCount == 3) ? hmHi3->data : hmMidHi->data;
+
+        const int OV = 160;
+        const int nBands = (m_bands > 0) ? m_bands
+                         : std::max(1, std::min(std::max(1, cv::getNumThreads()), n));
+        std::vector<ExposureMergeScratch> scratch(nBands);
+        std::vector<std::vector<uint8_t>> srcBufs(nBands);
+
+        auto globalOffset = [&](const std::vector<float>& A, const std::vector<float>& B) {
+            std::vector<float> d; d.reserve(BN / 4 + 1);
+            for (size_t i = 0; i < BN; i += 4)
+                if (!std::isnan(A[i]) && !std::isnan(B[i]) && std::fabs(A[i]-B[i]) <= m_matchTol)
+                    d.push_back(A[i]-B[i]);
+            float o = 0.f;
+            if (!d.empty()) { size_t m = d.size()/2; std::nth_element(d.begin(), d.begin()+m, d.end()); o = d[m]; }
+            else VISION_LOG_INFO("ExposureMerge: 경고 — 겹침 일치 표본 0개 → offset=0.");
+            return o;
         };
-        auto makeZRaw = [&](std::vector<float> half) {
+
+        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) {
+            std::vector<float> out(BN, NaN);
+            const int bands = std::max(1, std::min(bandsReq, n));
+            cv::parallel_for_(cv::Range(0, bands), [&](const cv::Range& rg) {
+                for (int b = rg.start; b < rg.end; ++b) {
+                    const int p0 = (int)((long long)n * b / bands);
+                    const int p1 = (int)((long long)n * (b+1) / bands);
+                    if (p0 >= p1) continue;
+                    const int e0 = std::max(0, p0-OV), e1 = std::min(n, p1+OV);
+                    const int bn = e1 - e0;
+                    std::vector<uint8_t>& src = srcBufs[b];
+                    exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
+                                          m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b],
+                                          m_removeReflection, m_reflTol);
+                    for (int r = p0; r < p1; ++r) {
+                        const size_t so = (size_t)(r-e0)*w, dst = (size_t)r*w;
+                        for (int c = 0; c < w; ++c) {
+                            uint8_t s = src[so+c];
+                            out[dst+c] = (s==1) ? low[dst+c]-offset : (s==2 ? high[dst+c] : NaN);
+                        }
+                    }
+                }
+            });
+            return out;
+        };
+
+        float ofs1 = 0.f, ofs2 = 0.f;
+        std::vector<float> mergedA, finalZ;
+        if (m_exposureCount == 2) {
+            ofs1   = globalOffset(lo, hi);
+            finalZ = runStage(lo, hi, ofs1, nBands);
+        } else {
+            ofs1    = globalOffset(lo, mid);
+            mergedA = runStage(lo, mid, ofs1, nBands);
+            ofs2    = globalOffset(mergedA, hi);
+            finalZ  = runStage(mergedA, hi, ofs2, nBands);
+        }
+
+        auto makeHM = [&](const std::vector<float>& d) {
             auto z = std::make_shared<HeightMap>();
             z->width=w; z->height=n;
-            z->xResMm=zm.xResMm; z->yResMm=zm.yResMm;
-            z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->originCol=zm.originCol; z->originRow=zm.originRow;
-            z->data=std::move(half);
+            z->xResMm=hmLo->xResMm; z->yResMm=hmLo->yResMm;
+            z->zResMm=hmLo->zResMm; z->zZeroCount=hmLo->zZeroCount;
+            z->originCol=hmLo->originCol; z->originRow=hmLo->originRow;
+            z->frameId=hmLo->frameId; z->data=d;
             return z;
         };
 
-        static const char* const label2[] = { "1. 저노출", "2. 장노출" };
-        static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
-        const char* const* labels = (sc == 3) ? label3 : label2;
+        auto zFinal = makeHM(std::move(finalZ));
+        auto data = std::make_shared<VisionData>();
+        data->setHeightMap(zFinal);
+        data->sourceId = input->sourceId;
+        data->frames = input->frames;
+
+        if (!m_noPreview) {
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
+            data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
+            if (m_exposureCount == 2) {
+                data->stages->push_back({ "2. 저노출", makeHM(lo) });
+                data->stages->push_back({ "3. 장노출", makeHM(hi) });
+            } else {
+                data->stages->push_back({ "2. 저·중 머지", makeHM(mergedA) });
+                data->stages->push_back({ "3. 저노출",     makeHM(lo) });
+                data->stages->push_back({ "4. 중노출",     makeHM(mid) });
+                data->stages->push_back({ "5. 장노출",     makeHM(hi) });
+            }
+        }
+
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("ExposureMerge({}): {}x{}, ofs1={:.1f} ofs2={:.1f}cnt  [{:.1f} ms]",
+                        m_exposureCount, w, n, ofs1, ofs2, _ms);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── PointCloudSplit: PointCloud를 스캔 위치 key(= round(coord/step)) 기반으로 분리.
+//   갭/누락 행이 있어도 각 위치의 output 배정 불변. 동일 key의 다중 Z도 함께 이동.
+class PointCloudSplitTool : public IAlgorithmTool {
+    int    m_splitCount;
+    char   m_scanAxis;
+    double m_scanStepMm;
+public:
+    PointCloudSplitTool(int sc, char axis, double step)
+        : m_splitCount(std::clamp(sc, 2, 3)), m_scanAxis(axis), m_scanStepMm(step) {}
+    std::string name() const override { return "PointCloudSplit"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
+        if (!input || !input->inCloud(0))
+            return { ToolStatus::Fail, "PointCloudSplit: PointCloud3D 입력이 필요합니다" };
+
+        const auto& cloud = *input->inCloud(0);
+        if (cloud.empty())
+            return { ToolStatus::Fail, "PointCloudSplit: 빈 PointCloud" };
+
+        std::map<int64_t, std::vector<Point3f>> rows;
+        for (const auto& pt : cloud.points) {
+            double v = (m_scanAxis == 'x') ? pt.x : pt.y;
+            // floor 사용: 연속 프로파일이 반드시 연속 key를 가짐. lround는 x.5 경계에서 두 프로파일을 같은 bin으로 병합하는 버그.
+            int64_t key = (m_scanStepMm > 0.0)
+                ? (int64_t)std::floor(v / m_scanStepMm)
+                : (int64_t)std::floor(v * 1e6);
+            rows[key].push_back(pt);
+        }
+
+        std::vector<PointCloud3D> outputs(m_splitCount);
+        for (auto& o : outputs) o.frameId = cloud.frameId;
+
+        const int sc = m_splitCount;
+        for (auto& [key, pts] : rows) {
+            int outIdx = (int)(((key % sc) + sc) % sc);
+            auto& dst = outputs[outIdx].points;
+            dst.insert(dst.end(), pts.begin(), pts.end());
+        }
 
         auto data = std::make_shared<VisionData>();
         data->sourceId = input->sourceId;
-        // 주 출력 = 항상 stage 0 (저노출)
-        auto z0 = makeZRaw(extract(0));
-        data->setHeightMap(z0);
-        if (!m_noPreview) {
-            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
-            data->stages->push_back({ labels[0], z0 });
-            for (int p = 1; p < sc; ++p)
-                data->stages->push_back({ labels[p], makeZRaw(extract(p)) });
+        for (auto& o : outputs)
+            data->clouds.push_back(std::make_shared<PointCloud3D>(std::move(o)));
+
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("PointCloudSplit: {} pts → {}분할, 행{}개  [{:.1f} ms]",
+            cloud.size(), m_splitCount, (int)rows.size(), _ms);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── CloudZReduce: 같은 (x,y) bin 내 여러 Z 포인트 → reduce 함수로 1개 선택.
+//   reduce: max/min/mean/median/continuity. 출력 x,y = bin 내 점들의 평균. z = reduced.
+//   continuity: 앞뒤 스캔(X 방향 이웃 bin) Z 중앙값 기준으로 가장 연속되는 Z 선택.
+//   roiEnabled=true: ROI 내부만 reduce, 외부 점은 그대로 합산 출력.
+class CloudZReduceTool : public IAlgorithmTool {
+public:
+    enum class Reduce { Max, Min, Mean, Median, Continuity };
+private:
+    Reduce m_reduce;
+    double m_xStepMm, m_yStepMm;
+    int    m_neighborRange;
+    bool   m_roiEnabled;
+    float  m_xMin, m_xMax, m_yMin, m_yMax, m_zMin, m_zMax;
+public:
+    CloudZReduceTool(Reduce reduce, double xStep, double yStep, int neighborRange,
+                     bool roiEnabled,
+                     float xMin, float xMax, float yMin, float yMax, float zMin, float zMax)
+        : m_reduce(reduce)
+        , m_xStepMm(xStep)
+        , m_yStepMm(yStep)
+        , m_neighborRange(std::max(1, neighborRange))
+        , m_roiEnabled(roiEnabled)
+        , m_xMin(xMin), m_xMax(xMax)
+        , m_yMin(yMin), m_yMax(yMax)
+        , m_zMin(zMin), m_zMax(zMax) {}
+    std::string name() const override { return "CloudZReduce"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
+        if (!input || !input->inCloud(0))
+            return { ToolStatus::Fail, "CloudZReduce: PointCloud3D 입력이 필요합니다" };
+
+        const auto& cloud = *input->inCloud(0);
+        if (cloud.empty())
+            return { ToolStatus::Fail, "CloudZReduce: 빈 PointCloud" };
+
+        // ROI 분리
+        std::vector<Point3f> roiPts, passPts;
+        if (m_roiEnabled) {
+            for (const auto& pt : cloud.points) {
+                if (pt.x >= m_xMin && pt.x <= m_xMax &&
+                    pt.y >= m_yMin && pt.y <= m_yMax &&
+                    pt.z >= m_zMin && pt.z <= m_zMax)
+                    roiPts.push_back(pt);
+                else
+                    passPts.push_back(pt);
+            }
+        } else {
+            roiPts = cloud.points;
         }
-        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
+
+        // bin key → points 수집. bx 저장(Continuity 이웃 탐색용).
+        struct BinData { double sumX = 0, sumY = 0; std::vector<float> zs; int32_t bx = 0, by = 0; };
+        std::unordered_map<int64_t, BinData> bins;
+        bins.reserve(roiPts.size());
+
+        // step=0이면 float 비트값을 키로 사용
+        auto toKey = [&](const Point3f& pt) -> int64_t {
+            int32_t bx, by;
+            if (m_xStepMm > 0) bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+            else { uint32_t u; std::memcpy(&u, &pt.x, 4); bx = (int32_t)u; }
+            if (m_yStepMm > 0) by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+            else { uint32_t u; std::memcpy(&u, &pt.y, 4); by = (int32_t)u; }
+            return ((int64_t)(uint32_t)bx << 32) | (uint32_t)by;
+        };
+        for (const auto& pt : roiPts) {
+            int64_t key = toKey(pt);
+            auto& b = bins[key];
+            b.sumX += pt.x; b.sumY += pt.y;
+            b.zs.push_back(pt.z);
+            if (m_xStepMm > 0) b.bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+            if (m_yStepMm > 0) b.by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+        }
+
+        auto out = std::make_shared<PointCloud3D>();
+        out->frameId = cloud.frameId;
+        out->points.reserve(bins.size() + passPts.size());
+
+        if (m_reduce == Reduce::Continuity) {
+            std::unordered_map<int64_t, float> estimates;
+            estimates.reserve(bins.size());
+            for (auto& [key, b] : bins) {
+                auto zs = b.zs;
+                std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end());
+                estimates[key] = zs[zs.size()/2];
+            }
+            int nr = m_neighborRange;
+            for (auto& [key, b] : bins) {
+                float refZ = 0.f; int count = 0;
+                for (int dx = -nr; dx <= nr; ++dx) {
+                    if (dx == 0) continue;
+                    int64_t nkey = ((int64_t)(uint32_t)(b.bx + dx) << 32) | (uint32_t)b.by;
+                    auto it = estimates.find(nkey);
+                    if (it != estimates.end()) { refZ += it->second; ++count; }
+                }
+                float z;
+                if (count > 0) {
+                    refZ /= count;
+                    z = b.zs[0];
+                    float best = std::abs(b.zs[0] - refZ);
+                    for (float zv : b.zs) { float d = std::abs(zv - refZ); if (d < best) { best = d; z = zv; } }
+                } else {
+                    z = estimates[key];
+                }
+                out->points.push_back({ (float)(b.sumX/b.zs.size()), (float)(b.sumY/b.zs.size()), z });
+            }
+        } else {
+            for (auto& [key, b] : bins) {
+                float z = 0.f;
+                auto& zs = b.zs;
+                if (m_reduce == Reduce::Max)       z = *std::max_element(zs.begin(), zs.end());
+                else if (m_reduce == Reduce::Min)  z = *std::min_element(zs.begin(), zs.end());
+                else if (m_reduce == Reduce::Mean) { for (float v : zs) z += v; z /= (float)zs.size(); }
+                else { std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end()); z = zs[zs.size()/2]; }
+                out->points.push_back({ (float)(b.sumX/zs.size()), (float)(b.sumY/zs.size()), z });
+            }
+        }
+
+        // ROI 외부 점 합산
+        out->points.insert(out->points.end(), passPts.begin(), passPts.end());
+
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("CloudZReduce: {} pts → {} pts (roi={} pass={})  [{:.1f} ms]",
+            cloud.size(), out->size(), bins.size(), passPts.size(), _ms);
+        auto data = std::make_shared<VisionData>();
+        data->sourceId = input->sourceId;
+        data->setCloud(out);
         return { ToolStatus::Ok, "", data };
     }
 };
 
 // RowStretchTool → VisionTools/RowStretchTool.{h,cpp} 로 이동 (A2)
 
-// ── DualExposureMerge (이중노출 머지, 재구현): 인터리브 홀짝 → 오프셋보정 →
-//    저노출우선 머지 → 연속성(영역성장) 필터로 fill 리플렉션 제거 → 반해상도 출력.
-//    규칙: 겹침은 저노출 우선(리플 자동배제), fill은 신뢰 씨앗에서 연결성으로 검증.
-//    [증분1] ① 연속성 주력. ② 신뢰표면편차+I/LLT 게이팅, I중앙값 홀짝판별, 자동보정은 추후.
-// A5-1: halfRes=true → 새 프레임 정의(nodeId가 있을 때).
-// A5-2: chunkMode/chunkRows/overlapRows 레시피에서 제거 → 엔진 자동 판단(n > 4096 시 청크).
+// ── ExposureSplit: 인터리브 다중노출 HeightMap → 노출별 분리.
+//   splitCount=2: 짝/홀 행 = 저/장. splitCount=3: r%3=0/1/2 = 저/중/장.
+//   출력: 주 출력=저노출(phase 0), stages=전체 노출(noPreview 시 생략).
+//   출력 yResMm = 입력 yResMm × splitCount (물리 피치 복원).
+class ExposureSplitTool : public IAlgorithmTool {
+    int  m_splitCount;
+    bool m_noPreview;
+public:
+    ExposureSplitTool(int splitCount, bool noPreview)
+        : m_splitCount(std::clamp(splitCount, 2, 3)), m_noPreview(noPreview) {}
+    std::string name() const override { return "ExposureSplit"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->inHeightMap(0))
+            return { ToolStatus::Fail, "ExposureSplit: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->inHeightMap(0);
+        const int w = zm.width, h = zm.height, sc = m_splitCount;
+        if (h < sc) return { ToolStatus::Fail, "ExposureSplit: 이미지 높이가 분할 수보다 작습니다" };
+        const int n = h / sc;
+
+        auto extract = [&](int phase) {
+            std::vector<float> buf((size_t)n * w);
+            for (int r = 0; r < n; ++r)
+                for (int c = 0; c < w; ++c)
+                    buf[(size_t)r*w + c] = zm.data[(size_t)(r*sc + phase)*w + c];
+            return buf;
+        };
+        auto makeHM = [&](std::vector<float> d) {
+            auto z = std::make_shared<HeightMap>();
+            z->width=w; z->height=n;
+            z->xResMm=zm.xResMm; z->yResMm=zm.yResMm*(float)sc;
+            z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
+            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            z->data=std::move(d);
+            return z;
+        };
+        static const char* const label2[] = { "1. 저노출", "2. 장노출" };
+        static const char* const label3[] = { "1. 저노출", "2. 중노출", "3. 장노출" };
+        const char* const* labels = (sc == 3) ? label3 : label2;
+
+        auto data = std::make_shared<VisionData>();
+        data->sourceId = input->sourceId;
+        for (int p = 0; p < sc; ++p)
+            data->heightmaps.push_back(makeHM(extract(p)));
+        if (!m_noPreview) {
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
+            for (int p = 0; p < sc; ++p)
+                data->stages->push_back({ labels[p], data->heightmaps[p] });
+        }
+        VISION_LOG_INFO("ExposureSplit: {}x{} → {}분할, 노출당 {}행", w, h, sc, n);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// (구) DualExposureMergeTool — ExposureMerge2 타입 제거됨. ExposureMerge 사용.
 class DualExposureMergeTool : public IAlgorithmTool {
     float m_matchTol;
     float m_reflTol;
@@ -478,14 +797,16 @@ class TripleExposureMergeTool : public IAlgorithmTool {
     bool  m_removeReflection;
     bool  m_noPreview;
     int   m_bands;
+    float m_targetThickness;  // intensity 노출 선택: |thickness-target| 최소
     std::string m_nodeId;  // A5-1: 새 프레임 정의용
 public:
     TripleExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
                             int gapK, bool halfRes, bool removeReflection, bool noPreview, int bands,
-                            std::string nodeId)
+                            float targetThickness, std::string nodeId)
         : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
           m_gapK(gapK), m_halfRes(halfRes), m_removeReflection(removeReflection),
-          m_noPreview(noPreview), m_bands(bands), m_nodeId(std::move(nodeId)) {}
+          m_noPreview(noPreview), m_bands(bands), m_targetThickness(targetThickness),
+          m_nodeId(std::move(nodeId)) {}
     std::string name() const override { return "ExposureMerge3"; }
 
     ToolResult execute(VisionDataPtr input) override {
@@ -498,6 +819,14 @@ public:
         const size_t BN = (size_t)n * w;
         const float NaN = std::numeric_limits<float>::quiet_NaN();
         auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
+        const auto imPtr = input->inHeightMap(1);
+        const bool hasIntensity = (imPtr != nullptr);
+        if (hasIntensity && (imPtr->width != w || imPtr->height != h))
+            return { ToolStatus::Fail, "3노출 머지: intensity 크기가 HeightMap과 다릅니다" };
+        const auto thkPtr = input->inHeightMap(2);
+        const bool hasThickness = (thkPtr != nullptr);
+        if (hasThickness && (thkPtr->width != w || thkPtr->height != h))
+            return { ToolStatus::Fail, "3노출 머지: thickness 크기가 HeightMap과 다릅니다" };
 
         // 세부 계측(동작 불변): 각 구간 소요시간을 로그로.
         using clk = std::chrono::steady_clock;
@@ -518,6 +847,34 @@ public:
                 }
         });
         lap("① 저/중/장 분리");
+        std::vector<float> intLo(hasIntensity ? BN : 0, NaN),
+                           intMid(hasIntensity ? BN : 0, NaN),
+                           intHi(hasIntensity ? BN : 0, NaN);
+        if (hasIntensity) {
+            const auto& im = *imPtr;
+            auto atInt = [&](int r, int c){ return im.data[(size_t)r*w + c]; };
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        size_t i = (size_t)r*w + c;
+                        intLo[i] = atInt(3*r,c); intMid[i] = atInt(3*r+1,c); intHi[i] = atInt(3*r+2,c);
+                    }
+            });
+        }
+        std::vector<float> thkLo(hasThickness ? BN : 0, NaN),
+                           thkMid(hasThickness ? BN : 0, NaN),
+                           thkHi(hasThickness ? BN : 0, NaN);
+        if (hasThickness) {
+            const auto& tm = *thkPtr;
+            auto atThk = [&](int r, int c){ return tm.data[(size_t)r*w + c]; };
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        size_t i = (size_t)r*w + c;
+                        thkLo[i] = atThk(3*r,c); thkMid[i] = atThk(3*r+1,c); thkHi[i] = atThk(3*r+2,c);
+                    }
+            });
+        }
 
         // 전역 오프셋(median(A−B), stride-4 서브샘플) — 결정 코어 내부와 동일 산식.
         //  밴드 병렬에서도 모든 밴드가 이 값을 forcedOffset으로 공유해야 전체-1회 연산과 비트 동일.
@@ -540,8 +897,8 @@ public:
         // 밴드 슬롯별 작업 버퍼 — 결정 호출마다 새 할당하던 것을 재사용(힙 경합 제거). 단계 간에도 재사용.
         std::vector<ExposureMergeScratch> scratch(nBands);
         std::vector<std::vector<uint8_t>>  srcBufs(nBands);
-        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) {
-            std::vector<float> out(BN);
+        auto runStage = [&](const std::vector<float>& low, const std::vector<float>& high, float offset, int bandsReq) -> std::vector<float> {
+            std::vector<float> out(BN, NaN);
             const int bands = std::max(1, std::min(bandsReq, n));
             cv::parallel_for_(cv::Range(0, bands), [&](const cv::Range& rg) {
                 for (int b = rg.start; b < rg.end; ++b) {
@@ -555,7 +912,7 @@ public:
                     exposureMergeDecision(low.data()+(size_t)e0*w, high.data()+(size_t)e0*w, w, bn,
                                           m_matchTol, m_tolX, m_tolY, m_gapK, offset, src, &scratch[b],
                                           m_removeReflection, m_reflTol);
-                    // source → Z, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림). 승자 값은 전체 배열에서 직접.
+                    // source → Z + intensity, 코어 행 [p0,p1)만 out에 기록(겹침 여백 버림).
                     for (int r = p0; r < p1; ++r) {
                         const size_t so = (size_t)(r - e0) * w, dst = (size_t)r * w;
                         for (int c = 0; c < w; ++c) {
@@ -595,18 +952,22 @@ public:
             }
             // 청크 [p0,p1)를 위·아래 ov행 확장해 두 단계를 블록 내에서 수행, 코어 행만 기록.
             //  ov는 두 단계 BFS 전파를 덮어야 함(실측: 40 출력행이면 전체모드와 0px, 기본 60출력행 마진).
-            auto computeTripleFiltered = [&](int e0, int e1) {
+            auto computeTripleFiltered = [&](int e0, int e1) -> std::vector<float> {
                 const int bn = e1 - e0;
                 std::vector<uint8_t> s1;
                 exposureMergeDecision(lo.data()+(size_t)e0*w, mid.data()+(size_t)e0*w, w, bn,
                                       m_matchTol, m_tolX, m_tolY, m_gapK, ofs1, s1, nullptr, m_removeReflection, m_reflTol);
                 std::vector<float> mA((size_t)bn*w);
-                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s1[i]; mA[i]= s==1? lo[(size_t)e0*w+i]-ofs1 : (s==2? mid[(size_t)e0*w+i] : NaN); }
+                for (size_t i=0;i<(size_t)bn*w;++i) {
+                    uint8_t s=s1[i]; mA[i]= s==1? lo[(size_t)e0*w+i]-ofs1 : (s==2? mid[(size_t)e0*w+i] : NaN);
+                }
                 std::vector<uint8_t> s2;
                 exposureMergeDecision(mA.data(), hi.data()+(size_t)e0*w, w, bn,
                                       m_matchTol, m_tolX, m_tolY, m_gapK, ofs2, s2, nullptr, m_removeReflection, m_reflTol);
                 std::vector<float> fB((size_t)bn*w);
-                for (size_t i=0;i<(size_t)bn*w;++i){ uint8_t s=s2[i]; fB[i]= s==1? mA[i]-ofs2 : (s==2? hi[(size_t)e0*w+i] : NaN); }
+                for (size_t i=0;i<(size_t)bn*w;++i) {
+                    uint8_t s=s2[i]; fB[i]= s==1? mA[i]-ofs2 : (s==2? hi[(size_t)e0*w+i] : NaN);
+                }
                 return fB;
             };
             finalZ.assign(BN, NaN);
@@ -617,7 +978,8 @@ public:
                 const int p1 = std::min(n, p0+chunkOut);
                 const int e0 = std::max(0, p0-ov), e1 = std::min(n, p1+ov);
                 auto fB = computeTripleFiltered(e0, e1);
-                for (int r=p0;r<p1;++r) std::copy(&fB[(size_t)(r-e0)*w], &fB[(size_t)(r-e0)*w+w], &finalZ[(size_t)r*w]);
+                for (int r=p0;r<p1;++r)
+                    std::copy(&fB[(size_t)(r-e0)*w], &fB[(size_t)(r-e0)*w+w], &finalZ[(size_t)r*w]);
                 ++nChunks;
             }
             VISION_LOG_INFO("ExposureMerge3[청크]: {}개 청크(코어 {}입력행+겹침 {}입력행), ofs1={:.1f} ofs2={:.1f}",
@@ -625,15 +987,55 @@ public:
             lap("②③ 청크 캐스케이드");
         }
 
+        // ③b intensity 머지(z-map과 독립): finalZ NaN 마스크만 공유. 유효 픽셀 채우기:
+        //  · thickness 입력 있으면 |thickness - target| 최소인 노출의 intensity 선택
+        //    (레이저선 두께가 목표에 가까울수록 노출 적정 — 밝기보다 포화/언더 판별에 강함).
+        //  · thickness 없으면 저→중→장 순 대입 후 더 밝으면 교체(최대값).
+        //  intensity/thickness 0은 로더가 NaN으로 저장하므로 NaN 후보는 건너뛴다.
+        std::vector<float> intFinal(hasIntensity ? BN : 0, NaN);
+        if (hasIntensity) {
+            const float target = m_targetThickness;
+            cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        const size_t i = (size_t)r*w + c;
+                        if (std::isnan(finalZ[i])) { intFinal[i] = NaN; continue; }
+                        // 유효 = NaN 아님 && 0 아님(0은 무효 픽셀로 취급, 후보 제외).
+                        auto valid = [](float v){ return !std::isnan(v) && v != 0.f; };
+                        float best = NaN;
+                        if (hasThickness) {
+                            // 두께가 목표에 가장 가까운 노출 선택(동률이면 저>중>장 우선).
+                            float bestDist = std::numeric_limits<float>::infinity();
+                            auto consider = [&](float thk, float inten) {
+                                if (!valid(thk) || !valid(inten)) return;
+                                float d = std::fabs(thk - target);
+                                if (d < bestDist) { bestDist = d; best = inten; }
+                            };
+                            consider(thkLo[i], intLo[i]);
+                            consider(thkMid[i], intMid[i]);
+                            consider(thkHi[i], intHi[i]);
+                        }
+                        if (std::isnan(best)) {
+                            // thickness 없음/전부 무효 → 저→중→장 최대 밝기 폴백.
+                            if (valid(intLo[i]))                                    best = intLo[i];
+                            if (valid(intMid[i]) && (std::isnan(best) || intMid[i] > best)) best = intMid[i];
+                            if (valid(intHi[i])  && (std::isnan(best) || intHi[i]  > best)) best = intHi[i];
+                        }
+                        intFinal[i] = best;
+                    }
+            });
+            lap(hasThickness ? "③b intensity 머지(두께 근접)" : "③b intensity 머지(저→중→장 최대)");
+        }
+
         // ④ 출력 HeightMap: halfRes면 n행·Y피치×3. 끄면 각 행을 3배 복제해 원본 높이(3n행).
-        auto makeOut = [&](std::vector<float> src) {   // by-value: 최종은 move로 넘겨 복사 제거
+        auto makeOut = [&](std::vector<float> src, const HeightMap& meta) {   // by-value: 최종은 move로 넘겨 복사 제거
             auto z = std::make_shared<HeightMap>();
-            z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            z->originCol=zm.originCol; z->originRow=zm.originRow;
+            z->width=w; z->xResMm=meta.xResMm; z->zResMm=meta.zResMm; z->zZeroCount=meta.zZeroCount;
+            z->originCol=meta.originCol; z->originRow=meta.originRow;
             if (m_halfRes) {
-                z->height=n; z->yResMm=zm.yResMm*3.f; z->data = std::move(src);
+                z->height=n; z->yResMm=meta.yResMm*3.f; z->data = std::move(src);
             } else {
-                z->height=3*n; z->yResMm=zm.yResMm;
+                z->height=3*n; z->yResMm=meta.yResMm;
                 z->data.resize((size_t)3*n*w);
                 cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
                     for (int r=rg.start;r<rg.end;++r)
@@ -643,10 +1045,13 @@ public:
             }
             return z;
         };
-        auto zFinal = makeOut(std::move(finalZ));
+        auto zFinal = makeOut(std::move(finalZ), zm);
+        HeightMapPtr intFinalHm;
+        if (hasIntensity) intFinalHm = makeOut(std::move(intFinal), *imPtr);
 
         auto data = std::make_shared<VisionData>();
         data->setHeightMap(zFinal);
+        if (intFinalHm) data->heightmaps.push_back(intFinalHm);
         data->sourceId = input->sourceId;
         data->frames = input->frames;
         // A5-1: halfRes=true 시 새 프레임 정의
@@ -659,18 +1064,189 @@ public:
         // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — !noPreview && 비청크 일 때만(청크는 mergedA 미보관).
         if (!m_noPreview && !chunkMode) {
             // 스테이지용 버퍼는 이후 미사용 → move로 넘겨 복사 제거(인터랙티브 미리보기 비용 절감).
-            auto zMerged = makeOut(std::move(mergedA)), zLo = makeOut(std::move(lo)),
-                 zMid = makeOut(std::move(mid)), zHi = makeOut(std::move(hi));
+            auto zMerged = makeOut(std::move(mergedA), zm), zLo = makeOut(std::move(lo), zm),
+                 zMid = makeOut(std::move(mid), zm), zHi = makeOut(std::move(hi), zm);
             data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
             data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
             data->stages->push_back({ "2. 저·중 머지",          zMerged });
             data->stages->push_back({ "3. 저노출",             zLo });
             data->stages->push_back({ "4. 중간노출",           zMid });
             data->stages->push_back({ "5. 장노출",             zHi });
+            if (hasIntensity) {
+                auto intLoHm  = makeOut(std::move(intLo),  *imPtr);
+                auto intMidHm = makeOut(std::move(intMid), *imPtr);
+                auto intHiHm  = makeOut(std::move(intHi),  *imPtr);
+                data->stages->push_back({ "6. intensity 머지",    intFinalHm });
+                data->stages->push_back({ "7. 저노출 intensity",  intLoHm });
+                data->stages->push_back({ "8. 중간노출 intensity", intMidHm });
+                data->stages->push_back({ "9. 장노출 intensity",  intHiHm });
+            }
         }
         lap("④ 출력 HeightMap + 스테이지");
         VISION_LOG_INFO("ExposureMerge3: {}x{} → {}행, offset1={:.1f} offset2={:.1f}cnt (matchTol={}, tolX={}, tolY={})",
                         w, h, n, ofs1, ofs2, m_matchTol, m_tolX, m_tolY);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── ExposureFilter (split-free 3노출 필터): 인터리브 저/중/장(r%3=0/1/2)을 분리하지 않고
+//    ① 클래스별 Z datum 정규화 → ② 대칭 로컬 일관성 리플렉션 제거 → ③ gap fill.
+//    EM3와 별개 툴(회귀 방지·A/B 비교). lo/mid/hi 대칭 처리 → 저노출 리플렉션도 걸러진다.
+//    기본 출력 = 전해상도 h행(halfRes=false). intensity/thickness 선택 입력은 EM3와 동일 시그니처.
+class ExposureFilterTool : public IAlgorithmTool {
+    ExposureFilterParams m_p;
+    bool  m_halfRes;
+    bool  m_noPreview;
+    float m_targetThickness;
+    std::string m_nodeId;
+public:
+    ExposureFilterTool(ExposureFilterParams p, bool halfRes, bool noPreview,
+                       float targetThickness, std::string nodeId)
+        : m_p(p), m_halfRes(halfRes), m_noPreview(noPreview),
+          m_targetThickness(targetThickness), m_nodeId(std::move(nodeId)) {}
+    std::string name() const override { return "ExposureFilter"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->inHeightMap(0))
+            return { ToolStatus::Fail, "ExposureFilter: HeightMap 입력이 필요합니다" };
+        const auto& zm = *input->inHeightMap(0);
+        const int w = zm.width, h = zm.height;
+        if (h < 3) return { ToolStatus::Fail, "ExposureFilter: 이미지 높이가 너무 작습니다(≥3행)" };
+        const int n = h / 3;
+        const float NaN = std::numeric_limits<float>::quiet_NaN();
+        const auto imPtr = input->inHeightMap(1);
+        const bool hasIntensity = (imPtr != nullptr);
+        if (hasIntensity && (imPtr->width != w || imPtr->height != h))
+            return { ToolStatus::Fail, "ExposureFilter: intensity 크기가 HeightMap과 다릅니다" };
+        const auto thkPtr = input->inHeightMap(2);
+        const bool hasThickness = (thkPtr != nullptr);
+        if (hasThickness && (thkPtr->width != w || thkPtr->height != h))
+            return { ToolStatus::Fail, "ExposureFilter: thickness 크기가 HeightMap과 다릅니다" };
+
+        using clk = std::chrono::steady_clock;
+        auto t0 = clk::now();
+
+        // 코어: Stage 0/1/2를 full 격자에서 수행.
+        std::vector<float> zFilled, zNorm;
+        std::vector<uint8_t> removeMask;
+        float offset[3], mad[3];
+        const bool wantStages = !m_noPreview;
+        exposureFilterRun(zm.data.data(), w, h, m_p, zFilled, offset, mad,
+                          wantStages ? &zNorm : nullptr, wantStages ? &removeMask : nullptr);
+
+        double ms = std::chrono::duration<double,std::milli>(clk::now()-t0).count();
+        VISION_LOG_INFO("ExposureFilter: {}x{} offset=({:.1f},{:.1f},{:.1f}) MAD=({:.1f},{:.1f},{:.1f}) {:.1f}ms",
+                        w, h, offset[0], offset[1], offset[2], mad[0], mad[1], mad[2], ms);
+
+        // intensity: zFilled 유효 위치만 채움(split-free → 해당 행 자기 값).
+        std::vector<float> intGrid;
+        if (hasIntensity) {
+            intGrid.assign((size_t)h * w, NaN);
+            const auto& im = *imPtr;
+            cv::parallel_for_(cv::Range(0, h), [&](const cv::Range& rg) {
+                for (int r = rg.start; r < rg.end; ++r)
+                    for (int c = 0; c < w; ++c) {
+                        size_t i = (size_t)r*w + c;
+                        if (!std::isnan(zFilled[i])) intGrid[i] = im.data[i];
+                    }
+            });
+        }
+
+        // ── 출력 HeightMap ────────────────────────────────────────────────
+        // halfRes=false(기본): full 격자 h행 그대로. true: 3행 묶음을 클래스별 선택/median으로 n행 축약.
+        auto makeZ = [&](const std::vector<float>& grid) {
+            auto z = std::make_shared<HeightMap>();
+            z->width = w; z->xResMm = zm.xResMm; z->zResMm = zm.zResMm;
+            z->zZeroCount = zm.zZeroCount; z->originCol = zm.originCol; z->originRow = zm.originRow;
+            if (!m_halfRes) { z->height = h; z->yResMm = zm.yResMm; z->data = grid; }
+            else {
+                z->height = n; z->yResMm = zm.yResMm * 3.f;
+                z->data.assign((size_t)n * w, NaN);
+                cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                    for (int R = rg.start; R < rg.end; ++R)
+                        for (int c = 0; c < w; ++c) {
+                            float v[3]; int cnt = 0;
+                            for (int s = 0; s < 3; ++s) { float x = grid[(size_t)(3*R+s)*w + c]; if (!std::isnan(x)) v[cnt++] = x; }
+                            if (cnt == 0) continue;
+                            std::sort(v, v + cnt);
+                            z->data[(size_t)R*w + c] = v[cnt/2];   // median
+                        }
+                });
+            }
+            return z;
+        };
+        auto zFinal = makeZ(zFilled);
+
+        HeightMapPtr intFinalHm;
+        if (hasIntensity) {
+            if (!m_halfRes) {
+                auto z = std::make_shared<HeightMap>();
+                z->width = w; z->height = h; z->xResMm = imPtr->xResMm; z->yResMm = imPtr->yResMm;
+                z->zResMm = imPtr->zResMm; z->zZeroCount = imPtr->zZeroCount;
+                z->originCol = imPtr->originCol; z->originRow = imPtr->originRow;
+                z->data = intGrid;
+                intFinalHm = z;
+            } else {
+                // 3행 중 zFilled 유효한 행들끼리: thickness 있으면 |thk-target| 최소, 없으면 최대 밝기.
+                auto z = std::make_shared<HeightMap>();
+                z->width = w; z->height = n; z->xResMm = imPtr->xResMm; z->yResMm = imPtr->yResMm * 3.f;
+                z->zResMm = imPtr->zResMm; z->zZeroCount = imPtr->zZeroCount;
+                z->originCol = imPtr->originCol; z->originRow = imPtr->originRow;
+                z->data.assign((size_t)n * w, NaN);
+                const float target = m_targetThickness;
+                cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
+                    for (int R = rg.start; R < rg.end; ++R)
+                        for (int c = 0; c < w; ++c) {
+                            auto vld = [](float v){ return !std::isnan(v) && v != 0.f; };
+                            float best = NaN, bestDist = std::numeric_limits<float>::infinity();
+                            for (int s = 0; s < 3; ++s) {
+                                size_t i = (size_t)(3*R+s)*w + c;
+                                if (std::isnan(zFilled[i])) continue;
+                                float inten = imPtr->data[i];
+                                if (!vld(inten)) continue;
+                                if (hasThickness) {
+                                    float thk = thkPtr->data[i];
+                                    if (!vld(thk)) continue;
+                                    float d = std::fabs(thk - target);
+                                    if (d < bestDist) { bestDist = d; best = inten; }
+                                } else if (std::isnan(best) || inten > best) best = inten;
+                            }
+                            z->data[(size_t)R*w + c] = best;
+                        }
+                });
+                intFinalHm = z;
+            }
+        }
+
+        auto data = std::make_shared<VisionData>();
+        data->setHeightMap(zFinal);
+        if (intFinalHm) data->heightmaps.push_back(intFinalHm);
+        data->sourceId = input->sourceId;
+        data->frames = input->frames;
+        // halfRes=true 시 새 프레임 정의(yResMm×3)
+        if (m_halfRes && !m_nodeId.empty()) {
+            Frame f; f.id = "hm:" + m_nodeId; f.toParent = Transform2D::identity();
+            data->definedFrames.push_back(f);
+            if (data->frames) data->frames->define(f);
+            zFinal->frameId = f.id;
+        }
+
+        if (wantStages) {
+            // 프리뷰: 1.최종 / 2.정규화(z') / 3.제거마스크 / 4.offset맵
+            auto zNormHm = makeZ(zNorm);
+            std::vector<float> maskGrid((size_t)h * w);
+            for (size_t i = 0; i < (size_t)h * w; ++i) maskGrid[i] = removeMask[i] ? 255.f : (std::isnan(zNorm[i]) ? NaN : 0.f);
+            auto zMaskHm = makeZ(maskGrid);
+            std::vector<float> ofsGrid((size_t)h * w);
+            for (int r = 0; r < h; ++r) { float o = offset[r % 3]; for (int c = 0; c < w; ++c) ofsGrid[(size_t)r*w+c] = o; }
+            auto zOfsHm = makeZ(ofsGrid);
+            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
+            data->stages->push_back({ "1. 최종",          zFinal });
+            data->stages->push_back({ "2. 정규화(z')",     zNormHm });
+            data->stages->push_back({ "3. 제거마스크",      zMaskHm });
+            data->stages->push_back({ "4. offset맵",       zOfsHm });
+            if (intFinalHm) data->stages->push_back({ "5. intensity", intFinalHm });
+        }
         return { ToolStatus::Ok, "", data };
     }
 };
@@ -735,6 +1311,14 @@ public:
         const bool ext16 = (ext == "png" || ext == "tif" || ext == "tiff");
         const size_t N = (size_t)zm.width * zm.height;
 
+        auto writeImg = [&](const cv::Mat& mat) -> bool {
+            namespace fs = std::filesystem;
+            std::vector<uchar> buf;
+            if (!cv::imencode("." + ext, mat, buf)) return false;
+            std::ofstream ofs(fs::u8path(savePath), std::ios::binary);
+            return ofs && ofs.write(reinterpret_cast<const char*>(buf.data()), buf.size());
+        };
+
         try {
             if (ext16) {
                 cv::Mat m16(zm.height, zm.width, CV_16U);
@@ -743,7 +1327,7 @@ public:
                     float v = zm.data[i];
                     d[i] = std::isnan(v) ? 0 : (uint16_t)std::clamp(v, 0.f, 65535.f);  // 무효=0
                 }
-                if (!cv::imwrite(savePath, m16)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
+                if (!writeImg(m16)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
             } else {
                 float lo = 1e30f, hi = -1e30f;
                 for (size_t i = 0; i < N; ++i) { float v = zm.data[i]; if (!std::isnan(v)) { lo = std::min(lo,v); hi = std::max(hi,v); } }
@@ -753,7 +1337,7 @@ public:
                     float v = zm.data[i];
                     m8.data[i] = std::isnan(v) ? 0 : (uchar)std::clamp((v-lo)/span*255.f, 0.f, 255.f);
                 }
-                if (!cv::imwrite(savePath, m8)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
+                if (!writeImg(m8)) return { ToolStatus::Fail, "HeightMapSaver: 저장 실패: " + savePath };
             }
         } catch (const std::exception& e) {
             return { ToolStatus::Fail, std::string("HeightMapSaver: ") + e.what() };
@@ -767,25 +1351,285 @@ public:
     }
 };
 
+// ── CloudSelect: clouds[] 배열에서 특정 인덱스 하나를 꺼내 단일 PointCloud3D로 출력.
+//   Aurora Select 노드 역할 — 배열 선택 로직을 하류 툴 내부에 넣지 않기 위한 분리.
+class CloudSelectTool : public IAlgorithmTool {
+    int m_idx;
+public:
+    CloudSelectTool(int idx) : m_idx(idx) {}
+    std::string name() const override { return "CloudSelect"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        auto cloud = input ? input->inCloud(0, (std::size_t)m_idx) : nullptr;
+        if (!cloud)
+            return { ToolStatus::Fail, "CloudSelect: clouds[" + std::to_string(m_idx) + "] 없음" };
+        auto data = std::make_shared<VisionData>();
+        data->sourceId = input->sourceId;
+        data->clouds.push_back(cloud);
+        return { ToolStatus::Ok, "", data };
+    }
+};
+
+// ── PointCloudSOR: Statistical Outlier Removal. k-NN 평균거리 기반 이상점 제거.
+//   PCL StatisticalOutlierRemoval과 동일 알고리즘. cellSizeMm 격자로 이웃 탐색.
+//   roiEnabled=true 시 ROI 내부만 SOR, 외부 점은 그대로 합산 출력.
+class PointCloudSORTool : public IAlgorithmTool {
+    int    m_k;
+    double m_stdDevMult;
+    double m_cellSizeMm;
+    bool   m_roiEnabled;
+    float  m_xMin, m_xMax, m_yMin, m_yMax, m_zMin, m_zMax;
+public:
+    PointCloudSORTool(int k, double mult, double cell,
+                      bool roiEnabled,
+                      float xMin, float xMax,
+                      float yMin, float yMax,
+                      float zMin, float zMax)
+        : m_k(std::max(1, k)), m_stdDevMult(mult), m_cellSizeMm(cell > 0 ? cell : 1.0)
+        , m_roiEnabled(roiEnabled)
+        , m_xMin(xMin), m_xMax(xMax)
+        , m_yMin(yMin), m_yMax(yMax)
+        , m_zMin(zMin), m_zMax(zMax) {}
+    std::string name() const override { return "PointCloudSOR"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        if (!input || !input->inCloud(0))
+            return { ToolStatus::Fail, "PointCloudSOR: PointCloud3D 입력이 필요합니다" };
+        const auto& cloud = *input->inCloud(0);
+        if (cloud.empty())
+            return { ToolStatus::Fail, "PointCloudSOR: 빈 PointCloud" };
+
+        // ROI 분리: roiCloud → SOR 대상, passCloud → 그대로 통과
+        std::vector<Point3f> roiPts, passPts;
+        if (m_roiEnabled) {
+            for (const auto& pt : cloud.points) {
+                if (pt.x >= m_xMin && pt.x <= m_xMax &&
+                    pt.y >= m_yMin && pt.y <= m_yMax &&
+                    pt.z >= m_zMin && pt.z <= m_zMax)
+                    roiPts.push_back(pt);
+                else
+                    passPts.push_back(pt);
+            }
+        } else {
+            roiPts = cloud.points;
+        }
+
+        // roiPts에 SOR 적용
+        auto filtered = applySOR(roiPts);
+
+        size_t removed = roiPts.size() - filtered.size();
+        VISION_LOG_INFO("PointCloudSOR: roi={} pts -> {} pts ({} removed), pass={} pts",
+            roiPts.size(), filtered.size(), removed, passPts.size());
+
+        auto out = std::make_shared<PointCloud3D>();
+        out->frameId = cloud.frameId;
+        out->points = std::move(filtered);
+        out->points.insert(out->points.end(), passPts.begin(), passPts.end());
+
+        auto data = std::make_shared<VisionData>();
+        data->sourceId = input->sourceId;
+        data->clouds.push_back(out);
+        return { ToolStatus::Ok, "", data };
+    }
+
+private:
+    std::vector<Point3f> applySOR(const std::vector<Point3f>& pts) {
+        if (pts.empty()) return {};
+
+        double cs = m_cellSizeMm;
+        struct Cell { std::vector<uint32_t> idxs; };
+        std::unordered_map<int64_t, Cell> grid;
+        grid.reserve(pts.size());
+        auto cellKey = [&](float x, float y, float z) -> int64_t {
+            int32_t cx = (int32_t)std::floor((double)x / cs);
+            int32_t cy = (int32_t)std::floor((double)y / cs);
+            int32_t cz = (int32_t)std::floor((double)z / cs);
+            return ((int64_t)(uint32_t)cx) | ((int64_t)(uint32_t)cy << 21) | ((int64_t)(uint32_t)cz << 42);
+        };
+        for (uint32_t i = 0; i < (uint32_t)pts.size(); ++i)
+            grid[cellKey(pts[i].x, pts[i].y, pts[i].z)].idxs.push_back(i);
+
+        int span = 3;
+        std::vector<float> meanDists(pts.size());
+        std::vector<std::pair<float, uint32_t>> candidates;
+
+        for (size_t i = 0; i < pts.size(); ++i) {
+            const auto& p = pts[i];
+            int32_t cx0 = (int32_t)std::floor((double)p.x / cs);
+            int32_t cy0 = (int32_t)std::floor((double)p.y / cs);
+            int32_t cz0 = (int32_t)std::floor((double)p.z / cs);
+            candidates.clear();
+            for (int dx = -span; dx <= span; ++dx)
+            for (int dy = -span; dy <= span; ++dy)
+            for (int dz = -span; dz <= span; ++dz) {
+                int64_t k = ((int64_t)(uint32_t)(cx0+dx))
+                          | ((int64_t)(uint32_t)(cy0+dy) << 21)
+                          | ((int64_t)(uint32_t)(cz0+dz) << 42);
+                auto it = grid.find(k);
+                if (it == grid.end()) continue;
+                for (uint32_t j : it->second.idxs) {
+                    if (j == (uint32_t)i) continue;
+                    const auto& q = pts[j];
+                    float ddx=q.x-p.x, ddy=q.y-p.y, ddz=q.z-p.z;
+                    candidates.push_back({ ddx*ddx+ddy*ddy+ddz*ddz, j });
+                }
+            }
+            int used = std::min(m_k, (int)candidates.size());
+            if (used == 0) { meanDists[i] = 0.f; continue; }
+            std::nth_element(candidates.begin(), candidates.begin() + used, candidates.end());
+            float sum = 0;
+            for (int j = 0; j < used; ++j) sum += std::sqrt(candidates[j].first);
+            meanDists[i] = sum / used;
+        }
+
+        double mu = 0;
+        for (float d : meanDists) mu += d;
+        mu /= (double)meanDists.size();
+        double sigma = 0;
+        for (float d : meanDists) sigma += ((double)d - mu) * ((double)d - mu);
+        sigma = std::sqrt(sigma / (double)meanDists.size());
+        float thresh = (float)(mu + m_stdDevMult * sigma);
+
+        std::vector<Point3f> result;
+        result.reserve(pts.size());
+        for (size_t i = 0; i < pts.size(); ++i)
+            if (meanDists[i] <= thresh) result.push_back(pts[i]);
+        return result;
+    }
+};
+
+// ── CloudToHeightMap: PointCloud3D → HeightMap 변환. ─────────────────────────
+//   SRCore ConvertPointCloudToZIL_CPU 알고리즘 인라인 포팅.
+//   Point3f는 x/y/z만 있으므로 intensity/llt 없이 Z 전용 HeightMap 생성.
+//   zZeroCount=32768 (16비트 중점 규약). 빈 픽셀=NaN.
+//
+//   주의: zResMm가 작을수록 Z 분해능 높지만 표현 범위 줄어듦.
+//   zResMm=0.001(1µm분해능) → 유효 범위 ±32.767mm.
+//   큰 공작물은 zResMm을 늘려야 함.
+class CloudToHeightMapTool : public IAlgorithmTool {
+public:
+    enum class Mode { Top, Bottom, Mean };
+private:
+    Mode  m_mode;
+    float m_xResMm, m_yResMm, m_zResMm;
+    bool  m_autoRange;
+    float m_xMin, m_xMax, m_yMin, m_yMax;
+public:
+    CloudToHeightMapTool(Mode mode, float xRes, float yRes, float zRes,
+                         bool autoRange, float xMin, float xMax, float yMin, float yMax)
+        : m_mode(mode)
+        , m_xResMm(xRes > 0 ? xRes : 0.1f)
+        , m_yResMm(yRes > 0 ? yRes : 0.1f)
+        , m_zResMm(zRes > 0 ? zRes : 0.001f)
+        , m_autoRange(autoRange)
+        , m_xMin(xMin), m_xMax(xMax), m_yMin(yMin), m_yMax(yMax) {}
+    std::string name() const override { return "CloudToHeightMap"; }
+
+    ToolResult execute(VisionDataPtr input) override {
+        const auto _t0 = std::chrono::steady_clock::now();
+        if (!input || !input->inCloud(0))
+            return { ToolStatus::Fail, "CloudToHeightMap: PointCloud3D 입력 필요" };
+        const auto& pts = input->inCloud(0)->points;
+        if (pts.empty())
+            return { ToolStatus::Fail, "CloudToHeightMap: 빈 PointCloud" };
+
+        float xMin = m_xMin, xMax = m_xMax, yMin = m_yMin, yMax = m_yMax;
+        if (m_autoRange) {
+            xMin = xMax = pts[0].x;
+            yMin = yMax = pts[0].y;
+            for (const auto& p : pts) {
+                if (p.x < xMin) xMin = p.x; if (p.x > xMax) xMax = p.x;
+                if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y;
+            }
+        }
+        if (xMax <= xMin || yMax <= yMin)
+            return { ToolStatus::Fail, "CloudToHeightMap: XY 범위 오류 (xMax<=xMin 또는 yMax<=yMin)" };
+
+        // SRCore ZMapCellIndex 동일 규약:
+        //   py(Y=래터럴) → xi(col), latRes=xResMm,   width  = lround((yMax-yMin)/xResMm)+1
+        //   px(X=이송)   → yi(row), transRes=yResMm,  height = lround((xMax-xMin)/yResMm)+1
+        const int W = (int)std::lround((yMax - yMin) / m_xResMm) + 1;
+        const int H = (int)std::lround((xMax - xMin) / m_yResMm) + 1;
+        const size_t N = (size_t)W * H;
+        const float zZero = 32768.f;
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+
+        auto hm = std::make_shared<HeightMap>();
+        hm->width      = W;
+        hm->height     = H;
+        hm->xResMm     = m_xResMm;
+        hm->yResMm     = m_yResMm;
+        hm->zResMm     = m_zResMm;
+        hm->zZeroCount = zZero;
+        hm->frameId    = input->inCloud(0)->frameId;
+        hm->data.assign(N, nan);
+
+        std::vector<double> sumBuf;
+        std::vector<int>    cntBuf;
+        if (m_mode == Mode::Mean) {
+            sumBuf.assign(N, 0.0);
+            cntBuf.assign(N, 0);
+        }
+
+        for (const auto& p : pts) {
+            const int col = (int)std::floorf((p.y - yMin) / m_xResMm + 0.5f);  // Y(래터럴) → col
+            const int row = (int)std::floorf((p.x - xMin) / m_yResMm + 0.5f);  // X(이송)   → row
+            if (col < 0 || col >= W || row < 0 || row >= H) continue;
+            const int idx = row * W + col;
+            const float raw = p.z / m_zResMm + zZero;
+
+            switch (m_mode) {
+            case Mode::Top:
+                if (std::isnan(hm->data[idx]) || raw > hm->data[idx])
+                    hm->data[idx] = raw;
+                break;
+            case Mode::Bottom:
+                if (std::isnan(hm->data[idx]) || raw < hm->data[idx])
+                    hm->data[idx] = raw;
+                break;
+            case Mode::Mean:
+                sumBuf[idx] += raw;
+                cntBuf[idx]++;
+                break;
+            }
+        }
+
+        if (m_mode == Mode::Mean) {
+            for (size_t i = 0; i < N; ++i)
+                hm->data[i] = cntBuf[i] > 0 ? (float)(sumBuf[i] / cntBuf[i]) : nan;
+        }
+
+        const size_t valid = std::count_if(hm->data.begin(), hm->data.end(),
+                                           [](float v) { return !std::isnan(v); });
+        const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
+        VISION_LOG_INFO("CloudToHeightMap: {}x{} grid, {} 유효픽셀 / {} 총픽셀  [{:.1f} ms]", W, H, valid, N, _ms);
+        auto out = std::make_shared<VisionData>();
+        out->sourceId = input->sourceId;
+        out->setHeightMap(hm);
+        return { ToolStatus::Ok, "", out };
+    }
+};
+
 // ── CloudSaver: PointCloud3D → 파일 저장. .xyz/.asc(텍스트) / .bin / .ply(binary_little_endian, 기본). ────
 //   파일명 앞에 타임스탬프를 붙여 폴더검사 시 덮어쓰기 방지(ImageSaver와 동일 규약).
 class CloudSaverTool : public IAlgorithmTool {
     std::string m_folder, m_filename, m_format;
+    int m_cloudIdx;
 public:
-    CloudSaverTool(std::string folder, std::string filename, std::string format)
-        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)) {}
+    CloudSaverTool(std::string folder, std::string filename, std::string format, int cloudIdx = 0)
+        : m_folder(std::move(folder)), m_filename(std::move(filename)), m_format(std::move(format)), m_cloudIdx(cloudIdx) {}
     std::string name() const override { return "CloudSaver"; }
 
     ToolResult execute(VisionDataPtr input) override {
-        if (m_folder.empty())              return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
-        if (!input || !input->inCloud(0)) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. HeightMap→Cloud를 먼저 연결하세요." };
+        if (m_folder.empty())                           return { ToolStatus::Fail, "CloudSaver: 저장 폴더가 설정되지 않았습니다" };
+        if (!input || !input->inCloud(0, m_cloudIdx)) return { ToolStatus::Fail, "CloudSaver: PointCloud 입력이 없습니다. HeightMap→Cloud를 먼저 연결하세요." };
 
         const std::string savePath = buildSavePath(m_folder, m_filename, m_format, input->sourceId);
         std::string ext = m_format;
         for (auto& ch : ext) ch = (char)std::tolower(ch);
         if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
 
-        const auto& pts = input->inCloud(0)->points;
+        const auto& pts = input->inCloud(0, m_cloudIdx)->points;
         std::ofstream ofs(std::filesystem::u8path(savePath), std::ios::binary);
         if (!ofs) return { ToolStatus::Fail, "CloudSaver: 파일을 열 수 없습니다: " + savePath };
 
@@ -1101,19 +1945,21 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
     }
     if (type == "ExposureMerge") {
         return std::make_shared<ExposureMergeTool>(
+            p.value("exposureCount", 2),
+            p.value("matchTol", 20.0f),
+            p.value("reflTol", -1.0f),
+            p.value("tolX", 5.0f),
+            p.value("tolY", 30.0f),
+            p.value("gapK", 0),
+            p.value("removeReflection", true),
+            noPreview,
+            p.value("bands", 0),
+            p.value("_nodeId", std::string()));
+    }
+    if (type == "ExposureSplit") {
+        return std::make_shared<ExposureSplitTool>(
             p.value("splitCount", 2),
             noPreview);
-    }
-    if (type == "ExposureMerge2") {
-        return std::make_shared<DualExposureMergeTool>(
-            p.value("matchTol", 20.0f),
-            p.value("reflTol",  -1.0f),
-            p.value("tolX",     10.0f),
-            p.value("tolY",     100.0f),
-            p.value("gapK",     2),
-            p.value("halfRes",  true),
-            noPreview,
-            p.value("_nodeId",  std::string()));
     }
     if (type == "ExposureMerge3") {
         return std::make_shared<TripleExposureMergeTool>(
@@ -1126,7 +1972,24 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("removeReflection", true),
             noPreview,
             p.value("mergeBands", 0),
+            p.value("targetThickness", 30.0f),
             p.value("_nodeId",  std::string()));
+    }
+    if (type == "ExposureFilter") {
+        ExposureFilterParams efp;
+        efp.datumWindow       = p.value("datumWindow",       9);
+        efp.datumIters        = p.value("datumIters",        3);
+        efp.tauBase           = p.value("tauBase",           30.0f);
+        efp.tauSlope          = p.value("tauSlope",          0.5f);
+        efp.consistWindow     = p.value("consistWindow",     9);
+        efp.minClassNeighbors = p.value("minClassNeighbors", 2);
+        efp.maxGapRows        = p.value("maxGapRows",         6);
+        return std::make_shared<ExposureFilterTool>(
+            efp,
+            p.value("halfRes",         false),
+            noPreview,
+            p.value("targetThickness", 30.0f),
+            p.value("_nodeId",         std::string()));
     }
     if (type == "HeightMapSaver") {
         // folder(필수)+filename(선택)+format. 구버전 호환: path만 있으면 분해.
@@ -1206,6 +2069,33 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             p.value("edgeSigma", 30.0f),
             noPreview);
     }
+    if (type == "CloudSelect") {
+        int idx = p.value("cloudIdx", 0);
+        return std::make_shared<CloudSelectTool>(idx);
+    }
+    if (type == "PointCloudSOR") {
+        return std::make_shared<PointCloudSORTool>(
+            p.value("kNeighbors", 20),
+            p.value("stdDevMult", 1.0),
+            p.value("cellSizeMm", 1.0),
+            p.value("roiEnabled", false),
+            p.value("roiXMin", -1e9f), p.value("roiXMax", 1e9f),
+            p.value("roiYMin", -1e9f), p.value("roiYMax", 1e9f),
+            p.value("roiZMin", -1e9f), p.value("roiZMax", 1e9f));
+    }
+    if (type == "CloudToHeightMap") {
+        std::string ms = p.value("mode", std::string("top"));
+        CloudToHeightMapTool::Mode m = CloudToHeightMapTool::Mode::Top;
+        if      (ms == "bottom") m = CloudToHeightMapTool::Mode::Bottom;
+        else if (ms == "mean")   m = CloudToHeightMapTool::Mode::Mean;
+        return std::make_shared<CloudToHeightMapTool>(m,
+            p.value("xResMm",    0.1f),
+            p.value("yResMm",    0.1f),
+            p.value("zResMm",    0.001f),
+            p.value("autoRange", true),
+            p.value("xMin",  -1e9f), p.value("xMax", 1e9f),
+            p.value("yMin",  -1e9f), p.value("yMax", 1e9f));
+    }
     if (type == "CloudSaver") {
         std::string folder = p.value("folder", ""), filename = p.value("filename", ""), format = p.value("format", "ply");
         if (folder.empty()) {
@@ -1217,7 +2107,29 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                 if (!e.empty()) format = e;
             }
         }
-        return std::make_shared<CloudSaverTool>(folder, filename, format);
+        int cloudIdx = p.value("cloudIdx", 0);
+        return std::make_shared<CloudSaverTool>(folder, filename, format, cloudIdx);
+    }
+    if (type == "PointCloudSplit") {
+        int sc = p.value("splitCount", 2);
+        std::string ax = p.value("scanAxis", std::string("x"));
+        double step = p.value("scanStepMm", 0.004);
+        return std::make_shared<PointCloudSplitTool>(sc, ax.empty() ? 'x' : ax[0], step);
+    }
+    if (type == "CloudZReduce") {
+        std::string rd = p.value("reduce", std::string("max"));
+        CloudZReduceTool::Reduce r = CloudZReduceTool::Reduce::Max;
+        if      (rd == "min")         r = CloudZReduceTool::Reduce::Min;
+        else if (rd == "mean")        r = CloudZReduceTool::Reduce::Mean;
+        else if (rd == "median")      r = CloudZReduceTool::Reduce::Median;
+        else if (rd == "continuity")  r = CloudZReduceTool::Reduce::Continuity;
+        return std::make_shared<CloudZReduceTool>(r,
+            p.value("xStepMm", 0.0), p.value("yStepMm", 0.0),
+            p.value("neighborRange", 2),
+            p.value("roiEnabled", false),
+            p.value("roiXMin", -1e9f), p.value("roiXMax", 1e9f),
+            p.value("roiYMin", -1e9f), p.value("roiYMax", 1e9f),
+            p.value("roiZMin", -1e9f), p.value("roiZMax", 1e9f));
     }
     if (type == "NoiseFilter") {
         NoiseFilter::Params params;

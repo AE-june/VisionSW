@@ -94,6 +94,10 @@ struct CachedNode { VisionDataPtr output; std::size_t paramHash; };
 static std::unordered_map<std::string, CachedNode> g_nodeCache;
 static std::mutex g_cacheMtx;
 
+// 프로파일 온디맨드 조회용 캐시 (run → fetchProfile)
+static std::unordered_map<std::string, std::vector<std::shared_ptr<Profile>>> g_profileCache;
+static std::mutex g_profileCacheMtx; // 병렬 노드 쓰기 + fetchProfile 읽기 동기화
+
 // ── Pipeline execution ───────────────────────────────────────────────────
 
 static json runPipeline(const json& msg, crow::websocket::connection* conn) {
@@ -221,8 +225,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 }
             }
 
-            // 2. 캐시 체크
-            if (useCache && !upstreamDirty && nodeId != forceNode) {
+            // 2. 캐시 체크 — 파일 저장 사이드이펙트가 있는 saver 노드는 항상 실행
+            const bool isSaver = (ns.type == "HeightMapSaver" || ns.type == "CloudSaver");
+            if (!isSaver && useCache && !upstreamDirty && nodeId != forceNode) {
                 std::lock_guard<std::mutex> lk(nodeCacheMtx);
                 auto cit = g_nodeCache.find(nodeId);
                 if (cit != g_nodeCache.end() && cit->second.paramHash == ph && cit->second.output) {
@@ -250,16 +255,29 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                     any = true;
                     const std::size_t dstPort = static_cast<std::size_t>(std::max(0, in.dstPort));
                     if (dstPort >= merged->inputs.size()) merged->inputs.resize(dstPort + 1);
+                    // srcPort 라우팅: 생산자의 출력 포트 s(>0)가 heightmaps[s]를 가리키면,
+                    //  소비자가 inHeightMap(port,0)으로 그 출력을 읽도록 heightmaps[s]를 [0]으로 노출.
+                    //  (예: ExposureMerge3 포트1 = intensity → HeightMapSaver로 저장)
+                    std::shared_ptr<VisionData> routed = o;
+                    const std::size_t s = static_cast<std::size_t>(std::max(0, in.srcPort));
+                    if (s > 0 && s < o->heightmaps.size()) {
+                        auto copy = std::make_shared<VisionData>(*o);
+                        copy->heightmaps.clear();
+                        copy->heightmaps.push_back(o->heightmaps[s]);          // 선택 출력 → [0]
+                        for (std::size_t k = 0; k < o->heightmaps.size(); ++k) // 나머지는 뒤에 유지
+                            if (k != s) copy->heightmaps.push_back(o->heightmaps[k]);
+                        routed = copy;
+                    }
                     if (!merged->inputs[dstPort]) {
-                        merged->inputs[dstPort] = o;
+                        merged->inputs[dstPort] = routed;
                     } else {
                         VISION_LOG_WARN("[pipeline] {} port{} 충돌 — 내용 병합", nodeId, dstPort);
                         auto combined = std::make_shared<VisionData>(*merged->inputs[dstPort]);
-                        for (auto& hm : o->heightmaps) combined->heightmaps.push_back(hm);
-                        for (auto& cl : o->clouds)     combined->clouds.push_back(cl);
-                        for (auto& rg : o->regions)    combined->regions.push_back(rg);
-                        for (auto& pl : o->planes)     combined->planes.push_back(pl);
-                        for (auto& ln : o->lines)      combined->lines.push_back(ln);
+                        for (auto& hm : routed->heightmaps) combined->heightmaps.push_back(hm);
+                        for (auto& cl : routed->clouds)     combined->clouds.push_back(cl);
+                        for (auto& rg : routed->regions)    combined->regions.push_back(rg);
+                        for (auto& pl : routed->planes)     combined->planes.push_back(pl);
+                        for (auto& ln : routed->lines)      combined->lines.push_back(ln);
                         merged->inputs[dstPort] = combined;
                     }
                     if (merged->sourceId.empty()) merged->sourceId = o->sourceId;
@@ -407,12 +425,11 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                 jr["cloud"] = pts;
                 jr["cloudTotal"] = static_cast<long long>(cpts.size());
             }
-            // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 차트/카운트용
+            // ── Profile[] output (CloudToProfiles, ExtractProfile 등) ─ 메타만 전송, x/z는 fetchProfile로
             if (result.output && !result.output->profiles.empty()) {
                 const auto& profs = result.output->profiles;
-
-                // __notchenv_ 접두사 profile → 별도 캐시로 분리 (NotchMeasureV2 시각화)
-                std::vector<std::shared_ptr<vision::Profile>> regularProfs, envProfs;
+                // __notchenv_ 접두사 profile → notchEnvCache 분리 (NotchMeasureV2 시각화)
+                std::vector<std::shared_ptr<Profile>> regularProfs, envProfs;
                 for (const auto& p : profs) {
                     if (p->label.rfind("__notchenv_", 0) == 0)
                         envProfs.push_back(p);
@@ -427,22 +444,16 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
 
                 if (!regularProfs.empty()) {
                     jr["profileCount"] = static_cast<long long>(regularProfs.size());
-                    const size_t maxProf = 500;
-                    const size_t pstride = regularProfs.size() > maxProf ? (regularProfs.size() + maxProf - 1) / maxProf : 1;
-                    json arr = json::array();
-                    for (size_t pi = 0; pi < regularProfs.size(); pi += pstride) {
-                        const auto& pr = *regularProfs[pi];
-                        const size_t cap = 400;
-                        const size_t ss = pr.size() > cap ? (pr.size() + cap - 1) / cap : 1;
-                        json xs = json::array(), zs = json::array();
-                        for (size_t i = 0; i < pr.size(); i += ss) {
-                            xs.push_back(pr.x[i]);
-                            zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
-                        }
-                        arr.push_back({{"label", pr.label}, {"n", (long long)pr.size()},
-                                       {"x", xs}, {"z", zs}});
+                    // 캐시에 저장 → fetchProfile 온디맨드 지원
+                    {
+                        std::lock_guard<std::mutex> lk(g_profileCacheMtx);
+                        g_profileCache[nodeId] = regularProfs;
                     }
-                    jr["profiles"] = arr;
+                    // 메타만 전송 — x/z는 fetchProfile로
+                    json meta = json::array();
+                    for (const auto& pr : regularProfs)
+                        meta.push_back({{"label", pr->label}, {"n", (long long)pr->size()}});
+                    jr["profileMeta"] = meta;
                 }
             }
 
@@ -909,6 +920,29 @@ int main(int argc, char** argv) {
                     }
                     return;
                 }
+                if (cmd == "fetchProfile") {
+                    std::string nid = msg.value("nodeId", "");
+                    int idx = msg.value("profileIdx", 0);
+                    std::lock_guard<std::mutex> lk(g_profileCacheMtx);
+                    auto it = g_profileCache.find(nid);
+                    if (it == g_profileCache.end() || idx < 0 || idx >= (int)it->second.size()) {
+                        conn.send_text(json{{"event","profileData"},{"nodeId",nid},{"profileIdx",idx},{"error","not found"}}.dump());
+                        return;
+                    }
+                    const auto& pr = *it->second[idx];
+                    const size_t cap = 600;
+                    const size_t ss = pr.size() > cap ? (pr.size() + cap - 1) / cap : 1;
+                    json xs = json::array(), zs = json::array();
+                    for (size_t i = 0; i < pr.size(); i += ss) {
+                        xs.push_back(pr.x[i]);
+                        zs.push_back(std::isnan(pr.z[i]) ? json(nullptr) : json(pr.z[i]));
+                    }
+                    conn.send_text(json{
+                        {"event","profileData"},{"nodeId",nid},{"profileIdx",idx},
+                        {"label",pr.label},{"n",(long long)pr.size()},{"x",xs},{"z",zs}
+                    }.dump());
+                    return;
+                }
                 if (cmd == "fetchNotchEnv") {
                     std::string nid = msg.value("nodeId", "");
                     int idx = msg.value("chunkIdx", 0);
@@ -939,7 +973,6 @@ int main(int argc, char** argv) {
                     double rightEdgeZmm = pr.s.size() > 11 ? pr.s[11] : std::numeric_limits<double>::quiet_NaN();
                     double leftEdgeYmm  = pr.s.size() > 12 ? pr.s[12] : std::numeric_limits<double>::quiet_NaN();
                     double rightEdgeYmm = pr.s.size() > 13 ? pr.s[13] : std::numeric_limits<double>::quiet_NaN();
-                    // 바닥 절대 z (mm) = poly(floorCenterY) + floorZRelUm/1000
                     double polyAtFloor = c0 + c1*floorCenterY + c2*floorCenterY*floorCenterY + c3*floorCenterY*floorCenterY*floorCenterY;
                     double floorZmm    = polyAtFloor + floorZRelUm / 1000.0;
                     json resp = {
