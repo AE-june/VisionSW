@@ -28,14 +28,7 @@ int main() {
     ok &= (s1 == VSDK_OK && r1.heightmap.data && r1.heightmap.width == W && r1.heightmap.height == H);
     vsdk_free_result(&r1);
 
-    // 2) ExposureMerge2 (인터리브 머지, halfRes=false → 원래 높이)
-    VsdkResult r2{};
-    int s2 = vsdk_exposure_merge(&in, "{\"halfRes\":false}", &r2);
-    std::printf("exposure_mrg : status=%d out=%dx%d\n", s2, r2.heightmap.width, r2.heightmap.height);
-    ok &= (s2 == VSDK_OK && r2.heightmap.data);
-    vsdk_free_result(&r2);
-
-    // 3) 제네릭 vsdk_run — PlaneFit (전체를 ref ROI로). 기대 평면 ~ z=0.1x+0.04y+1.0
+    // 2) 제네릭 vsdk_run — PlaneFit (전체를 ref ROI로). 기대 평면 ~ z=0.1x+0.04y+1.0
     VsdkResult r3{};
     const char* pf =
         "{\"algorithm\":\"LeastSquares\",\"rois\":[{\"type\":\"ref\",\"shape\":\"rect\","

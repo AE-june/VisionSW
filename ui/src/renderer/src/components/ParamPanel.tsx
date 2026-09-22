@@ -1367,6 +1367,46 @@ function ProfileSmoothParams({ params, onChange }: { params: Record<string, unkn
   </>
 }
 
+function RegionToHeightMapParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-section">Region → 이진 HeightMap</div>
+    <NumField label="내부 값 (inside)" value={(params.insideValue as number) ?? 1} step={1} onChange={v => set('insideValue', v)}
+      tooltip="마스크 안쪽(통과) 픽셀에 넣을 값. 255로 두면 8bit 이미지처럼 보임" />
+    <NumField label="외부 값 (outside)" value={(params.outsideValue as number) ?? 0} step={1} onChange={v => set('outsideValue', v)}
+      tooltip="마스크 바깥 픽셀 값. 유효값이라 하류에서 그대로 처리됨(NaN 아님)" />
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      출력: 단일채널 HeightMap(전 픽셀 유효). 포트1 HeightMap 연결 시 XY 보정(mm) 승계
+    </div>
+  </>
+}
+
+function HeightMapNormalizeParams({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'minmax'
+  return <>
+    <div className="param-section">HeightMap 정규화 / 평활화</div>
+    <SelectField label="모드" value={mode} options={['minmax', 'zscore', 'equalize', 'clahe']}
+      onChange={v => set('mode', v)}
+      tooltip="minmax=[min,max]→[outMin,outMax] 선형 · zscore=(v-mean)/std · equalize=히스토그램 평활화 · clahe=지역 적응 대비" />
+    {mode === 'minmax' && <>
+      <NumField label="출력 하한 (outMin)" value={(params.outMin as number) ?? 0} step={0.1} onChange={v => set('outMin', v)}
+        tooltip="정규화 결과의 최소값" />
+      <NumField label="출력 상한 (outMax)" value={(params.outMax as number) ?? 1} step={0.1} onChange={v => set('outMax', v)}
+        tooltip="정규화 결과의 최대값" />
+    </>}
+    {mode === 'clahe' && <>
+      <NumField label="clipLimit" value={(params.clipLimit as number) ?? 2.0} step={0.5} onChange={v => set('clipLimit', v)}
+        tooltip="지역 대비 한계. 클수록 대비 강함(2→4→8). 어두운 영역 디테일 복구" />
+      <NumField label="tileGrid" value={(params.tileGrid as number) ?? 8} step={1} onChange={v => set('tileGrid', v)}
+        tooltip="타일 그리드 크기(NxN). 클수록 더 지역적 대비" />
+    </>}
+    <div className="param-empty" style={{ fontSize: 10 }}>
+      채널0만 대상. NaN은 통계 제외·유지. 포트1 Region 연결 시 영역 밖 NaN. 대비 키우려면 clahe + clipLimit↑
+    </div>
+  </>
+}
+
 export default function ParamPanel({ nodeId, toolType, label, params, onParamChange, onClose, embedded }: Props) {
   const def = TOOL_DEF_MAP[toolType]
   if (!def) return null
@@ -1427,6 +1467,8 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapMath'     && <HeightMapMathParams params={params} onChange={handleChange} />}
         {toolType === 'GradientMap'       && <GradientMapParams params={params} onChange={handleChange} />}
         {toolType === 'ProfileSmooth'     && <ProfileSmoothParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionToHeightMap' && <RegionToHeightMapParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapNormalize' && <HeightMapNormalizeParams params={params} onChange={handleChange} />}
       </div>
     )
   }
@@ -1489,6 +1531,8 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapMath'     && <HeightMapMathParams params={params} onChange={handleChange} />}
         {toolType === 'GradientMap'       && <GradientMapParams params={params} onChange={handleChange} />}
         {toolType === 'ProfileSmooth'     && <ProfileSmoothParams params={params} onChange={handleChange} />}
+        {toolType === 'RegionToHeightMap' && <RegionToHeightMapParams params={params} onChange={handleChange} />}
+        {toolType === 'HeightMapNormalize' && <HeightMapNormalizeParams params={params} onChange={handleChange} />}
       </div>
     </div>
   )

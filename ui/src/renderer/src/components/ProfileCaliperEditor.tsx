@@ -6,10 +6,13 @@ import ProfileChart, { type CaliperFeature, type CaliperLineFit, type ProfileRan
 interface ElementDef {
   fromMm: number; toMm: number       // s(폭) 범위
   zFromMm?: number; zToMm?: number   // z(높이) 범위 (미지정/0,0 = 전체 높이)
-  type: 'point' | 'line'
+  type: 'point' | 'line' | 'external_point' | 'external_line'
   kind: string   // edge|ridge|valley|corner|maxZ|minZ|mean (point 전용)
   dir: string    // rising|falling|any (edge 전용)
   threshold: number; smoothWindow: number; nth: number
+  expose?: boolean    // true → 출력 포트로 노출
+  inputPort?: number  // external 전용, 1-based
+  resampleZ?: boolean // external_point 전용: 상류 x만 취하고 z는 현재 프로파일서 재샘플
 }
 interface MeasurementDef {
   combo: 'pp' | 'pl' | 'll' | 'l' | 'p'
@@ -91,17 +94,21 @@ function perpFoot(s0: number, z0: number, m: number, b: number): { s: number; z:
 // "+ 추가" 선택 메뉴: 추가할 element의 종류를 먼저 고르게 한다.
 type ElemPreset = Pick<ElementDef, 'type' | 'kind' | 'dir' | 'threshold' | 'smoothWindow' | 'nth'>
 const ELEM_ADD_OPTIONS: { label: string; preset: ElemPreset }[] = [
-  { label: 'Point · Edge',           preset: { type: 'point', kind: 'edge',   dir: 'rising', threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Ridge',          preset: { type: 'point', kind: 'ridge',  dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Valley',         preset: { type: 'point', kind: 'valley', dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Corner',         preset: { type: 'point', kind: 'corner', dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Top (최고점)',    preset: { type: 'point', kind: 'maxZ',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Bottom (최저점)', preset: { type: 'point', kind: 'minZ',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Point · Mean (구간평균)', preset: { type: 'point', kind: 'mean',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
-  { label: 'Line fit (직선)',         preset: { type: 'line',  kind: 'edge',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Edge',               preset: { type: 'point',          kind: 'edge',   dir: 'rising', threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Ridge',              preset: { type: 'point',          kind: 'ridge',  dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Valley',             preset: { type: 'point',          kind: 'valley', dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Corner',             preset: { type: 'point',          kind: 'corner', dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Top (최고점)',        preset: { type: 'point',          kind: 'maxZ',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Bottom (최저점)',     preset: { type: 'point',          kind: 'minZ',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Point · Mean (구간평균)',     preset: { type: 'point',          kind: 'mean',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Line fit (직선)',             preset: { type: 'line',           kind: 'edge',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Ext Point (외부 포인트 입력)', preset: { type: 'external_point', kind: 'edge',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
+  { label: 'Ext Line (외부 라인 입력)',   preset: { type: 'external_line',  kind: 'edge',   dir: 'any',    threshold: 0.05, smoothWindow: 3, nth: 0 } },
 ]
 
 function elemDesc(e: ElementDef): string {
+  if (e.type === 'external_point') return `Ext Point ← Port ${e.inputPort ?? 1}`
+  if (e.type === 'external_line')  return `Ext Line ← Port ${e.inputPort ?? 1}`
   const rng = `${e.fromMm.toFixed(1)}~${e.toMm.toFixed(1)}mm`
   if (e.type === 'line') return `Line fit ${rng}`
   const cap = e.kind.charAt(0).toUpperCase() + e.kind.slice(1)
@@ -109,9 +116,9 @@ function elemDesc(e: ElementDef): string {
   return `${cap} ${rng}`
 }
 
-// 첫 번째로 slot 타입에 맞는 element index (없으면 0)
+// 첫 번째로 slot 타입에 맞는 element index (없으면 0). external_* 타입도 매칭
 function firstOfType(elements: ElementDef[], type: SlotType): number {
-  const i = elements.findIndex(e => e.type === type)
+  const i = elements.findIndex(e => e.type === type || e.type === `external_${type}`)
   return i >= 0 ? i : 0
 }
 
@@ -240,12 +247,12 @@ export default function ProfileCaliperEditor({
       if (ev.type === 'line') return { kind: 'line', slope: ev.slope, intercept: ev.intercept, fromMm: ev.fromMm, toMm: ev.toMm }
       return { kind: 'point', sMm: ev.sMm, zMm: ev.zMm }
     }
-    if (el.type === 'point') {
+    if (el.type === 'point' || el.type === 'external_point') {
       const sMm = mmap[`elem[${i}].sMm`]
       if (sMm === undefined) return null
       return { kind: 'point', sMm, zMm: mmap[`elem[${i}].zMm`] ?? 0 }
     }
-    if (el.type === 'line') {
+    if (el.type === 'line' || el.type === 'external_line') {
       const slope = mmap[`elem[${i}].slope`]
       const intercept = mmap[`elem[${i}].intercept`]
       if (slope === undefined || intercept === undefined) return null
@@ -296,9 +303,12 @@ export default function ProfileCaliperEditor({
     return fits.length > 0 ? fits : undefined
   })()
 
-  // 인덱스 정렬 유지(editRangeIndex ↔ activeElemIdx) 위해 필터 안 함
+  // external element는 범위 없음 → null 필터
   const chartRanges: ProfileRange[] = elements
-    .map((e, i) => ({ fromMm: e.fromMm, toMm: e.toMm, zFrom: e.zFromMm, zTo: e.zToMm, color: color(i), label: `R${i}` }))
+    .map((e, i) => e.type.startsWith('external')
+      ? null
+      : { fromMm: e.fromMm, toMm: e.toMm, zFrom: e.zFromMm, zTo: e.zToMm, color: color(i), label: `R${i}` })
+    .filter(Boolean) as ProfileRange[]
 
   // 측정 주석 (pp→segment, pl→perp) — fetched caliper 좌표 우선
   const caliperAnnotations: ProfileAnnotation[] | undefined = (() => {
@@ -328,6 +338,23 @@ export default function ProfileCaliperEditor({
             const foot = perpFoot(pt.sMm, pt.zMm, ln.slope, ln.intercept)
             annos.push({ kind: 'perp', s1: pt.sMm, z1: pt.zMm, s2: foot.s, z2: foot.z, label, color: col, lineSlope: ln.slope, lineIntercept: ln.intercept })
           }
+        }
+      } else if (md.combo === 'll') {
+        const l1 = a?.kind === 'line' ? a : null
+        const l2 = b?.kind === 'line' ? b : null
+        if (l1 && l2) {
+          const dm = l1.slope - l2.slope
+          let si: number, zi: number
+          if (Math.abs(dm) < 1e-12) {
+            // 평행: 공통 범위 중앙에 배치
+            const sCenter = (Math.max(l1.fromMm, l2.fromMm) + Math.min(l1.toMm, l2.toMm)) / 2
+            si = isFinite(sCenter) ? sCenter : (l1.fromMm + l1.toMm) / 2
+            zi = l1.slope * si + l1.intercept
+          } else {
+            si = (l2.intercept - l1.intercept) / dm
+            zi = l1.slope * si + l1.intercept
+          }
+          annos.push({ kind: 'angle', s1: si, z1: zi, s2: si, z2: zi, label, color: col })
         }
       }
     })
@@ -402,8 +429,15 @@ export default function ProfileCaliperEditor({
             lineFits={caliperLineFits}
             ranges={chartRanges}
             annotations={caliperAnnotations}
-            editRangeIndex={activeElemIdx ?? undefined}
-            onRoiDrag={activeElemIdx !== null ? handleRoiDrag : undefined}
+            editRangeIndex={
+              activeElemIdx !== null && !elements[activeElemIdx]?.type.startsWith('external')
+                ? elements.slice(0, activeElemIdx).filter(e => !e.type.startsWith('external')).length
+                : undefined
+            }
+            onRoiDrag={
+              activeElemIdx !== null && !elements[activeElemIdx]?.type.startsWith('external')
+                ? handleRoiDrag : undefined
+            }
           />
         ) : (
           <div className="param-empty">실행 후 프로파일이 표시됩니다</div>
@@ -441,59 +475,96 @@ export default function ProfileCaliperEditor({
               </div>
               {active && (
                 <div className="cal-el-props">
-                  <NumField label="s from(mm)" value={e.fromMm} step={0.1}
-                    tooltip="s(폭) ROI 시작(mm). 차트 좌드래그로도 설정"
-                    onChange={v => setElem(i, { ...e, fromMm: v })} />
-                  <NumField label="s to(mm)" value={e.toMm} step={0.1}
-                    tooltip="s(폭) ROI 끝(mm)"
-                    onChange={v => setElem(i, { ...e, toMm: v })} />
-                  <NumField label="z from(mm)" value={e.zFromMm ?? 0} step={0.1}
-                    tooltip="z(높이) ROI 하한(mm). z to와 같거나 크면 높이 제한 없음. 차트 좌드래그로도 설정"
-                    onChange={v => setElem(i, { ...e, zFromMm: v })} />
-                  <NumField label="z to(mm)" value={e.zToMm ?? 0} step={0.1}
-                    tooltip="z(높이) ROI 상한(mm). z from보다 커야 높이 제한 적용"
-                    onChange={v => setElem(i, { ...e, zToMm: v })} />
-                  <SelectRow label="type" value={e.type}
-                    onChange={v => setElem(i, { ...e, type: v as ElementDef['type'] })}
-                    tooltip="point=특징점 검출, line=구간 직선 피팅">
-                    <option value="point">point</option>
-                    <option value="line">line</option>
-                  </SelectRow>
+                  {/* expose 토글 — 모든 element 타입에 공통 */}
+                  <div className="param-row">
+                    <span className="param-label">출력 포트로 노출</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input type="checkbox" checked={e.expose ?? false}
+                        onChange={ev => setElem(i, { ...e, expose: ev.target.checked })} />
+                      <span style={{ fontSize: 11, color: e.expose ? '#ef5350' : '#888' }}>
+                        {e.expose ? '↑ 출력 포트 활성' : '비활성'}
+                      </span>
+                    </label>
+                  </div>
 
-                  {e.type === 'point' ? (
+                  {(e.type === 'external_point' || e.type === 'external_line') ? (
+                    /* external element: 입력 포트 번호만 표시 */
                     <>
-                      <SelectRow label="kind" value={e.kind}
-                        onChange={v => setElem(i, { ...e, kind: v })}
-                        tooltip="검출 유형. edge=엣지, ridge=능선, valley=골, corner=코너, maxZ/minZ=극값, mean=평균">
-                        <option value="edge">edge</option>
-                        <option value="ridge">ridge</option>
-                        <option value="valley">valley</option>
-                        <option value="corner">corner</option>
-                        <option value="maxZ">maxZ</option>
-                        <option value="minZ">minZ</option>
-                        <option value="mean">mean</option>
-                      </SelectRow>
-                      {e.kind === 'edge' && (
-                        <SelectRow label="direction" value={e.dir}
-                          onChange={v => setElem(i, { ...e, dir: v })}
-                          tooltip="엣지 방향 필터">
-                          <option value="rising">rising ↑</option>
-                          <option value="falling">falling ↓</option>
-                          <option value="any">any</option>
-                        </SelectRow>
+                      <div className="cal-el-note" style={{ color: '#42a5f5' }}>
+                        ← 상류 CalibPerter의 출력을 이 포트에서 받습니다
+                      </div>
+                      <NumField label="입력 포트 번호" value={e.inputPort ?? 1} step={1}
+                        tooltip="연결할 이 노드의 입력 포트 번호 (1 이상, 0=Profile 포트)"
+                        onChange={v => setElem(i, { ...e, inputPort: Math.max(1, Math.round(v)) })} />
+                      {e.type === 'external_point' && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}
+                          title="켜면 상류 포인트의 x(sMm)만 사용하고, z는 현재 프로파일의 그 x 위치에서 선형보간으로 다시 구합니다">
+                          <input type="checkbox" checked={e.resampleZ ?? false}
+                            onChange={ev => setElem(i, { ...e, resampleZ: ev.target.checked })} />
+                          <span style={{ fontSize: 11, color: e.resampleZ ? '#42a5f5' : '#888' }}>
+                            {e.resampleZ ? 'x만 사용 · z 재샘플(현재 프로파일)' : 'z도 상류 값 그대로'}
+                          </span>
+                        </label>
                       )}
-                      <NumField label="nth" value={e.nth ?? 0} step={1}
-                        tooltip="N번째 검출 결과(0=첫 번째)"
-                        onChange={v => setElem(i, { ...e, nth: v })} />
-                      <NumField label="threshold(mm)" value={e.threshold ?? 0.05} step={0.005}
-                        tooltip="검출 최소 Z 변화량(mm). 노이즈보다 크게"
-                        onChange={v => setElem(i, { ...e, threshold: v })} />
-                      <NumField label="smoothWindow" value={e.smoothWindow ?? 3} step={1}
-                        tooltip="검출 전 이동평균 창 크기"
-                        onChange={v => setElem(i, { ...e, smoothWindow: v })} />
                     </>
                   ) : (
-                    <div className="cal-el-note">최소제곱 직선 피팅 — 파라미터 없음</div>
+                    /* 내부 element: 기존 파라미터 */
+                    <>
+                      <NumField label="s from(mm)" value={e.fromMm} step={0.1}
+                        tooltip="s(폭) ROI 시작(mm). 차트 좌드래그로도 설정"
+                        onChange={v => setElem(i, { ...e, fromMm: v })} />
+                      <NumField label="s to(mm)" value={e.toMm} step={0.1}
+                        tooltip="s(폭) ROI 끝(mm)"
+                        onChange={v => setElem(i, { ...e, toMm: v })} />
+                      <NumField label="z from(mm)" value={e.zFromMm ?? 0} step={0.1}
+                        tooltip="z(높이) ROI 하한(mm). z to와 같거나 크면 높이 제한 없음. 차트 좌드래그로도 설정"
+                        onChange={v => setElem(i, { ...e, zFromMm: v })} />
+                      <NumField label="z to(mm)" value={e.zToMm ?? 0} step={0.1}
+                        tooltip="z(높이) ROI 상한(mm). z from보다 커야 높이 제한 적용"
+                        onChange={v => setElem(i, { ...e, zToMm: v })} />
+                      <SelectRow label="type" value={e.type}
+                        onChange={v => setElem(i, { ...e, type: v as ElementDef['type'] })}
+                        tooltip="point=특징점 검출, line=구간 직선 피팅">
+                        <option value="point">point</option>
+                        <option value="line">line</option>
+                      </SelectRow>
+
+                      {e.type === 'point' ? (
+                        <>
+                          <SelectRow label="kind" value={e.kind}
+                            onChange={v => setElem(i, { ...e, kind: v })}
+                            tooltip="검출 유형. edge=엣지, ridge=능선, valley=골, corner=코너, maxZ/minZ=극값, mean=평균">
+                            <option value="edge">edge</option>
+                            <option value="ridge">ridge</option>
+                            <option value="valley">valley</option>
+                            <option value="corner">corner</option>
+                            <option value="maxZ">maxZ</option>
+                            <option value="minZ">minZ</option>
+                            <option value="mean">mean</option>
+                          </SelectRow>
+                          {e.kind === 'edge' && (
+                            <SelectRow label="direction" value={e.dir}
+                              onChange={v => setElem(i, { ...e, dir: v })}
+                              tooltip="엣지 방향 필터">
+                              <option value="rising">rising ↑</option>
+                              <option value="falling">falling ↓</option>
+                              <option value="any">any</option>
+                            </SelectRow>
+                          )}
+                          <NumField label="nth" value={e.nth ?? 0} step={1}
+                            tooltip="N번째 검출 결과(0=첫 번째)"
+                            onChange={v => setElem(i, { ...e, nth: v })} />
+                          <NumField label="threshold(mm)" value={e.threshold ?? 0.05} step={0.005}
+                            tooltip="검출 최소 Z 변화량(mm). 노이즈보다 크게"
+                            onChange={v => setElem(i, { ...e, threshold: v })} />
+                          <NumField label="smoothWindow" value={e.smoothWindow ?? 3} step={1}
+                            tooltip="검출 전 이동평균 창 크기"
+                            onChange={v => setElem(i, { ...e, smoothWindow: v })} />
+                        </>
+                      ) : (
+                        <div className="cal-el-note">최소제곱 직선 피팅 — 파라미터 없음</div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -552,7 +623,7 @@ export default function ProfileCaliperEditor({
                       const val = s.ref === 'refA' ? m.refA : m.refB
                       const opts = elements
                         .map((el, ei) => ({ el, ei }))
-                        .filter(({ el }) => el.type === s.type)
+                        .filter(({ el }) => el.type === s.type || el.type === `external_${s.type}`)
                       return (
                         <div key={si} style={{ display: 'contents' }}>
                           {si > 0 && <span className="cal-slot-sep">→</span>}
@@ -619,7 +690,9 @@ export default function ProfileCaliperEditor({
                 <div key={i} className="cal-res-row" style={{ borderLeftColor: '#888' }}>
                   <span className="cal-res-label">M{i}</span>
                   <span className="cal-res-values">
-                    {val !== undefined ? `${val.toFixed(4)} ${unit}` : '—'}
+                    {val !== undefined
+                      ? `${val.toFixed(m.metric === 'angle' || m.metric === 'tilt' ? 2 : 4)} ${unit}`
+                      : '—'}
                   </span>
                   {pass !== undefined && (
                     <span className={`cal-pass-badge ${pass ? 'cal-pass' : 'cal-fail'}`}>
@@ -638,7 +711,7 @@ export default function ProfileCaliperEditor({
             {rawExpanded && elements.map((e, i) => {
               const r = resolveElem(i)
               // fc가 있으면 rmse는 fc.elems에서 직접, 없으면 mmap 폴백
-              if (e.type === 'point') {
+              if (e.type === 'point' || e.type === 'external_point') {
                 const s = r?.kind === 'point' ? r.sMm : undefined
                 const z = r?.kind === 'point' ? r.zMm : undefined
                 return (

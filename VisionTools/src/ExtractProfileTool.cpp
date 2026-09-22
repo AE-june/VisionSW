@@ -237,12 +237,18 @@ ToolResult ExtractProfileTool::execute(VisionDataPtr input) {
     const HeightMap& map = *input->inHeightMap(0);
     const Region*    rgn = input->inRegion(1) ? input->inRegion(1).get() : nullptr;
 
-    // Region 프레임 불일치 검사
+    // Region 프레임 불일치 검사: 크기가 같으면 경고만(다른 이미지에 동일 ROI 재사용 허용),
+    // 크기가 다르면 마스크 적용이 불가능하므로 Fail.
     if (rgn && !map.frameId.empty() && !rgn->frameId.empty()
             && rgn->frameId != map.frameId) {
-        return { ToolStatus::Fail,
-            "ExtractProfile: Region 프레임(" + rgn->frameId +
-            ")이 HeightMap 프레임(" + map.frameId + ")과 다릅니다. TODO(T0-1 P3)" };
+        if (rgn->width != map.width || rgn->height != map.height)
+            return { ToolStatus::Fail,
+                "ExtractProfile: Region 크기(" + std::to_string(rgn->width) + "x" +
+                std::to_string(rgn->height) + ")가 HeightMap(" +
+                std::to_string(map.width) + "x" + std::to_string(map.height) +
+                ")과 다릅니다." };
+        VISION_LOG_WARN("ExtractProfile: Region 프레임({})이 HeightMap 프레임({})과 다릅니다 "
+                        "(크기 동일 — 계속 진행).", rgn->frameId, map.frameId);
     }
 
     const std::string& mode = m_params.mode;

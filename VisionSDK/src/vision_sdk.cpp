@@ -27,6 +27,11 @@ static void setMsg(VsdkResult* r, const std::string& m) {
     r->msg[sizeof(r->msg) - 1] = '\0';
 }
 
+static void setMsg2(VsdkResultEx* r, const std::string& m) {
+    std::strncpy(r->msg, m.c_str(), sizeof(r->msg) - 1);
+    r->msg[sizeof(r->msg) - 1] = '\0';
+}
+
 // VsdkHeightMap(+선택 평면) → VisionData 입력 (복사).
 // Phase 2 규약: 툴이 in(port) 헬퍼로 읽으므로 inputs[0]/inputs[1]에 배치한다.
 static VisionDataPtr makeInput(const VsdkHeightMap* z, const VsdkPlane* p) {
@@ -94,6 +99,107 @@ static void marshalOut(const VisionDataPtr& o, VsdkResult* r) {
     }
 }
 
+// ── 확장(포트 기반) 마샬링 ────────────────────────────────────────────────
+// VsdkHeightMap → HeightMap (복사).
+static HeightMapPtr toHeightMap(const VsdkHeightMap& z) {
+    auto zm = std::make_shared<HeightMap>();
+    zm->width = z.width;           zm->height = z.height;
+    zm->xResMm = z.xResMm;         zm->yResMm = z.yResMm;   zm->zResMm = z.zResMm;
+    zm->zZeroCount = z.zZeroCount; zm->originCol = z.originCol; zm->originRow = z.originRow;
+    if (z.data)
+        zm->data.assign(z.data, z.data + (size_t)z.width * z.height);
+    return zm;
+}
+// VsdkCloud → PointCloud3D (복사, xyz 3연속 float).
+static std::shared_ptr<PointCloud3D> toCloud(const VsdkCloud& c) {
+    auto pc = std::make_shared<PointCloud3D>();
+    if (c.xyz && c.count > 0) {
+        pc->points.reserve((size_t)c.count);
+        for (int i = 0; i < c.count; ++i)
+            pc->points.push_back({ c.xyz[i*3+0], c.xyz[i*3+1], c.xyz[i*3+2] });
+    }
+    return pc;
+}
+// HeightMap → VsdkHeightMap (SDK malloc data).
+static VsdkHeightMap fromHeightMap(const HeightMap& z) {
+    VsdkHeightMap o{};
+    o.width = z.width;         o.height = z.height;
+    o.xResMm = z.xResMm;       o.yResMm = z.yResMm;   o.zResMm = z.zResMm;
+    o.zZeroCount = z.zZeroCount; o.originCol = z.originCol; o.originRow = z.originRow;
+    const size_t n = (size_t)z.width * z.height;
+    o.data = (float*)std::malloc(n * sizeof(float));
+    if (o.data) std::memcpy(o.data, z.data.data(), n * sizeof(float));
+    return o;
+}
+// PointCloud3D → VsdkCloud (SDK malloc xyz).
+static VsdkCloud fromCloud(const PointCloud3D& c) {
+    VsdkCloud o{};
+    const int n = (int)c.points.size();
+    o.count = n;
+    o.xyz = (float*)std::malloc((size_t)n * 3 * sizeof(float));
+    if (o.xyz)
+        for (int i = 0; i < n; ++i) {
+            o.xyz[i*3+0] = c.points[i].x;
+            o.xyz[i*3+1] = c.points[i].y;
+            o.xyz[i*3+2] = c.points[i].z;
+        }
+    return o;
+}
+
+// VsdkPort[] → VisionData 입력 (각 포트를 inputs[k] 로 배치, 툴이 in(port) 헬퍼로 읽음).
+static VisionDataPtr makeInputEx(const VsdkPort* ports, int portCount) {
+    if (!ports || portCount <= 0) return nullptr;
+    auto d = std::make_shared<VisionData>();
+    d->inputs.reserve((size_t)portCount);
+    for (int k = 0; k < portCount; ++k) {
+        const VsdkPort& pt = ports[k];
+        bool any = (pt.heightmapCount > 0 && pt.heightmaps)
+                || (pt.cloudCount > 0 && pt.clouds)
+                || (pt.planeValid && pt.plane.valid);
+        if (!any) { d->inputs.push_back(nullptr); continue; }
+        auto port = std::make_shared<VisionData>();
+        for (int i = 0; i < pt.heightmapCount && pt.heightmaps; ++i)
+            port->heightmaps.push_back(toHeightMap(pt.heightmaps[i]));
+        for (int i = 0; i < pt.cloudCount && pt.clouds; ++i)
+            port->clouds.push_back(toCloud(pt.clouds[i]));
+        if (pt.planeValid && pt.plane.valid)
+            port->setPlane(std::make_shared<PlaneModel>(
+                PlaneModel{ pt.plane.a, pt.plane.b, pt.plane.c, true }));
+        d->inputs.push_back(port);
+    }
+    return d;
+}
+
+// VisionData 출력 → VsdkResultEx (모든 heightmaps/clouds 배열 + plane + measurements).
+static void marshalOutEx(const VisionDataPtr& o, VsdkResultEx* r) {
+    if (!o) return;
+    if (!o->heightmaps.empty()) {
+        r->heightmapCount = (int)o->heightmaps.size();
+        r->heightmaps = (VsdkHeightMap*)std::malloc(o->heightmaps.size() * sizeof(VsdkHeightMap));
+        if (r->heightmaps)
+            for (size_t i = 0; i < o->heightmaps.size(); ++i)
+                r->heightmaps[i] = o->heightmaps[i] ? fromHeightMap(*o->heightmaps[i]) : VsdkHeightMap{};
+    }
+    if (!o->clouds.empty()) {
+        r->cloudCount = (int)o->clouds.size();
+        r->clouds = (VsdkCloud*)std::malloc(o->clouds.size() * sizeof(VsdkCloud));
+        if (r->clouds)
+            for (size_t i = 0; i < o->clouds.size(); ++i)
+                r->clouds[i] = o->clouds[i] ? fromCloud(*o->clouds[i]) : VsdkCloud{};
+    }
+    if (o->plane0()) {
+        const auto& pl = *o->plane0();
+        r->plane.a = pl.a; r->plane.b = pl.b; r->plane.c = pl.c; r->plane.valid = pl.valid ? 1 : 0;
+    }
+    if (!o->measurements.empty()) {
+        const int n = (int)o->measurements.size();
+        r->heights.count = n;
+        r->heights.values = (double*)std::malloc((size_t)n * sizeof(double));
+        if (r->heights.values)
+            for (int i = 0; i < n; ++i) r->heights.values[i] = o->measurements[i].value;
+    }
+}
+
 extern "C" {
 
 const char* vsdk_version(void) { return "VisionSDK 0.1.0"; }
@@ -103,6 +209,49 @@ void vsdk_free_result(VsdkResult* r) {
     std::free(r->heightmap.data);      r->heightmap.data = nullptr;
     std::free(r->cloud.xyz);      r->cloud.xyz = nullptr;
     std::free(r->heights.values); r->heights.values = nullptr;
+}
+
+void vsdk_free_result_ex(VsdkResultEx* r) {
+    if (!r) return;
+    if (r->heightmaps) {
+        for (int i = 0; i < r->heightmapCount; ++i) std::free(r->heightmaps[i].data);
+        std::free(r->heightmaps); r->heightmaps = nullptr;
+    }
+    if (r->clouds) {
+        for (int i = 0; i < r->cloudCount; ++i) std::free(r->clouds[i].xyz);
+        std::free(r->clouds); r->clouds = nullptr;
+    }
+    std::free(r->heights.values); r->heights.values = nullptr;
+    r->heightmapCount = r->cloudCount = 0;
+}
+
+int vsdk_run_ex(const char* type, const char* paramsJson,
+                const VsdkPort* ports, int portCount, VsdkResultEx* out) {
+    if (!out) return VSDK_BADARG;
+    std::memset(out, 0, sizeof(VsdkResultEx));
+    if (!type) { out->status = VSDK_BADARG; setMsg2(out, "type is null"); return VSDK_BADARG; }
+
+    json params = json::object();
+    if (paramsJson && paramsJson[0]) {
+        try { params = json::parse(paramsJson); }
+        catch (const std::exception& e) { out->status = VSDK_BADARG; setMsg2(out, std::string("param json: ") + e.what()); return VSDK_BADARG; }
+    }
+
+    std::shared_ptr<IAlgorithmTool> tool;
+    try { tool = ToolFactory::create(type, params, /*noPreview*/true); }
+    catch (const std::exception& e) { out->status = VSDK_FAIL; setMsg2(out, e.what()); return VSDK_FAIL; }
+    if (!tool) { out->status = VSDK_FAIL; setMsg2(out, std::string("unknown node type: ") + type); return VSDK_FAIL; }
+
+    VisionDataPtr input = makeInputEx(ports, portCount);
+    ToolResult res;
+    try { res = tool->execute(input); }
+    catch (const std::exception& e) { out->status = VSDK_FAIL; setMsg2(out, e.what()); return VSDK_FAIL; }
+
+    out->status = (res.status == ToolStatus::Ok) ? VSDK_OK
+                : (res.status == ToolStatus::Skip) ? VSDK_SKIP : VSDK_FAIL;
+    setMsg2(out, res.message);
+    if (res.output) marshalOutEx(res.output, out);
+    return out->status;
 }
 
 int vsdk_run(const char* type, const char* paramsJson,
@@ -139,9 +288,7 @@ int vsdk_heightmap_load(const char* path, float xr, float yr, float zr, VsdkResu
     json p = { {"path", path ? path : ""}, {"xResMm", xr}, {"yResMm", yr}, {"zResMm", zr} };
     return vsdk_run("HeightMapLoader", p.dump().c_str(), nullptr, nullptr, out);
 }
-int vsdk_exposure_split(const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("ExposureMerge",  p, in, nullptr, o); }
-int vsdk_exposure_merge(const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("ExposureMerge2", p, in, nullptr, o); }
-int vsdk_noise_filter (const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("NoiseFilter",    p, in, nullptr, o); }
+int vsdk_noise_filter(const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("NoiseFilter",    p, in, nullptr, o); }
 int vsdk_gap_fill     (const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("GapFill",        p, in, nullptr, o); }
 int vsdk_edge_detector(const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("EdgeDetector",   p, in, nullptr, o); }
 int vsdk_align        (const VsdkHeightMap* in, const char* p, VsdkResult* o) { return vsdk_run("Align",          p, in, nullptr, o); }

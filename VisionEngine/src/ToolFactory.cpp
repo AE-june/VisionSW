@@ -13,8 +13,10 @@
 #include "LineCenterTool.h"
 #include "AlignTool.h"
 #include "ThresholdTool.h"
+#include "HeightMapNormalizeTool.h"
 #include "CreateRoiTool.h"
 #include "ReduceDomainTool.h"
+#include "RegionToHeightMapTool.h"
 #include "RegionMeasureTool.h"
 #include "ValidRegionTool.h"
 #include "LevelTool.h"
@@ -63,13 +65,6 @@
 #include <fstream>
 #include <iomanip>
 
-// stb for PNG/JPG loading
-// STBI_WINDOWS_UTF8: stbi__fopen이 char* 경로를 시스템 ANSI 코드페이지가 아니라
-// UTF-8로 해석해 _wfopen으로 열도록 함. 없으면 비-ASCII(한글 등) 경로의 파일을
-// 전혀 못 읽는다(코드페이지에 없는 문자는 fopen 자체가 실패).
-#define STBI_WINDOWS_UTF8
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 // OpenCV for saving (16-bit PNG/TIFF + 일반 포맷)
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -77,151 +72,9 @@
 
 namespace vision {
 
-// ── HeightMap 파일 글로벌 캐시 (폴더검사 시 반복 IO 제거) ──────────────────────
-std::unordered_map<std::string, std::shared_ptr<HeightMap>> g_heightmapFileCache;
-std::unordered_set<std::string> g_preloadedFolders;
-std::mutex g_heightmapFileCacheMtx;
-
-// 파일 캐시 상한 — 최근 N장만 유지(폴더 브라우징·연속 로드로 메모리 무한 누적 방지).
-//  삽입 순서(FIFO)로 오래된 것 축출. 사용 중(shared_ptr 참조)인 HeightMap은 map에서 빠져도 안전히 유지됨.
-//  반드시 g_heightmapFileCacheMtx를 보유한 상태에서 호출할 것.
-static const size_t HEIGHTMAP_CACHE_CAP = 8;
-static std::deque<std::string> g_heightmapCacheOrder;
-void heightmapCachePut(const std::string& path, const std::shared_ptr<HeightMap>& zm) {
-    if (g_heightmapFileCache.find(path) == g_heightmapFileCache.end()) g_heightmapCacheOrder.push_back(path);
-    g_heightmapFileCache[path] = zm;
-    while (g_heightmapCacheOrder.size() > HEIGHTMAP_CACHE_CAP) {
-        std::string old = g_heightmapCacheOrder.front();
-        g_heightmapCacheOrder.pop_front();
-        if (old != path) g_heightmapFileCache.erase(old);   // 방금 넣은 건 축출 안 함
-    }
-}
-
-static std::shared_ptr<HeightMap> loadTiffFromMemory(
-        const uint8_t* data, size_t size, float xRes, float yRes, float zRes) {
-    // OpenCV가 이미 의존성으로 존재 — imdecode로 TIFF(압축 포함) 처리
-    cv::Mat buf(1, static_cast<int>(size), CV_8U, const_cast<uint8_t*>(data));
-    cv::Mat img = cv::imdecode(buf, cv::IMREAD_ANYDEPTH | cv::IMREAD_ANYCOLOR);
-    if (img.empty()) return nullptr;
-    if (img.channels() > 1) cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
-
-    auto hm = std::make_shared<HeightMap>();
-    hm->width = img.cols; hm->height = img.rows;
-    hm->xResMm = xRes; hm->yResMm = yRes; hm->zResMm = zRes;
-    hm->data.resize(static_cast<size_t>(img.cols) * img.rows);
-
-    if (img.depth() == CV_16U) {
-        hm->zZeroCount = 32768.f;
-        const uint16_t* src = reinterpret_cast<const uint16_t*>(img.data);
-        for (size_t i = 0; i < hm->data.size(); ++i)
-            hm->data[i] = (src[i] == 0) ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(src[i]);
-    } else if (img.depth() == CV_8U) {
-        hm->zZeroCount = 128.f;
-        const uint8_t* src = img.data;
-        for (size_t i = 0; i < hm->data.size(); ++i)
-            hm->data[i] = (src[i] == 0) ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(src[i]);
-    } else {
-        return nullptr;
-    }
-    return hm;
-}
-
-std::shared_ptr<HeightMap> loadHeightMapFromFile(const std::string& path,
-                                       float xRes, float yRes, float zRes) {
-    namespace fs = std::filesystem;
-    // Read via u8path so Korean/Unicode paths work on Windows (fopen uses ANSI otherwise)
-    std::ifstream ifs(fs::u8path(path), std::ios::binary | std::ios::ate);
-    if (!ifs) return nullptr;
-    auto fileSize = static_cast<size_t>(ifs.tellg());
-    ifs.seekg(0);
-    std::vector<stbi_uc> fileBuf(fileSize);
-    ifs.read(reinterpret_cast<char*>(fileBuf.data()), static_cast<std::streamsize>(fileSize));
-    ifs.close();
-
-    // TIFF magic: II\x2A\x00 (LE) or MM\x00\x2A (BE)
-    if (fileSize >= 4 &&
-        ((fileBuf[0]=='I' && fileBuf[1]=='I' && fileBuf[2]==0x2A && fileBuf[3]==0x00) ||
-         (fileBuf[0]=='M' && fileBuf[1]=='M' && fileBuf[2]==0x00 && fileBuf[3]==0x2A))) {
-        return loadTiffFromMemory(fileBuf.data(), fileSize, xRes, yRes, zRes);
-    }
-
-    int w, h, ch;
-    uint16_t* raw16 = stbi_load_16_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
-    if (raw16) {
-        auto heightmap = std::make_shared<HeightMap>();
-        heightmap->width=w; heightmap->height=h;
-        heightmap->xResMm=xRes; heightmap->yResMm=yRes; heightmap->zResMm=zRes;
-        heightmap->zZeroCount=32768.f;
-        heightmap->data.resize((size_t)w*h);
-        for (int i=0;i<w*h;++i)
-            heightmap->data[i] = raw16[i]==0 ? std::numeric_limits<float>::quiet_NaN()
-                                        : static_cast<float>(raw16[i]);
-        stbi_image_free(raw16);
-        return heightmap;
-    }
-    unsigned char* raw8 = stbi_load_from_memory(fileBuf.data(), static_cast<int>(fileSize), &w, &h, &ch, 1);
-    if (!raw8) return nullptr;
-    auto heightmap = std::make_shared<HeightMap>();
-    heightmap->width=w; heightmap->height=h;
-    heightmap->xResMm=xRes; heightmap->yResMm=yRes; heightmap->zResMm=zRes;
-    heightmap->zZeroCount=128.f;
-    heightmap->data.resize((size_t)w*h);
-    for (int i=0;i<w*h;++i)
-        heightmap->data[i] = raw8[i]==0 ? std::numeric_limits<float>::quiet_NaN()
-                                   : static_cast<float>(raw8[i]);
-    stbi_image_free(raw8);
-    return heightmap;
-}
-
-int preloadFolder(const std::string& folder, float xRes, float yRes, float zRes) {
-    namespace fs = std::filesystem;
-    // Collect files not yet cached
-    std::vector<std::string> toLoad;
-    {
-        std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
-        if (g_preloadedFolders.count(folder)) return 0;
-        g_preloadedFolders.insert(folder);
-        std::error_code ec;
-        // folder는 UTF-8 문자열 — u8path로 넣어야 한글 등 비-ASCII 경로를 찾을 수 있고,
-        // u8string으로 꺼내야 나중에 stbi_load(UTF-8 가정)로 다시 넘길 때 왕복이 맞는다.
-        for (auto& e : fs::directory_iterator(fs::u8path(folder), ec)) {
-            auto ext = e.path().extension().string();
-            if (ext == ".png" || ext == ".tif" || ext == ".tiff") {
-                std::string fp = e.path().u8string();
-                if (!g_heightmapFileCache.count(fp))
-                    toLoad.push_back(fp);
-            }
-        }
-    }
-    if (toLoad.empty()) return 0;
-
-    // Load in parallel using hardware concurrency
-    const int nThreads = static_cast<int>(std::thread::hardware_concurrency());
-    const int n = static_cast<int>(toLoad.size());
-    std::vector<std::pair<std::string, std::shared_ptr<HeightMap>>> results(n);
-    std::atomic<int> idx{0};
-
-    auto worker = [&]() {
-        int i;
-        while ((i = idx.fetch_add(1)) < n) {
-            results[i] = { toLoad[i], loadHeightMapFromFile(toLoad[i], xRes, yRes, zRes) };
-        }
-    };
-
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads);
-    for (int t = 0; t < nThreads; ++t)
-        threads.emplace_back(worker);
-    for (auto& t : threads) t.join();
-
-    int loaded = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_heightmapFileCacheMtx);
-        for (auto& [path, zm] : results)
-            if (zm) { heightmapCachePut(path, zm); ++loaded; }
-    }
-    return loaded;
-}
+// HeightMap 파일 캐시/로더(g_heightmapFileCache, heightmapCachePut,
+// loadHeightMapFromFile, preloadFolder)는 HeightMapCache.cpp로 분리됨.
+// 선언은 HeightMapCache.h 참조.
 
 // ── Loader tools (defined here, used by ToolFactory) ─────────────────────
 
@@ -523,79 +376,137 @@ public:
             roiPts = cloud.points;
         }
 
-        // bin key → points 수집. bx 저장(Continuity 이웃 탐색용).
-        struct BinData { double sumX = 0, sumY = 0; std::vector<float> zs; int32_t bx = 0, by = 0; };
-        std::unordered_map<int64_t, BinData> bins;
-        bins.reserve(roiPts.size());
-
-        // step=0이면 float 비트값을 키로 사용
-        auto toKey = [&](const Point3f& pt) -> int64_t {
-            int32_t bx, by;
-            if (m_xStepMm > 0) bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
-            else { uint32_t u; std::memcpy(&u, &pt.x, 4); bx = (int32_t)u; }
-            if (m_yStepMm > 0) by = (int32_t)std::lround((double)pt.y / m_yStepMm);
-            else { uint32_t u; std::memcpy(&u, &pt.y, 4); by = (int32_t)u; }
-            return ((int64_t)(uint32_t)bx << 32) | (uint32_t)by;
-        };
-        for (const auto& pt : roiPts) {
-            int64_t key = toKey(pt);
-            auto& b = bins[key];
-            b.sumX += pt.x; b.sumY += pt.y;
-            b.zs.push_back(pt.z);
-            if (m_xStepMm > 0) b.bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
-            if (m_yStepMm > 0) b.by = (int32_t)std::lround((double)pt.y / m_yStepMm);
-        }
-
+        const bool storeZs = (m_reduce == Reduce::Median || m_reduce == Reduce::Continuity);
         auto out = std::make_shared<PointCloud3D>();
         out->frameId = cloud.frameId;
-        out->points.reserve(bins.size() + passPts.size());
+        size_t nReduced = 0;   // 축약 셀 수 (로그용)
 
-        if (m_reduce == Reduce::Continuity) {
-            std::unordered_map<int64_t, float> estimates;
-            estimates.reserve(bins.size());
-            for (auto& [key, b] : bins) {
-                auto zs = b.zs;
-                std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end());
-                estimates[key] = zs[zs.size()/2];
+        // ── dense-grid 고속 경로 ──────────────────────────────────────────
+        // Max/Min/Mean + step>0 + 격자 범위 적정이면 unordered_map(캐시미스 랜덤접근)
+        // 대신 2D 평면배열로 집계. bin 인덱스가 연속이라 캐시 친화적 → 해시 병목 제거.
+        // Median/Continuity·step=0·격자 과대(희소)면 아래 해시맵 경로로 폴백.
+        bool didGrid = false;
+        if ((m_reduce == Reduce::Max || m_reduce == Reduce::Min || m_reduce == Reduce::Mean)
+            && m_xStepMm > 0 && m_yStepMm > 0 && !roiPts.empty()) {
+            int32_t bxMin = std::numeric_limits<int32_t>::max(), bxMax = std::numeric_limits<int32_t>::min();
+            int32_t byMin = bxMin, byMax = bxMax;
+            for (const auto& pt : roiPts) {
+                int32_t bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+                int32_t by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+                if (bx < bxMin) bxMin = bx; if (bx > bxMax) bxMax = bx;
+                if (by < byMin) byMin = by; if (by > byMax) byMax = by;
             }
-            int nr = m_neighborRange;
-            for (auto& [key, b] : bins) {
-                float refZ = 0.f; int count = 0;
-                for (int dx = -nr; dx <= nr; ++dx) {
-                    if (dx == 0) continue;
-                    int64_t nkey = ((int64_t)(uint32_t)(b.bx + dx) << 32) | (uint32_t)b.by;
-                    auto it = estimates.find(nkey);
-                    if (it != estimates.end()) { refZ += it->second; ++count; }
+            const int64_t gw = (int64_t)bxMax - bxMin + 1;
+            const int64_t gh = (int64_t)byMax - byMin + 1;
+            const int64_t cells = gw * gh;
+            // 격자가 점수 대비 과도하게 희소하면(메모리 낭비) 해시맵 폴백
+            if (cells > 0 && cells <= 20000000LL && cells <= 6 * (int64_t)roiPts.size()) {
+                struct Cell { double sumX = 0, sumY = 0; float zAgg = 0.f; uint32_t count = 0; };
+                std::vector<Cell> grid((size_t)cells);
+                const bool isMax = (m_reduce == Reduce::Max), isMin = (m_reduce == Reduce::Min);
+                for (const auto& pt : roiPts) {
+                    int32_t bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+                    int32_t by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+                    Cell& c = grid[(size_t)((int64_t)(bx - bxMin) * gh + (by - byMin))];
+                    if (c.count == 0 && (isMax || isMin)) c.zAgg = pt.z;
+                    c.sumX += pt.x; c.sumY += pt.y; ++c.count;
+                    if (isMax)      { if (pt.z > c.zAgg) c.zAgg = pt.z; }
+                    else if (isMin) { if (pt.z < c.zAgg) c.zAgg = pt.z; }
+                    else            c.zAgg += pt.z;   // Mean: 합
                 }
-                float z;
-                if (count > 0) {
-                    refZ /= count;
-                    z = b.zs[0];
-                    float best = std::abs(b.zs[0] - refZ);
-                    for (float zv : b.zs) { float d = std::abs(zv - refZ); if (d < best) { best = d; z = zv; } }
-                } else {
-                    z = estimates[key];
+                out->points.reserve((size_t)std::min<int64_t>(cells, (int64_t)roiPts.size()) + passPts.size());
+                for (const auto& c : grid) {
+                    if (c.count == 0) continue;
+                    float z = (isMax || isMin) ? c.zAgg : c.zAgg / (float)c.count;
+                    out->points.push_back({ (float)(c.sumX / c.count), (float)(c.sumY / c.count), z });
                 }
-                out->points.push_back({ (float)(b.sumX/b.zs.size()), (float)(b.sumY/b.zs.size()), z });
+                nReduced = out->points.size();
+                didGrid = true;
             }
-        } else {
-            for (auto& [key, b] : bins) {
-                float z = 0.f;
-                auto& zs = b.zs;
-                if (m_reduce == Reduce::Max)       z = *std::max_element(zs.begin(), zs.end());
-                else if (m_reduce == Reduce::Min)  z = *std::min_element(zs.begin(), zs.end());
-                else if (m_reduce == Reduce::Mean) { for (float v : zs) z += v; z /= (float)zs.size(); }
-                else { std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end()); z = zs[zs.size()/2]; }
-                out->points.push_back({ (float)(b.sumX/zs.size()), (float)(b.sumY/zs.size()), z });
+        }
+
+        if (!didGrid) {
+            // ── 해시맵 경로 (Median/Continuity, step=0, 또는 격자 폴백) ──
+            struct BinData {
+                double  sumX = 0, sumY = 0;
+                uint32_t count = 0;
+                float   zAgg = 0.f;            // Max/Min: 러닝 극값 · Mean: z 합
+                std::vector<float> zs;         // Median/Continuity 전용
+                int32_t bx = 0, by = 0;
+            };
+            std::unordered_map<int64_t, BinData> bins;
+            bins.reserve(roiPts.size());
+            auto toKey = [&](const Point3f& pt) -> int64_t {
+                int32_t bx, by;
+                if (m_xStepMm > 0) bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+                else { uint32_t u; std::memcpy(&u, &pt.x, 4); bx = (int32_t)u; }
+                if (m_yStepMm > 0) by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+                else { uint32_t u; std::memcpy(&u, &pt.y, 4); by = (int32_t)u; }
+                return ((int64_t)(uint32_t)bx << 32) | (uint32_t)by;
+            };
+            for (const auto& pt : roiPts) {
+                int64_t key = toKey(pt);
+                auto& b = bins[key];
+                if (b.count == 0) {
+                    if (m_xStepMm > 0) b.bx = (int32_t)std::lround((double)pt.x / m_xStepMm);
+                    if (m_yStepMm > 0) b.by = (int32_t)std::lround((double)pt.y / m_yStepMm);
+                    if (m_reduce == Reduce::Max || m_reduce == Reduce::Min) b.zAgg = pt.z;
+                }
+                b.sumX += pt.x; b.sumY += pt.y; ++b.count;
+                if (storeZs)                            b.zs.push_back(pt.z);
+                else if (m_reduce == Reduce::Max)       { if (pt.z > b.zAgg) b.zAgg = pt.z; }
+                else if (m_reduce == Reduce::Min)       { if (pt.z < b.zAgg) b.zAgg = pt.z; }
+                else /* Mean */                         b.zAgg += pt.z;
             }
+            out->points.reserve(bins.size() + passPts.size());
+
+            if (m_reduce == Reduce::Continuity) {
+                std::unordered_map<int64_t, float> estimates;
+                estimates.reserve(bins.size());
+                for (auto& [key, b] : bins) {
+                    auto zs = b.zs;
+                    std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end());
+                    estimates[key] = zs[zs.size()/2];
+                }
+                int nr = m_neighborRange;
+                for (auto& [key, b] : bins) {
+                    float refZ = 0.f; int count = 0;
+                    for (int dx = -nr; dx <= nr; ++dx) {
+                        if (dx == 0) continue;
+                        int64_t nkey = ((int64_t)(uint32_t)(b.bx + dx) << 32) | (uint32_t)b.by;
+                        auto it = estimates.find(nkey);
+                        if (it != estimates.end()) { refZ += it->second; ++count; }
+                    }
+                    float z;
+                    if (count > 0) {
+                        refZ /= count;
+                        z = b.zs[0];
+                        float best = std::abs(b.zs[0] - refZ);
+                        for (float zv : b.zs) { float d = std::abs(zv - refZ); if (d < best) { best = d; z = zv; } }
+                    } else {
+                        z = estimates[key];
+                    }
+                    out->points.push_back({ (float)(b.sumX/b.count), (float)(b.sumY/b.count), z });
+                }
+            } else {
+                for (auto& [key, b] : bins) {
+                    float z;
+                    if      (m_reduce == Reduce::Max)  z = b.zAgg;
+                    else if (m_reduce == Reduce::Min)  z = b.zAgg;
+                    else if (m_reduce == Reduce::Mean) z = b.zAgg / (float)b.count;
+                    else { auto& zs = b.zs; std::nth_element(zs.begin(), zs.begin() + zs.size()/2, zs.end()); z = zs[zs.size()/2]; }
+                    out->points.push_back({ (float)(b.sumX/b.count), (float)(b.sumY/b.count), z });
+                }
+            }
+            nReduced = bins.size();
         }
 
         // ROI 외부 점 합산
         out->points.insert(out->points.end(), passPts.begin(), passPts.end());
 
         const double _ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count();
-        VISION_LOG_INFO("CloudZReduce: {} pts → {} pts (roi={} pass={})  [{:.1f} ms]",
-            cloud.size(), out->size(), bins.size(), passPts.size(), _ms);
+        VISION_LOG_INFO("CloudZReduce: {} pts → {} pts (roi={} pass={}) {}  [{:.1f} ms]",
+            cloud.size(), out->size(), nReduced, passPts.size(), didGrid ? "grid" : "hash", _ms);
         auto data = std::make_shared<VisionData>();
         data->sourceId = input->sourceId;
         data->setCloud(out);
@@ -659,177 +570,6 @@ public:
     }
 };
 
-// (구) DualExposureMergeTool — ExposureMerge2 타입 제거됨. ExposureMerge 사용.
-class DualExposureMergeTool : public IAlgorithmTool {
-    float m_matchTol;
-    float m_reflTol;
-    float m_tolX, m_tolY;
-    int   m_gapK;
-    bool  m_halfRes;
-    bool  m_noPreview;
-    std::string m_nodeId;  // A5-1: 새 프레임 정의용 (비어있으면 프레임 정의 안 함)
-public:
-    DualExposureMergeTool(float matchTol, float reflTol, float tolX, float tolY,
-                          int gapK, bool halfRes, bool noPreview, std::string nodeId)
-        : m_matchTol(matchTol), m_reflTol(reflTol), m_tolX(tolX), m_tolY(tolY),
-          m_gapK(gapK), m_halfRes(halfRes), m_noPreview(noPreview), m_nodeId(std::move(nodeId)) {}
-    std::string name() const override { return "ExposureMerge2"; }
-
-    ToolResult execute(VisionDataPtr input) override {
-        if (!input || !input->inHeightMap(0))
-            return { ToolStatus::Fail, "이중노출 머지: HeightMap 입력이 필요합니다" };
-        const auto& zm = *input->inHeightMap(0);
-        const int w = zm.width, h = zm.height;
-        if (h < 2) return { ToolStatus::Fail, "이중노출 머지: 이미지 높이가 너무 작습니다" };
-        const int n = h / 2;                        // 전체 pair(출력행) 수
-        const float NaN = std::numeric_limits<float>::quiet_NaN();
-        auto at = [&](int r, int c){ return zm.data[(size_t)r*w + c]; };
-
-        // ── 코어 머지: pair 범위 [pr0,pr1)를 처리해 filtered(bn×w) 반환 ──────────────
-        //   ①홀짝분리 ②오프셋보정 ③저노출우선머지 ④연속성필터. 인덱스는 블록 로컬(0..bn),
-        //   입력은 전역 행 at(2*(pr0+r))에서 읽는다. 청크 모드는 이 함수를 겹침 포함 블록마다 호출.
-        //   outLowC/outHigh/outMerged 포인터를 주면 디스플레이용 중간단계도 반환(전체모드 전용).
-        auto computeFiltered = [&](int pr0, int pr1, long& removedOut, float& offsetOut,
-                                   std::vector<float>* outLowC, std::vector<float>* outHigh,
-                                   std::vector<float>* outMerged, float forcedOffset) -> std::vector<float> {
-            const int bn = pr1 - pr0;
-            const size_t BN = (size_t)bn * w;
-            // ① 홀짝 분리 (짝수행=저노출 가정) — 행 단위 병렬
-            std::vector<float> low(BN), high(BN);
-            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
-                for (int r = rg.start; r < rg.end; ++r) { const int gr = pr0 + r;
-                    for (int c = 0; c < w; ++c) { size_t i=(size_t)r*w+c; low[i]=at(2*gr,c); high[i]=at(2*gr+1,c); } }
-            });
-            // ②③④ 공유 코어: 오프셋 → 저노출우선 → 연속성 BFS → 셀별 source(0제거/1저/2고)
-            //   seedTol=m_reflTol(<0이면 코어가 matchTol로 폴백 → 기존 동작). offSamples로 오프셋 표본수 확인.
-            std::vector<uint8_t> source;
-            int offSamples = -1;
-            float offset = exposureMergeDecision(low.data(), high.data(), w, bn, m_matchTol, m_tolX, m_tolY, m_gapK,
-                                                 forcedOffset, source, nullptr, true, m_reflTol, &offSamples);
-            if (offSamples == 0)
-                VISION_LOG_INFO("ExposureMerge2: 경고 — 겹침 일치 표본 0개 → 오프셋 보정 건너뜀(offset=0). matchTol을 키우거나 노출 정렬을 확인하세요.");
-            offsetOut = offset;
-            // source → 최종 Z: 저=low-offset, 고=high, 제거=NaN. (제거된 fill 리플렉션 카운트)
-            std::vector<float> filtered(BN);
-            std::atomic<long> removedA{0};
-            cv::parallel_for_(cv::Range(0, bn), [&](const cv::Range& rg) {
-                long loc = 0;
-                for (size_t i=(size_t)rg.start*w; i<(size_t)rg.end*w; ++i) {
-                    uint8_t s = source[i];
-                    if      (s == 1) filtered[i] = low[i] - offset;
-                    else if (s == 2) filtered[i] = high[i];
-                    else { filtered[i] = NaN; if (!std::isnan(high[i])) ++loc; }
-                }
-                removedA += loc;
-            });
-            removedOut += removedA.load();
-            // 디스플레이 중간단계 재구성(전체모드 + !noPreview): lowC=low-offset, merged=저우선(리플제거 전), high
-            if (outLowC) {
-                std::vector<float> lc(BN);
-                for (size_t i=0;i<BN;++i) lc[i] = std::isnan(low[i]) ? NaN : low[i]-offset;
-                *outLowC = std::move(lc);
-            }
-            if (outMerged) {
-                std::vector<float> mg(BN);
-                for (size_t i=0;i<BN;++i) { float lc=std::isnan(low[i])?NaN:low[i]-offset; mg[i]=!std::isnan(lc)?lc:(!std::isnan(high[i])?high[i]:NaN); }
-                *outMerged = std::move(mg);
-            }
-            if (outHigh) *outHigh = high;
-            return filtered;
-        };
-
-        // ── 전체 이미지 vs 청크 실행 ─────────────────────────────────────────────
-        // A5-2: chunkMode 자동 판단. chunkRows/overlapRows는 고정 상수.
-        const bool chunkMode = (n > 4096);
-        const int chunkRowsAuto = 1000, overlapRowsAuto = 320;
-        long removed = 0; float offset = 0.f;
-        std::vector<float> lowCFull, highFull, mergedFull;   // 디스플레이 단계용(전체모드 + !noPreview)
-        std::vector<float> filtered;
-        if (!chunkMode) {
-            // 청크 미사용: 기존처럼 전체 이미지에 대해 한 번에 연산.
-            const bool wantStages = !m_noPreview;
-            filtered = computeFiltered(0, n, removed, offset,
-                wantStages ? &lowCFull : nullptr, wantStages ? &highFull : nullptr, wantStages ? &mergedFull : nullptr, NaN);
-        } else {
-            // 청크 모드: 코어 청크를 위·아래 겹침만큼 확장해 처리하고, 코어 행만 출력에 기록.
-            //   겹침은 BFS 연속성 컨텍스트를 청크 경계 너머까지 확보해 이음매 결함을 방지.
-            filtered.assign((size_t)n*w, NaN);
-            const int chunkPairs = std::max(1, chunkRowsAuto/2);
-            const int ov         = std::max(0, overlapRowsAuto/2);
-            // 오프셋은 두 노출의 전역 캘리브레이션 성질 → 전체 이미지에서 1회 산출해 모든 청크가 공유.
-            //   (전체 모드와 동일한 flat stride-4 샘플링으로 값 일치 보장)
-            float gOffset = 0.f;
-            {
-                std::vector<float> d; d.reserve((size_t)n*w/4 + 1);
-                for (size_t i = 0; i < (size_t)n*w; i += 4) {
-                    int r = (int)(i / w), c = (int)(i % w);
-                    float lo = at(2*r, c), hi = at(2*r+1, c);
-                    if (!std::isnan(lo) && !std::isnan(hi) && std::fabs(lo-hi) <= m_matchTol) d.push_back(lo-hi);
-                }
-                if (!d.empty()) { size_t mid=d.size()/2; std::nth_element(d.begin(),d.begin()+mid,d.end()); gOffset=d[mid]; }
-                else VISION_LOG_INFO("ExposureMerge2[청크]: 경고 — 겹침 일치 표본 0개 → 오프셋 보정 건너뜀(offset=0). matchTol/노출 정렬 확인.");
-            }
-            offset = gOffset;
-            int nChunks = 0;
-            for (int p0 = 0; p0 < n; p0 += chunkPairs) {
-                const int p1 = std::min(n, p0 + chunkPairs);       // 코어 [p0,p1)
-                const int e0 = std::max(0, p0 - ov), e1 = std::min(n, p1 + ov);   // 확장 [e0,e1)
-                float ofs = 0.f;
-                auto blk = computeFiltered(e0, e1, removed, ofs, nullptr, nullptr, nullptr, gOffset);
-                for (int r = p0; r < p1; ++r)                      // 코어 행만 기록(겹침 여백은 버림)
-                    std::copy(&blk[(size_t)(r-e0)*w], &blk[(size_t)(r-e0)*w+w], &filtered[(size_t)r*w]);
-                ++nChunks;
-            }
-            VISION_LOG_INFO("ExposureMerge2[청크]: {}개 청크(코어 {}행+겹침 {}행), 제거 {} px", nChunks, chunkRowsAuto, overlapRowsAuto, removed);
-        }
-
-        // ⑤ 출력 HeightMap: 반해상도(n행, Y피치×2). halfRes=false면 각 행을 2배 복제해 원본 높이.
-        auto makeOut = [&](std::vector<float> src) {   // by-value: 호출측에서 move로 넘겨 복사/할당 제거
-            auto z = std::make_shared<HeightMap>();
-            z->width=w; z->xResMm=zm.xResMm; z->zResMm=zm.zResMm; z->zZeroCount=zm.zZeroCount;
-            if (m_halfRes) {
-                z->height=n; z->yResMm=zm.yResMm*2.f; z->data = std::move(src);
-            } else {
-                z->height=2*n; z->yResMm=zm.yResMm;
-                z->data.resize((size_t)2*n*w);   // 모든 행을 아래 복사가 덮으므로 NaN 초기화 불필요
-                cv::parallel_for_(cv::Range(0, n), [&](const cv::Range& rg) {
-                    for (int r=rg.start;r<rg.end;++r) {
-                        std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r)*w]);
-                        std::copy(&src[(size_t)r*w], &src[(size_t)r*w+w], &z->data[(size_t)(2*r+1)*w]);
-                    }
-                });
-            }
-            return z;
-        };
-        // 실제 출력 = 최종 머지(리플렉션 제거). 항상 이것만 다운스트림으로 넘긴다.
-        auto zFinal = makeOut(std::move(filtered));
-
-        auto data = std::make_shared<VisionData>();
-        data->setHeightMap(zFinal);
-        data->sourceId = input->sourceId;
-        data->frames = input->frames;
-        // A5-1: halfRes=true 시 새 프레임 정의 (yResMm×2 해상도 변경을 프레임 트리에 기록)
-        if (m_halfRes && !m_nodeId.empty()) {
-            Frame f; f.id = "hm:" + m_nodeId; f.toParent = Transform2D::identity();
-            data->definedFrames.push_back(f);
-            if (data->frames) data->frames->define(f);
-            zFinal->frameId = f.id;
-        }
-        // 중간 단계는 결과창 드롭다운(디스플레이) 전용 — 전체모드 && !noPreview 일 때만(청크 모드는 최종만).
-        if (!chunkMode && !m_noPreview && !mergedFull.empty()) {
-            auto zMerged=makeOut(std::move(mergedFull)), zLow=makeOut(std::move(lowCFull)), zHigh=makeOut(std::move(highFull));
-            data->stages = std::make_shared<std::vector<std::pair<std::string, HeightMapPtr>>>();
-            data->stages->push_back({ "1. 머지(리플렉션 제거)", zFinal });
-            data->stages->push_back({ "2. 기본 머지",           zMerged });
-            data->stages->push_back({ "3. 저노출(오프셋 보정)", zLow });
-            data->stages->push_back({ "4. 장노출",             zHigh });
-        }
-        if (!chunkMode)
-            VISION_LOG_INFO("ExposureMerge2: offset={:.1f}cnt, fill 리플렉션 제거 {} px (matchTol={}, tolX={}, tolY={})",
-                            offset, removed, m_matchTol, m_tolX, m_tolY);
-        return { ToolStatus::Ok, "", data };
-    }
-};
 
 // ── TripleExposureMerge (3노출 머지): 인터리브 저/중/장(행 r%3=0/1/2) → 공유 결정 코어를
 //    캐스케이드로 2번 적용. 우선순위 저>중>장, 각 단계 오프셋 보정 + 연속성 BFS 리플렉션 제거.
@@ -2268,6 +2008,15 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
                       ? ThresholdParams::Mode::Raw : ThresholdParams::Mode::Mm;
         return std::make_shared<ThresholdTool>(params);
     }
+    if (type == "HeightMapNormalize") {
+        HeightMapNormalizeParams params;
+        params.mode      = p.value("mode",      std::string("minmax"));
+        params.outMin    = p.value("outMin",    0.0);
+        params.outMax    = p.value("outMax",    1.0);
+        params.clipLimit = p.value("clipLimit", 2.0);
+        params.tileGrid  = p.value("tileGrid",  8);
+        return std::make_shared<HeightMapNormalizeTool>(params);
+    }
     if (type == "ValidRegion") {
         ValidRegionParams params;
         params.channel = p.value("channel", 0);
@@ -2341,6 +2090,12 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         ReduceDomainParams params;
         params.invert = p.value("invert", false);
         return std::make_shared<ReduceDomainTool>(params);
+    }
+    if (type == "RegionToHeightMap") {
+        RegionToHeightMapParams params;
+        params.insideValue  = p.value("insideValue",  1.f);
+        params.outsideValue = p.value("outsideValue", 0.f);
+        return std::make_shared<RegionToHeightMapTool>(params);
     }
     if (type == "RegionMeasure") {
         RegionMeasureParams params;
@@ -2456,6 +2211,9 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
             ed.threshold    = e.value("threshold", 0.05);
             ed.smoothWindow = e.value("smoothWindow", 3);
             ed.nth          = e.value("nth", 0);
+            ed.inputPort    = e.value("inputPort", 1);
+            ed.resampleZ    = e.value("resampleZ", false);
+            ed.expose       = e.value("expose", false);
             params.elements.push_back(ed);
         }
         for (const auto& m : p.value("measurements", nlohmann::json::array())) {

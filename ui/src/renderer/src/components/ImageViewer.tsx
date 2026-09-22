@@ -442,8 +442,9 @@ export default function ImageViewer({
         const gc = Math.min(g.w - 1, Math.max(0, Math.floor(col)))
         const gr = Math.min(g.h - 1, Math.max(0, Math.floor(row)))
         const gray = g.data[(gr * g.w + gc) * 4]  // R채널 = grayscale
+        // 인코더가 유효값을 [1,255]로, NaN을 0으로 매핑(무손실 PNG) → gray0=NaN 정확 판정
         val = (zMin !== undefined && zMax !== undefined)
-          ? (gray === 0 ? null : zMin + (gray / 255) * (zMax - zMin))
+          ? (gray === 0 ? null : zMin + ((gray - 1) / 254) * (zMax - zMin))
           : gray
       }
       setHover({ col, row, val })
@@ -583,7 +584,7 @@ export default function ImageViewer({
         const id = ctx.getImageData(0, 0, cv.width, cv.height)
         const d = id.data
         for (let i = 0; i < d.length; i += 4) {
-          const value = hasRange ? zMin! + (d[i] / 255) * (zMax! - zMin!) : d[i]
+          const value = hasRange ? zMin! + ((d[i] - 1) / 254) * (zMax! - zMin!) : d[i]
           const t = clamp01((value - lo) / span)
           const [r, g, b] = jet(t)
           d[i] = r; d[i + 1] = g; d[i + 2] = b
@@ -591,7 +592,7 @@ export default function ImageViewer({
         ctx.putImageData(id, 0, 0)
       }
     }
-    img.src = `data:image/jpeg;base64,${preview}`
+    img.src = `data:image/png;base64,${preview}`
   }, [preview, colormap, autoRange, rangeLo, rangeHi, zMin, zMax])
 
   const modeClass = drawMode ? ' pfe-mode-draw' : ' pfe-mode-pan'

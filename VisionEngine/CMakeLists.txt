@@ -1,6 +1,7 @@
 add_executable(VisionEngine
     src/main.cpp
     src/ToolFactory.cpp
+    src/HeightMapCache.cpp
     src/JsonBridge.cpp
 )
 

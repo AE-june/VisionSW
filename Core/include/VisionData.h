@@ -73,6 +73,17 @@ struct LineModel {
 };
 
 // ─────────────────────────────────────────────
+//  Profile caliper element routing types
+// ─────────────────────────────────────────────
+struct ProfilePoint { double sMm = 0, zMm = 0; bool valid = false; };
+struct ProfileLine  { double slope = 0, intercept = 0, rmse = 0; bool valid = false; };
+
+struct ProfileElemResult {
+    std::vector<ProfilePoint> points;  // point elem → [prof0, prof1, ...]
+    std::vector<ProfileLine>  lines;   // line elem  → [prof0, prof1, ...]
+};
+
+// ─────────────────────────────────────────────
 //  Reference point
 // ─────────────────────────────────────────────
 struct RefPoint {
@@ -153,6 +164,9 @@ struct VisionData {
     std::vector<RefPoint>                      points;
     std::vector<Measurement>                   measurements;
     std::vector<Decision>                      decisions;
+    std::vector<ProfileElemResult>             profileElemResults;  // [elemIdx] — expose 출력
+    std::vector<ProfilePoint>                  profilePoints;        // 라우팅 후 수신 측
+    std::vector<ProfileLine>                   profileLines;         // 라우팅 후 수신 측
 
     // 메타
     std::shared_ptr<FrameRegistry> frames;

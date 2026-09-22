@@ -60,6 +60,7 @@ struct Edge {
     std::string source, target;
     int sourcePort = 0;   // sourceHandle "output-N"의 N (없으면 0)
     int targetPort = 0;   // targetHandle "input-N"의 N (없으면 0)
+    std::string sourcePortType;  // "ProfilePoints" | "ProfileLines" | ""
 };
 
 // "output-3" / "input-2" 같은 핸들 문자열에서 마지막 '-' 뒤 정수를 뽑는다.
@@ -81,6 +82,7 @@ struct InputRef {
     std::string source;
     int srcPort = 0;
     int dstPort = 0;
+    std::string sourcePortType;  // "ProfilePoints" | "ProfileLines" | ""
 };
 
 
@@ -162,8 +164,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
             ed.target = e.at("target").get<std::string>();
             // UI가 sourceHandle="output-N", targetHandle="input-N" 형식을 보낸다.
             // 없거나 형식이 안 맞으면 0 폴백 → 기존 병합과 동일.
-            ed.sourcePort = parsePortHandle(e.value("sourceHandle", std::string()));
-            ed.targetPort = parsePortHandle(e.value("targetHandle", std::string()));
+            ed.sourcePort     = parsePortHandle(e.value("sourceHandle", std::string()));
+            ed.targetPort     = parsePortHandle(e.value("targetHandle", std::string()));
+            ed.sourcePortType = e.value("sourcePortType", std::string());
             edges.push_back(std::move(ed));
         }
     }
@@ -172,7 +175,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     // 포트 정보 포함 — 파싱 순서(=엣지 순서) 보존 (제약 C-2: "먼저 온 것이 이김")
     std::unordered_map<std::string, std::vector<InputRef>> inputsFrom;
     for (const auto& e : edges)
-        inputsFrom[e.target].push_back(InputRef{e.source, e.sourcePort, e.targetPort});
+        inputsFrom[e.target].push_back(InputRef{e.source, e.sourcePort, e.targetPort, e.sourcePortType});
 
     std::vector<std::string> ids;
     for (const auto& ns : nodeSpecs) ids.push_back(ns.id);
@@ -261,7 +264,15 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
                     //  (예: ExposureMerge3 포트1 = intensity → HeightMapSaver로 저장)
                     std::shared_ptr<VisionData> routed = o;
                     const std::size_t s = static_cast<std::size_t>(std::max(0, in.srcPort));
-                    if (s > 0 && s < o->heightmaps.size()) {
+                    if (s > 0 && (in.sourcePortType == "ProfilePoints" || in.sourcePortType == "ProfileLines")) {
+                        const std::size_t elemIdx = s - 1;
+                        auto copy = std::make_shared<VisionData>(*o);
+                        if (elemIdx < o->profileElemResults.size()) {
+                            copy->profilePoints = o->profileElemResults[elemIdx].points;
+                            copy->profileLines  = o->profileElemResults[elemIdx].lines;
+                        }
+                        routed = copy;
+                    } else if (s > 0 && s < o->heightmaps.size()) {
                         auto copy = std::make_shared<VisionData>(*o);
                         copy->heightmaps.clear();
                         copy->heightmaps.push_back(o->heightmaps[s]);          // 선택 출력 → [0]

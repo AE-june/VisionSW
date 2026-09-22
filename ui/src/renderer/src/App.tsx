@@ -12,6 +12,18 @@ import { HoveredEdgeContext, type HoveredEdge } from './components/hoveredEdge'
 import { TOOL_DEF_MAP } from './types/tools'
 import './App.css'
 
+function getEdgeSourcePortType(nodesList: Node[], edge: Edge): string {
+  const sourceNode = nodesList.find(n => n.id === edge.source)
+  if (!sourceNode) return ''
+  const def = TOOL_DEF_MAP[(sourceNode.data as { toolType: string }).toolType]
+  if (!def) return ''
+  const srcParams = (sourceNode.data as { params?: Record<string, unknown> }).params ?? {}
+  const effectiveOuts = def.getOutputs?.(srcParams) ?? def.outputs
+  const outIdx = parseInt((edge.sourceHandle ?? 'output-0').split('-')[1]) || 0
+  const outDecl = effectiveOuts[outIdx]
+  return typeof outDecl === 'string' ? outDecl : (outDecl as { type: string })?.type ?? ''
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -195,7 +207,7 @@ export default function App() {
       })),
       edges: allEdges
         .filter(e => needed.has(e.source) && needed.has(e.target))
-        .map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })),
+        .map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle, sourcePortType: getEdgeSourcePortType(allNodes, e) })),
       useCache: true,    // 파라미터 안 바뀐 상류는 캐시 재사용 (재실행 안 함)
       forceNode: nodeId  // 이 노드는 항상 재실행 (정확한 실행시간)
     }
@@ -218,6 +230,7 @@ export default function App() {
     edges: edgesRef.current.map(e => ({
       id: e.id, source: e.source, target: e.target,
       sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
+      sourcePortType: getEdgeSourcePortType(nodesRef.current, e),
     })),
   }, null, 2), [])
 
@@ -348,7 +361,8 @@ export default function App() {
         source: e.source,
         target: e.target,
         sourceHandle: e.sourceHandle,
-        targetHandle: e.targetHandle
+        targetHandle: e.targetHandle,
+        sourcePortType: getEdgeSourcePortType(nodes, e),
       }))
     }
 
@@ -425,7 +439,7 @@ export default function App() {
     const pathById = (i: number) => new Map(listed.map(l => [l.id, l.files[i].path]))
 
     const csv = allNodes.find(n => (n.data as { toolType: string }).toolType === 'CsvWriter')
-    const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle }))
+    const baseEdges = allEdges.map(e => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle, sourcePortType: getEdgeSourcePortType(allNodes, e) }))
 
     const buildRecipe = (i: number) => {
       const paths = pathById(i)

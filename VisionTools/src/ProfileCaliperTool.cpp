@@ -13,6 +13,32 @@
 
 namespace vision {
 
+// Profile을 임의 s(호장, mm)에서 z 선형보간. p.s는 단조증가 가정.
+// 경계 밖은 끝 샘플로 클램프. 보간에 쓰이는 이웃이 무효(NaN)면 ok=false.
+static double zAtS(const Profile& p, double s, bool& ok) {
+    ok = false;
+    const std::size_t n = p.s.size();
+    if (n == 0 || p.z.size() != n) return 0.0;
+    if (s <= p.s.front()) {
+        if (!std::isnan(p.z.front())) { ok = true; return p.z.front(); }
+        return 0.0;
+    }
+    if (s >= p.s.back()) {
+        if (!std::isnan(p.z.back())) { ok = true; return p.z.back(); }
+        return 0.0;
+    }
+    std::size_t hi = static_cast<std::size_t>(
+        std::lower_bound(p.s.begin(), p.s.end(), s) - p.s.begin());
+    if (hi == 0) hi = 1;
+    const std::size_t lo = hi - 1;
+    const double z0 = p.z[lo], z1 = p.z[hi];
+    if (std::isnan(z0) || std::isnan(z1)) return 0.0;   // 이웃 무효 → 보간 불가
+    const double s0 = p.s[lo], s1 = p.s[hi];
+    const double t = (s1 > s0) ? (s - s0) / (s1 - s0) : 0.0;
+    ok = true;
+    return z0 + t * (z1 - z0);
+}
+
 ProfileCaliperTool::ProfileCaliperTool(Params p)
     : m_params(std::move(p)) {}
 
@@ -54,7 +80,7 @@ ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
     // pfx=="" (선택 프로파일): plain 이름 + elem[i].* 에코 + 포인트 방출 (emitPoints)
     // pfx=="prof[j]." (전체 프로파일): pfx+meas[i] 만 방출, elem 에코 생략
     auto analyzeOne = [&](const Profile& profRef, const std::string& pfx, bool emitPoints,
-                          CaliperProfileResult* cacheOut = nullptr) -> bool {
+                          int profileIdx = 0, CaliperProfileResult* cacheOut = nullptr) -> bool {
         const bool full = pfx.empty();
         std::shared_ptr<Profile> basePtr = std::make_shared<Profile>(profRef);
 
@@ -68,6 +94,59 @@ ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
         for (std::size_t i = 0; i < m_params.elements.size(); ++i) {
             const auto& ed = m_params.elements[i];
             const std::string prefix = pfx + "elem[" + std::to_string(i) + "].";
+
+            // external element: 상류 포트에서 이미 추출된 결과를 받아온다
+            if (ed.type == "external_point" || ed.type == "external_line") {
+                const bool isExtPt = (ed.type == "external_point");
+                auto ext = input->in(static_cast<std::size_t>(ed.inputPort));
+                if (isExtPt) {
+                    if (ext && !ext->profilePoints.empty()) {
+                        const std::size_t xi = (profileIdx < (int)ext->profilePoints.size())
+                            ? static_cast<std::size_t>(profileIdx) : 0u;
+                        const auto& pp = ext->profilePoints[xi];
+                        // resampleZ: 상류 x(sMm)만 취하고 z는 현재 프로파일에서 재샘플
+                        double zUse = pp.zMm;
+                        bool   validUse = pp.valid;
+                        if (ed.resampleZ) {
+                            bool ok = false;
+                            const double zs = zAtS(profRef, pp.sMm, ok);
+                            zUse     = ok ? zs : std::numeric_limits<double>::quiet_NaN();
+                            validUse = pp.valid && ok;
+                        }
+                        if (full) {
+                            out->measurements.push_back({prefix + "sMm", pp.sMm, "mm", validUse});
+                            out->measurements.push_back({prefix + "zMm", zUse,   "mm", validUse});
+                        }
+                        elemResults[i] = {pp.sMm, zUse, 0, 0, 0, true, validUse};
+                    } else {
+                        if (full) {
+                            out->measurements.push_back({prefix + "sMm", 0, "mm", false});
+                            out->measurements.push_back({prefix + "zMm", 0, "mm", false});
+                        }
+                        elemResults[i] = {0, 0, 0, 0, 0, true, false};
+                    }
+                } else {
+                    if (ext && !ext->profileLines.empty()) {
+                        const std::size_t xi = (profileIdx < (int)ext->profileLines.size())
+                            ? static_cast<std::size_t>(profileIdx) : 0u;
+                        const auto& pl = ext->profileLines[xi];
+                        if (full) {
+                            out->measurements.push_back({prefix + "slope",     pl.slope,     "mm/mm", pl.valid});
+                            out->measurements.push_back({prefix + "intercept", pl.intercept, "mm",    pl.valid});
+                            out->measurements.push_back({prefix + "rmse",      pl.rmse,      "mm",    pl.valid});
+                        }
+                        elemResults[i] = {0, 0, pl.slope, pl.intercept, pl.rmse, false, pl.valid};
+                    } else {
+                        if (full) {
+                            out->measurements.push_back({prefix + "slope",     0, "mm/mm", false});
+                            out->measurements.push_back({prefix + "intercept", 0, "mm",    false});
+                            out->measurements.push_back({prefix + "rmse",      0, "mm",    false});
+                        }
+                        elemResults[i] = {0, 0, 0, 0, 0, false, false};
+                    }
+                }
+                continue;  // 외부 element는 위에서 처리 완료
+            }
 
             // z-range 마스킹: zToMm > zFromMm 이면 범위 밖 샘플을 NaN 처리한 사본 사용
             const bool hasZRange = (ed.zToMm > ed.zFromMm);
@@ -211,7 +290,8 @@ ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
             for (std::size_t i = 0; i < m_params.elements.size(); ++i) {
                 const auto& er = elemResults[i];
                 CaliperElemView v;
-                v.type      = m_params.elements[i].type;   // "point" | "line"
+                const auto& rawType = m_params.elements[i].type;
+                v.type = (rawType == "line" || rawType == "external_line") ? "line" : "point";
                 v.valid     = er.valid;
                 v.sMm       = er.sMm;
                 v.zMm       = er.zMm;
@@ -348,14 +428,33 @@ ToolResult ProfileCaliperTool::execute(VisionDataPtr input) {
     for (std::size_t j = 0; j < profVec->size(); ++j) {
         if (!(*profVec)[j]) continue;
         const std::string jpfx = "prof[" + std::to_string(j) + "].";
-        bool pj = analyzeOne(*(*profVec)[j], jpfx, /*emitPoints=*/false, &allProfileResults[j]);
+        bool pj = analyzeOne(*(*profVec)[j], jpfx, /*emitPoints=*/false, (int)j, &allProfileResults[j]);
         overallPass = overallPass && pj;
         out->decisions.push_back({jpfx + "allPass", pj, pj ? "합격" : "불합격", 0, 0, 0});
     }
+
+    // expose=true 인 element 결과를 profileElemResults로 출력 (캐시 이동 전)
+    out->profileElemResults.resize(m_params.elements.size());
+    for (std::size_t i = 0; i < m_params.elements.size(); ++i) {
+        if (!m_params.elements[i].expose) continue;
+        const bool isPoint = (m_params.elements[i].type == "point" ||
+                              m_params.elements[i].type == "external_point");
+        for (std::size_t j = 0; j < profVec->size(); ++j) {
+            if (!(*profVec)[j] || i >= allProfileResults[j].elems.size()) {
+                if (isPoint) out->profileElemResults[i].points.push_back({0, 0, false});
+                else         out->profileElemResults[i].lines.push_back({0, 0, 0, false});
+                continue;
+            }
+            const auto& ev = allProfileResults[j].elems[i];
+            if (isPoint) out->profileElemResults[i].points.push_back({ev.sMm, ev.zMm, ev.valid});
+            else         out->profileElemResults[i].lines.push_back({ev.slope, ev.intercept, ev.rmse, ev.valid});
+        }
+    }
+
     CaliperResultCache::instance().set(m_params.nodeId, std::move(allProfileResults));
 
     // ── 선택 프로파일 분석 (plain 이름 + 포인트 방출, UI 표시용) ────────────
-    analyzeOne(*(*profVec)[pidx], "", /*emitPoints=*/true);
+    analyzeOne(*(*profVec)[pidx], "", /*emitPoints=*/true, pidx);
 
     // 전체 합/불 판정 (모든 프로파일 반영)
     out->decisions.push_back({"allPass", overallPass, overallPass ? "전체 합격" : "불합격 항목 있음", 0, 0, 0});

@@ -16,8 +16,10 @@ add_library(VisionTools STATIC
     src/LineCenterTool.cpp
     src/AlignTool.cpp
     src/ThresholdTool.cpp
+    src/HeightMapNormalizeTool.cpp
     src/CreateRoiTool.cpp
     src/ReduceDomainTool.cpp
+    src/RegionToHeightMapTool.cpp
     src/RegionMeasureTool.cpp
     src/ValidRegionTool.cpp
     src/LevelTool.cpp

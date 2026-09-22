@@ -9,7 +9,7 @@ namespace vision {
 struct CaliperElementDef {
     double fromMm = 0, toMm = 0;      // 검색 구간 (0,0=전체)
     double zFromMm = 0, zToMm = 0;   // z(높이) 범위 (0,0 = 제한 없음)
-    std::string type = "point";       // "point" | "line"
+    std::string type = "point";       // "point" | "line" | "external_point" | "external_line"
     // type="point" 전용 (ProfileFeatureTool 위임)
     std::string kind  = "edge";       // edge|ridge|valley|corner|maxZ|minZ|mean
     std::string dir   = "any";        // rising|falling|any (edge 전용)
@@ -17,6 +17,10 @@ struct CaliperElementDef {
     int    smoothWindow = 3;
     int    nth = 0;
     // type="line": 추가 필드 없음 (fromMm/toMm 범위 최소제곱 피팅)
+    int  inputPort = 1;               // external 전용, 1-based 입력 포트
+    bool resampleZ = false;           // external_point 전용: 상류 x(sMm)만 취하고
+                                      // z는 현재 프로파일에서 선형보간으로 재샘플
+    bool expose = false;              // true → profileElemResults에 누적
 };
 
 // element 조합 측정 정의

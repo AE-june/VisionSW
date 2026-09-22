@@ -3,6 +3,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -47,20 +48,25 @@ ToolResult GapFillTool::execute(VisionDataPtr input) {
         std::vector<float> cur = out;
         for (int it = 0; it < m_maxGap; ++it) {
             std::vector<float> nxt = cur;
-            bool changed = false;
-            for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
-                size_t i = (size_t)r*w + c;
-                if (!fillable[i] || !std::isnan(cur[i])) continue;
-                double s = 0; int cnt = 0;
-                for (int dr = -1; dr <= 1; ++dr) for (int dc = -1; dc <= 1; ++dc) {
-                    if (!dr && !dc) continue;
-                    int nr = r+dr, nc = c+dc; if (nr<0||nr>=h||nc<0||nc>=w) continue;
-                    float v = cur[(size_t)nr*w+nc]; if (!std::isnan(v)) { s += v; ++cnt; }
+            // double-buffer: cur는 읽기 전용, nxt에만 쓰므로 행(row) 병렬 안전.
+            std::atomic<bool> changed{false};
+            cv::parallel_for_(cv::Range(0, h), [&](const cv::Range& rg) {
+                bool localChanged = false;
+                for (int r = rg.start; r < rg.end; ++r) for (int c = 0; c < w; ++c) {
+                    size_t i = (size_t)r*w + c;
+                    if (!fillable[i] || !std::isnan(cur[i])) continue;
+                    double s = 0; int cnt = 0;
+                    for (int dr = -1; dr <= 1; ++dr) for (int dc = -1; dc <= 1; ++dc) {
+                        if (!dr && !dc) continue;
+                        int nr = r+dr, nc = c+dc; if (nr<0||nr>=h||nc<0||nc>=w) continue;
+                        float v = cur[(size_t)nr*w+nc]; if (!std::isnan(v)) { s += v; ++cnt; }
+                    }
+                    if (cnt >= m_minValid) { nxt[i] = (float)(s/cnt); localChanged = true; }
                 }
-                if (cnt >= m_minValid) { nxt[i] = (float)(s/cnt); changed = true; }
-            }
+                if (localChanged) changed.store(true, std::memory_order_relaxed);
+            });
             cur.swap(nxt);
-            if (!changed) break;
+            if (!changed.load(std::memory_order_relaxed)) break;
         }
         out.swap(cur);
     }
@@ -69,23 +75,28 @@ ToolResult GapFillTool::execute(VisionDataPtr input) {
         std::vector<float> cur = out;
         for (int it = 0; it < m_maxGap; ++it) {
             std::vector<float> nxt = cur;
-            bool changed = false;
-            for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
-                size_t i = (size_t)r*w + c;
-                if (!fillable[i] || !std::isnan(cur[i])) continue;
-                float vals[8]; int cnt = 0;
-                for (int dr=-1;dr<=1;++dr) for (int dc=-1;dc<=1;++dc) {
-                    if (!dr && !dc) continue;
-                    int nr=r+dr, nc=c+dc; if(nr<0||nr>=h||nc<0||nc>=w) continue;
-                    float v = cur[(size_t)nr*w+nc]; if(!std::isnan(v)) vals[cnt++]=v;
+            // double-buffer: cur는 읽기 전용, nxt에만 쓰므로 행(row) 병렬 안전.
+            std::atomic<bool> changed{false};
+            cv::parallel_for_(cv::Range(0, h), [&](const cv::Range& rg) {
+                bool localChanged = false;
+                for (int r = rg.start; r < rg.end; ++r) for (int c = 0; c < w; ++c) {
+                    size_t i = (size_t)r*w + c;
+                    if (!fillable[i] || !std::isnan(cur[i])) continue;
+                    float vals[8]; int cnt = 0;
+                    for (int dr=-1;dr<=1;++dr) for (int dc=-1;dc<=1;++dc) {
+                        if (!dr && !dc) continue;
+                        int nr=r+dr, nc=c+dc; if(nr<0||nr>=h||nc<0||nc>=w) continue;
+                        float v = cur[(size_t)nr*w+nc]; if(!std::isnan(v)) vals[cnt++]=v;
+                    }
+                    if (cnt >= m_minValid) {
+                        std::nth_element(vals, vals+cnt/2, vals+cnt);
+                        nxt[i] = vals[cnt/2]; localChanged = true;
+                    }
                 }
-                if (cnt >= m_minValid) {
-                    std::nth_element(vals, vals+cnt/2, vals+cnt);
-                    nxt[i] = vals[cnt/2]; changed = true;
-                }
-            }
+                if (localChanged) changed.store(true, std::memory_order_relaxed);
+            });
             cur.swap(nxt);
-            if (!changed) break;
+            if (!changed.load(std::memory_order_relaxed)) break;
         }
         out.swap(cur);
     }

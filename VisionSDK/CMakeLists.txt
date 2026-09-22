@@ -3,6 +3,7 @@
 add_library(VisionSDK SHARED
     src/vision_sdk.cpp
     ${CMAKE_SOURCE_DIR}/VisionEngine/src/ToolFactory.cpp
+    ${CMAKE_SOURCE_DIR}/VisionEngine/src/HeightMapCache.cpp
 )
 
 target_include_directories(VisionSDK
@@ -43,3 +44,8 @@ endif()
 add_executable(VisionSDKTest test/sdk_test.cpp)
 target_link_libraries(VisionSDKTest PRIVATE VisionSDK)
 target_include_directories(VisionSDKTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# ── 레시피 체인 테스트 (vsdk_run_ex 로 cloud 파이프라인 전 노드 실행) ──
+add_executable(VisionSDKRecipeTest test/recipe_test.cpp)
+target_link_libraries(VisionSDKRecipeTest PRIVATE VisionSDK)
+target_include_directories(VisionSDKRecipeTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

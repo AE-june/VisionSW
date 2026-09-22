@@ -12,11 +12,22 @@ VisionSW의 **모든 노드를 외부 C++/C# 검사 프로그램에서 함수로
 
 ## 노드 접근
 1. **노드별 전용 함수** — 각 노드를 개별 함수로:
-   `vsdk_heightmap_load`, `vsdk_exposure_split`(ExposureMerge), `vsdk_exposure_merge`(ExposureMerge2),
-   `vsdk_noise_filter`, `vsdk_gap_fill`, `vsdk_edge_detector`, `vsdk_align`, `vsdk_plane_fit`,
-   `vsdk_heightmap_to_cloud`, `vsdk_thickness`, `vsdk_height_measure`.
-2. **제네릭** — 임의 노드: `vsdk_run(type, paramsJson, inHeightmap, inPlane, out)`.
+   `vsdk_heightmap_load`, `vsdk_noise_filter`, `vsdk_gap_fill`, `vsdk_edge_detector`, `vsdk_align`,
+   `vsdk_plane_fit`, `vsdk_heightmap_to_cloud`, `vsdk_thickness`.
+   (노출 머지는 다중 HeightMap 입력이라 전용 함수 없음 → `vsdk_run_ex("ExposureMerge"/"ExposureMerge3")` 사용.)
+2. **제네릭(단일 입력)** — 임의 노드: `vsdk_run(type, paramsJson, inHeightmap, inPlane, out)`.
    `type`은 UI 레시피의 노드 타입 문자열, `paramsJson`은 그 노드 params와 동일 스키마.
+   단, 입력이 HeightMap(port0)+Plane(port1) 하나씩으로 제한됨. cloud 입력·멀티포트·다중 출력 불가.
+3. **제네릭(포트 기반, 권장)** — `vsdk_run_ex(type, paramsJson, ports, portCount, out)`.
+   `ports[k]` = 입력 포트 k 의 payload(heightmaps[]/clouds[]/plane). 한 포트에 cloud 여러 개 가능
+   (예: `PointCloudSplit` 출력 번들 → `CloudSelect` 입력). 출력 `VsdkResultEx`는 heightmaps[]/clouds[]
+   배열을 모두 반환. **cloud 파이프라인·멀티포트(ExposureMerge 두 HeightMap)·다중 cloud 출력
+   (PointCloudSplit)을 전부 지원.** 앞 노드 결과의 heightmaps/clouds 를 다음 포트에 그대로 넘겨 체인.
+   해제는 `vsdk_free_result_ex()`.
+
+   전 노드 cloud 파이프라인 예(`test/recipe_test.cpp`, 실제 .ply로 검증):
+   `CloudLoader → PointCloudSplit → CloudSelect → CloudZReduce → CloudToHeightMap →
+    ExposureMerge → GapFill → HeightMapToCloud → CloudSaver`.
 
 ## 데이터 / 메모리 규약
 - HeightMap/Cloud/Plane/Heights는 평탄 구조체(`float*`/`double*`)로 주고받음. NaN=무효 픽셀.
@@ -26,11 +37,11 @@ VisionSW의 **모든 노드를 외부 C++/C# 검사 프로그램에서 함수로
 - OpenCV/Eigen/STL은 DLL 내부 은닉 — ABI에 노출 안 됨(크로스 컴파일러 안전).
 
 ## 페이로드 매핑 (노드 → 결과 필드)
-- HeightMap→HeightMap (ExposureMerge/Merge2, NoiseFilter, GapFill, Align, EdgeDetector, HeightMapLoader): `result.heightmap`
-- PlaneFit: `result.plane`
-- HeightMeasure: `result.heights` (영역별 평면 대비 높이)
-- HeightMapToCloud: `result.cloud`
-- (참고) LineCenter는 점(RefPoint) 출력이라 현재 평탄 구조체 미매핑 — 후속 확장 대상.
+- `vsdk_run`(단일): HeightMap→`result.heightmap`, PlaneFit→`result.plane`,
+  HeightMeasure→`result.heights`, HeightMapToCloud→`result.cloud`(첫 cloud만).
+- `vsdk_run_ex`(포트 기반): 노드가 낸 **모든** HeightMap/Cloud 를 `result.heightmaps[]`/`result.clouds[]`
+  배열로 반환(PointCloudSplit 처럼 다중 cloud 출력도 전부). plane/heights 도 동일 매핑.
+- (참고) LineCenter 는 점(RefPoint) 출력이라 아직 미매핑 — 후속 확장 대상.
 
 ## 빌드
 루트에서 CMake 구성 시 `VisionSDK`/`VisionSDKTest` 타깃 생성:

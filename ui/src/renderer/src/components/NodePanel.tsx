@@ -270,8 +270,23 @@ function ProfileCaliperResult({ x, z, mode, params, measurements, decisions, cal
           annotations.push({ kind: 'perp', s1: pt.sMm, z1: pt.zMm, s2: foot.s, z2: foot.z, label, color, lineSlope: ln.slope, lineIntercept: ln.intercept })
         }
       }
+    } else if (combo === 'll') {
+      const l1 = a?.kind === 'line' ? a : null
+      const l2 = b?.kind === 'line' ? b : null
+      if (l1 && l2) {
+        const dm = l1.slope - l2.slope
+        let si: number, zi: number
+        if (Math.abs(dm) < 1e-12) {
+          const sCenter = (Math.max(l1.fromMm, l2.fromMm) + Math.min(l1.toMm, l2.toMm)) / 2
+          si = isFinite(sCenter) ? sCenter : (l1.fromMm + l1.toMm) / 2
+          zi = l1.slope * si + l1.intercept
+        } else {
+          si = (l2.intercept - l1.intercept) / dm
+          zi = l1.slope * si + l1.intercept
+        }
+        annotations.push({ kind: 'angle', s1: si, z1: zi, s2: si, z2: zi, label, color })
+      }
     } else {
-      // ll / l / p 등: 최소한 라벨을 element 근처에 배치 (segment 형태)
       if (a?.kind === 'point')
         annotations.push({ kind: 'segment', s1: a.sMm, z1: a.zMm, s2: a.sMm, z2: a.zMm, label, color })
     }

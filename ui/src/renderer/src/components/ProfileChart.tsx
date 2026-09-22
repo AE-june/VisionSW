@@ -108,6 +108,9 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
   const xr = xMax - xMin || 1, zr = zMax - zMin || 1
   const sx = (v: number) => padL + ((v - xMin) / xr) * (W - padL - padR)
   const sy = (v: number) => padT + (1 - (v - zMin) / zr) * (H - padT - padB)
+  // 줌 레벨에 따라 선 두께 / 폰트 크기 조정: 줌아웃 시 비례적으로 얇게
+  const svgPerMm = (W - padL - padR) / xr   // SVG 단위 / mm
+  const sw = (basePx: number) => Math.min(basePx, Math.max(0.4, basePx * Math.sqrt(svgPerMm / 20)))
   // SVG x → data mm
   const svgXToMm = (svgX: number) => xMin + ((svgX - padL) / (W - padL - padR)) * xr
   // SVG y → data z (sy 역함수)
@@ -431,9 +434,26 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
   // 2) 피처(포인트/엘리먼트) 라벨: 마커는 (fx,fz) 고정, 텍스트는 오프셋 후 1-D 충돌 회피.
   //    ROI 많아도 안 정신없게 단일 중립색. 구분은 라벨(R0/R1)로.
   const FEAT_COLOR = '#9aa7b4'
+  // 표시 중인 프로파일에서 s(mm) 위치의 z를 선형보간 — 마커를 측정 zMm이 아니라
+  // 실제 곡선 위에 앉힌다(측정 zMm이 다른 프로파일/이진값이면 허공에 뜨는 문제 방지).
+  const zAtMm = (sMm: number): number | null => {
+    if (x.length === 0) return null
+    const val = (k: number) => (z[k] === null || Number.isNaN(z[k] as number)) ? null : (z[k] as number)
+    if (sMm <= x[0]) return val(0)
+    for (let i = 1; i < x.length; i++) {
+      if (sMm <= x[i]) {
+        const z0 = val(i - 1), z1 = val(i)
+        if (z0 === null || z1 === null) return null
+        const t = (sMm - x[i - 1]) / ((x[i] - x[i - 1]) || 1)
+        return z0 + t * (z1 - z0)
+      }
+    }
+    return val(x.length - 1)
+  }
   const featLayout = (features ?? []).map((f, i) => {
     const fx = sx(f.sMm)
-    const fz = sy(f.zMm)
+    const onCurve = zAtMm(f.sMm)          // 곡선 위 z 우선, 없으면(갭) 측정 zMm 폴백
+    const fz = sy(onCurve ?? f.zMm)
     const label = f.label ?? `F${i}`
     const color = FEAT_COLOR
     const w = label.length * 6 + 4
@@ -501,7 +521,7 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
         return (
           <g key={`range-${i}`}>
             <rect x={rx1} y={ry1} width={rx2 - rx1} height={Math.max(0, ry2 - ry1)}
-              fill={r.color + '28'} stroke={r.color} strokeWidth={1}
+              fill={r.color + '28'} stroke={r.color} strokeWidth={sw(1)}
               strokeDasharray="4 3" opacity={0.8} />
             <rect x={rx1 + 2} y={ry1 + 2} width={r.label.length * 6 + 4} height={11}
               fill="#1e233099" rx={2} />
@@ -513,7 +533,7 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
       {/* 프로파일 데이터 */}
       {mode === 'line'
         ? segments.map((pts, i) => (
-            <polyline key={i} points={pts} fill="none" stroke="#00e5ff" strokeWidth={1.5} />
+            <polyline key={i} points={pts} fill="none" stroke="#00e5ff" strokeWidth={sw(1.5)} />
           ))
         : x.map((xi, i) => {
             const zi = z[i]
@@ -553,7 +573,7 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
                 clipPath={`url(#${clipId})`} />
             )}
             <line x1={x0} y1={y0} x2={x1} y2={y1}
-              stroke="#ff8f00" strokeWidth={2.5}
+              stroke="#ff8f00" strokeWidth={sw(2.5)}
               strokeLinecap="round" opacity={0.95} />
             <rect x={rectX} y={rectY} width={rW} height={12}
               fill="#1e2330cc" rx={2} />
@@ -565,11 +585,11 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
       {/* 피처 마커 (색상 점 + 라벨, 수직선 제거) — 라벨은 1-D 충돌 회피 후 배치 */}
       {featLayout.map((f) => (
         <g key={`feat-${f.i}`}>
-          <circle cx={f.fx} cy={f.fz} r={5} fill={f.color} stroke="#14161a" strokeWidth={1} opacity={0.95} />
+          <circle cx={f.fx} cy={f.fz} r={Math.max(3.5, sw(5))} fill={f.color} stroke="#14161a" strokeWidth={sw(1)} opacity={0.95} />
           {/* 라벨이 마커에서 밀려났으면 리더선 표시 */}
           {f.nudged && (
             <line x1={f.fx} y1={f.fz} x2={f.lx} y2={f.ly - 3}
-              stroke={f.color} strokeWidth={1} opacity={0.6} />
+              stroke={f.color} strokeWidth={sw(1)} opacity={0.6} />
           )}
           <text x={f.lx} y={f.ly} fill={f.color} fontSize={10} fontWeight={700}>{f.label}</text>
         </g>
@@ -603,11 +623,29 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
 
         return (
           <g key={`anno-${i}`}>
-            <line x1={ax1} y1={ay1} x2={ax2} y2={ay2}
-              stroke={a.color}
-              strokeWidth={1.4}
-              strokeDasharray={a.kind === 'angle' ? '2 2' : undefined}
-              opacity={0.9} />
+            {a.kind !== 'angle' && (
+              <line x1={ax1} y1={ay1} x2={ax2} y2={ay2}
+                stroke={a.color} strokeWidth={1.4} opacity={0.9} />
+            )}
+            {a.kind === 'angle' && (() => {
+              const fs = 9
+              const th = 14
+              const tw = a.label.length * fs * 0.72 + fs
+              // 교점은 가리지 않게 라벨을 위로 올리고 리더선으로 연결
+              const tx = Math.min(Math.max(ax1 - tw / 2, padL), W - padR - tw)
+              const ty = Math.max(ay1 - th - 22, padT + 2)
+              const cx = tx + tw / 2
+              return (
+                <g>
+                  <circle cx={ax1} cy={ay1} r={sw(3)} fill="none" stroke={a.color} strokeWidth={sw(1.2)} />
+                  <line x1={ax1} y1={ay1} x2={cx} y2={ty + th}
+                    stroke={a.color} strokeWidth={sw(0.7)} opacity={0.5} strokeDasharray="3 2" />
+                  <rect x={tx} y={ty} width={tw} height={th} rx={2} fill="#000000cc" />
+                  <text x={cx} y={ty + th * 0.72}
+                    textAnchor="middle" fill={a.color} fontSize={fs} fontWeight={700}>{a.label}</text>
+                </g>
+              )
+            })()}
             {isArrow && (
               <>
                 {/* 화살촉: 시작점(안쪽 방향은 -u) */}
@@ -616,8 +654,8 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
                 <polygon points={arrowHead(ax2, ay2, ux, uy)} fill={a.color} opacity={0.9} />
               </>
             )}
-            {/* 상단 레인 배지로 향하는 리더선 */}
-            {placed && (
+            {/* 상단 레인 배지로 향하는 리더선 (angle은 직접 텍스트 처리) */}
+            {placed && a.kind !== 'angle' && (
               <line x1={placed.x + placed.w / 2} y1={ANNO_LANE_BOTTOM}
                 x2={badge.targetX} y2={badge.targetY}
                 stroke={a.color} strokeWidth={1} opacity={0.45} />
@@ -630,6 +668,8 @@ export default function ProfileChart({ x, z, mode = 'line', height = 220, featur
       {annoBadges.map((b) => {
         const placed = annoPlaced[b.i]
         if (!placed) return null
+        const origAnno = (annotations ?? [])[b.i]
+        if (origAnno?.kind === 'angle') return null   // angle은 교차점 직접 텍스트로 처리
         return (
           <g key={`anno-badge-${b.i}`}>
             <rect x={placed.x} y={ANNO_LANE_Y} width={placed.w} height={ANNO_LANE_H} rx={2} fill="#000000cc" />

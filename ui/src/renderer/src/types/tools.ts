@@ -1,4 +1,4 @@
-export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Line' | 'Geometry' | 'Profile' | 'Measurements' | 'Decisions' | 'PointCloud3D' | 'Point' | 'Any'
+export type PortType = 'HeightMap' | 'Region' | 'Plane' | 'Line' | 'Geometry' | 'Profile' | 'Measurements' | 'Decisions' | 'PointCloud3D' | 'Point' | 'Any' | 'ProfilePoints' | 'ProfileLines'
 
 // T0-2 P3: 포트 다중성. isArray=true면 배열 포트(엔진이 원소별 브로드캐스트).
 // 기존 노드 정의는 PortType 문자열 그대로 두고, 배열 포트만 { type, isArray } 로 적는다.
@@ -16,6 +16,7 @@ export interface ToolDef {
   outputs: PortDecl[]
   inputLabels?: string[]    // 포트 표시 라벨 (없으면 타입명)
   outputLabels?: string[]
+  getInputs?:  (params: Record<string, unknown>) => PortDecl[]  // 파라미터 기반 동적 입력 포트
   getOutputs?: (params: Record<string, unknown>) => PortDecl[]  // 파라미터 기반 동적 출력 포트
   defaultParams: Record<string, unknown>
   description?: string      // 툴박스 툴팁 (hover 시 표시)
@@ -23,17 +24,19 @@ export interface ToolDef {
 }
 
 export const PORT_COLORS: Record<PortType, string> = {
-  HeightMap:    '#00bcd4',
-  Region:       '#66bb6a',
-  Plane:        '#26a69a',
-  Line:         '#ab47bc',
-  Geometry:     '#7e57c2',   // 보라 계열 — Plane/Line 통합 기하
-  Profile:      '#ff8f00',   // 주황 — 기존 7색과 구분
-  Measurements: '#ffc107',
-  Decisions:    '#ff7043',
-  PointCloud3D: '#9c27b0',
-  Point:        '#ec407a',
-  Any:          '#888',
+  HeightMap:     '#00bcd4',
+  Region:        '#66bb6a',
+  Plane:         '#26a69a',
+  Line:          '#ab47bc',
+  Geometry:      '#7e57c2',   // 보라 계열 — Plane/Line 통합 기하
+  Profile:       '#ff8f00',   // 주황 — 기존 7색과 구분
+  Measurements:  '#ffc107',
+  Decisions:     '#ff7043',
+  PointCloud3D:  '#9c27b0',
+  Point:         '#ec407a',
+  Any:           '#888',
+  ProfilePoints: '#ef5350',   // 빨강 — caliper point 배열
+  ProfileLines:  '#42a5f5',   // 파랑 — caliper line 배열
 }
 
 export const TOOL_DEFS: ToolDef[] = [
@@ -137,6 +140,13 @@ export const TOOL_DEFS: ToolDef[] = [
     inputLabels: ['HeightMap', 'Region[ ]'],
     defaultParams: { invert: false },
     description: 'Region(여러 개 union)으로 처리 범위 제한. invert=off: 안쪽만 유지 · on: 안쪽 제거(제외 마스크)',
+  },
+  {
+    type: 'RegionToHeightMap', label: 'Region → HeightMap', category: '영역',
+    inputs: [{ type: 'Region', isArray: true }, { type: 'HeightMap', optional: true }], outputs: ['HeightMap'],
+    inputLabels: ['Region[ ]', 'HeightMap(보정,선택)'],
+    defaultParams: { insideValue: 1, outsideValue: 0 },
+    description: 'Region을 0/1 이진 HeightMap으로 변환. HALCON region_to_bin 상당. 이진 프로파일 추출 등에 사용. 포트1 HeightMap 연결 시 XY 보정(mm) 승계, 없으면 픽셀 단위',
   },
   {
     type: 'RegionMeasure', label: 'Region Measure', category: '측정',
@@ -357,17 +367,34 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'ProfileCaliper', label: 'Profile Caliper', category: '측정',
     inputs: ['Profile'],
     outputs: ['Measurements'],
+    getInputs: (p) => {
+      const base: PortDecl[] = ['Profile']
+      for (const e of (p.elements as {type?: string}[]) ?? []) {
+        if (e.type === 'external_point') base.push('ProfilePoints')
+        else if (e.type === 'external_line') base.push('ProfileLines')
+      }
+      return base
+    },
+    getOutputs: (p) => {
+      const outs: PortDecl[] = ['Measurements']
+      for (const e of (p.elements as {type?: string; expose?: boolean}[]) ?? []) {
+        if (!e.expose) continue
+        if (e.type === 'point' || e.type === 'external_point') outs.push('ProfilePoints')
+        else if (e.type === 'line' || e.type === 'external_line') outs.push('ProfileLines')
+      }
+      return outs
+    },
     defaultParams: {
       profileIndex: 0,
       elements: [
-        { fromMm: 0, toMm: 5,  type: 'point', kind: 'edge', dir: 'rising', threshold: 0.05, smoothWindow: 3, nth: 0 },
-        { fromMm: 10, toMm: 20, type: 'line', kind: 'edge', dir: 'any', threshold: 0.05, smoothWindow: 3, nth: 0 },
+        { fromMm: 0, toMm: 5,  type: 'point', kind: 'edge', dir: 'rising', threshold: 0.05, smoothWindow: 3, nth: 0, expose: false, inputPort: 1 },
+        { fromMm: 10, toMm: 20, type: 'line', kind: 'edge', dir: 'any', threshold: 0.05, smoothWindow: 3, nth: 0, expose: false, inputPort: 1 },
       ],
       measurements: [
         { combo: 'pl', metric: 'perpDist', refA: 0, refB: 1, nominalMm: 0, plusMm: 0, minusMm: 0 },
       ],
     },
-    tooltip: 'Profile 단면에서 element(point/line) 추출 + 측정. point는 엣지/피크 검출, line은 직선 피팅. ExtractProfile/CloudToProfiles 이후 연결',
+    tooltip: 'Profile 단면에서 element(point/line) 추출 + 측정. expose 토글로 element 결과를 출력 포트로 노출. external 타입으로 다른 Caliper 출력을 입력으로 받을 수 있음',
   },
   {
     type: 'ProfileFeature', label: 'Profile Feature', category: '측정',
@@ -452,6 +479,13 @@ export const TOOL_DEFS: ToolDef[] = [
     inputLabels: ['A', 'B(선택)'],
     defaultParams: { op: 'abs', factor: 1.0 },
     description: 'per-pixel 산술 연산. op=abs: |A|. op=add/subtract: A±B. op=multiply: A×factor(B없을때) 또는 A×B',
+  },
+  {
+    type: 'HeightMapNormalize', label: 'HeightMap Normalize', category: '표면 연산',
+    inputs: ['HeightMap', { type: 'Region', optional: true }], outputs: ['HeightMap'],
+    inputLabels: ['HeightMap', 'Region(선택)'],
+    defaultParams: { mode: 'minmax', outMin: 0, outMax: 1, clipLimit: 2.0, tileGrid: 8 },
+    description: 'HeightMap 채널0 정규화/평활화(OpenCV). mode=minmax: [min,max]→[outMin,outMax] 선형. zscore: (v-mean)/std 표준화. equalize: 히스토그램 평활화. clahe: 지역 적응 대비(clipLimit/tileGrid). NaN은 통계 제외·NaN 유지. Region 연결 시 영역 밖은 NaN',
   },
   {
     type: 'GradientMap', label: 'Gradient Map', category: '표면 연산',

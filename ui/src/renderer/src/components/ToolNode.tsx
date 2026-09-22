@@ -2,6 +2,7 @@ import { useState, useContext } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { TOOL_DEF_MAP, PORT_COLORS, portType, portIsArray } from '../types/tools'
+import type { PortDecl } from '../types/tools'
 import { HoveredEdgeContext } from './hoveredEdge'
 
 interface HeightMeasure {
@@ -68,7 +69,7 @@ function ResultArea({ toolType, result }: { toolType: string; result: NodeResult
     return (
       <div className="tool-node-result">
         <img
-          src={`data:image/jpeg;base64,${result.preview}`}
+          src={`data:image/png;base64,${result.preview}`}
           className="tool-node-preview"
           alt="result"
         />
@@ -110,8 +111,9 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
     ? (result!.ok !== false && result!.pass !== false ? 'pass' : 'fail')
     : ''
 
-  const effectiveOutputs = def.getOutputs?.(params) ?? def.outputs
-  const portRows = Math.max(def.inputs.length, effectiveOutputs.length)
+  const effectiveInputs  = (def.getInputs?.(params)  ?? def.inputs)  as PortDecl[]
+  const effectiveOutputs = (def.getOutputs?.(params) ?? def.outputs) as PortDecl[]
+  const portRows = Math.max(effectiveInputs.length, effectiveOutputs.length)
 
   return (
     <div className={`tool-node ${selected ? 'selected' : ''}`}>
@@ -142,7 +144,7 @@ export default function ToolNode({ id, data, selected }: NodeProps) {
       {/* 포트 행 — 핸들과 라벨을 같은 행에 두어 높이를 맞춤 */}
       <div className="tool-node-ports">
         {Array.from({ length: portRows }).map((_, i) => {
-          const inD = def.inputs[i]
+          const inD = effectiveInputs[i]
           const outD = effectiveOutputs[i]
           const inT = inD !== undefined ? portType(inD) : undefined
           const outT = outD !== undefined ? portType(outD) : undefined

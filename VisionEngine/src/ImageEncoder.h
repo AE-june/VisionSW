@@ -62,29 +62,32 @@ inline std::string heightmapToBase64(const HeightMap& heightmap,
     }
     float range = (zMax > zMin) ? (zMax - zMin) : 1.f;
 
+    // gray 0 = NaN 전용 예약. 유효값은 [1,255]로 매핑 → 뷰어가 gray==0을
+    // 무손실로 NaN과 구별(최소값 픽셀이 NaN처럼 오판되던 버그 방지).
+    // 무손실 PNG 사용 필수: JPG 압축은 경계에서 gray값을 흔들어 0/1 구분을 깨뜨림.
     std::vector<uint8_t> gray(static_cast<size_t>(heightmap.width) * heightmap.height);
     for (int i = 0; i < heightmap.width * heightmap.height; ++i) {
         float v = heightmap.data[i];
         gray[i] = std::isnan(v) ? 0
-                : static_cast<uint8_t>((v - zMin) / range * 255.f);
+                : static_cast<uint8_t>(1.f + (v - zMin) / range * 254.f);
     }
 
-    std::vector<uint8_t> jpg;
-    stbi_write_jpg_to_func(stbiCallback, &jpg, heightmap.width, heightmap.height, 1,
-                           gray.data(), 85);
-    return base64Encode(jpg);
+    std::vector<uint8_t> png;
+    stbi_write_png_to_func(stbiCallback, &png, heightmap.width, heightmap.height, 1,
+                           gray.data(), heightmap.width /*stride bytes*/);
+    return base64Encode(png);
 }
 
 // ── Region → base64 grayscale (mask 1→255, 0→0) ─────────────────────────────
-//  마스크 시각화용 프리뷰. 기존 파이프라인·UI mime(jpeg) 일관을 위해 JPG 사용.
-//  (이진 마스크라 JPG 경계 fuzz는 시각화 한정 — 무손실 PNG는 후속 개선.)
+//  마스크 시각화용 프리뷰. 무손실 PNG — 이진 마스크 경계 fuzz 방지 + heightmap
+//  프리뷰와 UI mime(png) 일관. gray 0 = 마스크 밖(=영역 비멤버) → hover null 정상.
 inline std::string regionToBase64(const Region& rgn) {
     if (rgn.empty()) return {};
     std::vector<uint8_t> gray(rgn.mask.size());
     for (size_t i = 0; i < rgn.mask.size(); ++i) gray[i] = rgn.mask[i] ? 255 : 0;
-    std::vector<uint8_t> jpg;
-    stbi_write_jpg_to_func(stbiCallback, &jpg, rgn.width, rgn.height, 1, gray.data(), 90);
-    return base64Encode(jpg);
+    std::vector<uint8_t> png;
+    stbi_write_png_to_func(stbiCallback, &png, rgn.width, rgn.height, 1, gray.data(), rgn.width);
+    return base64Encode(png);
 }
 
 } // namespace vision

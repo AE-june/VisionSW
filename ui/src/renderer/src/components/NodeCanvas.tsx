@@ -53,8 +53,13 @@ function Canvas({ nodes, edges, onNodesChange, onEdgesChange, onConnect, onAddNo
     const outIdx = parseInt((connection.sourceHandle ?? 'output-0').split('-')[1])
     const inIdx  = parseInt((connection.targetHandle ?? 'input-0').split('-')[1])
 
-    const outType = sourceDef.outputs[outIdx]
-    const inType  = targetDef.inputs[inIdx]
+    const srcParams = (sourceNode.data as { params?: Record<string, unknown> }).params ?? {}
+    const tgtParams = (targetNode.data as { params?: Record<string, unknown> }).params ?? {}
+    const effectiveOuts = sourceDef.getOutputs?.(srcParams) ?? sourceDef.outputs
+    const effectiveIns  = targetDef.getInputs?.(tgtParams)  ?? targetDef.inputs
+
+    const outType = effectiveOuts[outIdx]
+    const inType  = effectiveIns[inIdx]
     if (!outType || !inType) return false
 
     return isCompatible(outType, inType)
