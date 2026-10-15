@@ -1,7 +1,7 @@
 #pragma once
 
 #include "VisionData.h"
-#include "ZMap.h"
+#include "HeightMap.h"
 #include <string>
 #include <vector>
 #include <cmath>
@@ -40,73 +40,51 @@ inline void stbiCallback(void* ctx, void* data, int size) {
     buf->insert(buf->end(), p, p + size);
 }
 
-// ── Nearest-neighbor downscale ────────────────────────────────────────────
+// ── HeightMap → base64 PNG grayscale (normalized, 원본 해상도 유지) ─────────────
 
-inline void downscale(const uint8_t* src, int sw, int sh, int ch,
-                      std::vector<uint8_t>& dst, int dw, int dh) {
-    dst.resize(static_cast<size_t>(dw) * dh * ch);
-    for (int y = 0; y < dh; ++y) {
-        int sy = y * sh / dh;
-        for (int x = 0; x < dw; ++x) {
-            int sx = x * sw / dw;
-            for (int c = 0; c < ch; ++c)
-                dst[(y * dw + x) * ch + c] = src[(sy * sw + sx) * ch + c];
-        }
-    }
-}
-
-// ── Image2D → base64 PNG (max 320px wide) ────────────────────────────────
-
-inline std::string imageToBase64(const Image2D& img, int maxW = 320) {
-    int dw = img.width, dh = img.height;
-    if (dw > maxW) { dh = dh * maxW / dw; dw = maxW; }
-
-    std::vector<uint8_t> pixels;
-    if (dw == img.width && dh == img.height) {
-        pixels = img.data;
-    } else {
-        downscale(img.data.data(), img.width, img.height, img.channels, pixels, dw, dh);
-    }
-
-    std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, dw, dh, img.channels,
-                           pixels.data(), dw * img.channels);
-    return base64Encode(png);
-}
-
-// ── ZMap → base64 PNG grayscale (normalized, max 320px wide) ─────────────
-
-inline std::string zmapToBase64(const ZMap& zmap, int maxW = 320) {
-    if (zmap.empty()) return {};
+// outMin/outMax/outHasRange(옵션): 정규화하며 구한 실제 z범위를 반환 → 호출부 중복 스캔 방지
+inline std::string heightmapToBase64(const HeightMap& heightmap,
+                                float* outMin = nullptr, float* outMax = nullptr,
+                                bool* outHasRange = nullptr) {
+    if (outHasRange) *outHasRange = false;
+    if (heightmap.empty()) return {};
 
     // Normalize float → uint8
     float zMin =  std::numeric_limits<float>::max();
     float zMax = -std::numeric_limits<float>::max();
-    for (float v : zmap.data) {
+    for (float v : heightmap.data) {
         if (!std::isnan(v)) { zMin = std::min(zMin, v); zMax = std::max(zMax, v); }
+    }
+    if (zMin <= zMax) {   // 유효 픽셀 존재
+        if (outMin) *outMin = zMin;
+        if (outMax) *outMax = zMax;
+        if (outHasRange) *outHasRange = true;
     }
     float range = (zMax > zMin) ? (zMax - zMin) : 1.f;
 
-    std::vector<uint8_t> gray(static_cast<size_t>(zmap.width) * zmap.height);
-    for (int i = 0; i < zmap.width * zmap.height; ++i) {
-        float v = zmap.data[i];
+    std::vector<uint8_t> gray(static_cast<size_t>(heightmap.width) * heightmap.height);
+    for (int i = 0; i < heightmap.width * heightmap.height; ++i) {
+        float v = heightmap.data[i];
         gray[i] = std::isnan(v) ? 0
                 : static_cast<uint8_t>((v - zMin) / range * 255.f);
     }
 
-    int dw = zmap.width, dh = zmap.height;
-    std::vector<uint8_t> pixels;
-    if (dw > maxW) {
-        int ndh = dh * maxW / dw; int ndw = maxW;
-        downscale(gray.data(), dw, dh, 1, pixels, ndw, ndh);
-        dw = ndw; dh = ndh;
-    } else {
-        pixels = gray;
-    }
+    std::vector<uint8_t> jpg;
+    stbi_write_jpg_to_func(stbiCallback, &jpg, heightmap.width, heightmap.height, 1,
+                           gray.data(), 85);
+    return base64Encode(jpg);
+}
 
-    std::vector<uint8_t> png;
-    stbi_write_png_to_func(stbiCallback, &png, dw, dh, 1, pixels.data(), dw);
-    return base64Encode(png);
+// ── Region → base64 grayscale (mask 1→255, 0→0) ─────────────────────────────
+//  마스크 시각화용 프리뷰. 기존 파이프라인·UI mime(jpeg) 일관을 위해 JPG 사용.
+//  (이진 마스크라 JPG 경계 fuzz는 시각화 한정 — 무손실 PNG는 후속 개선.)
+inline std::string regionToBase64(const Region& rgn) {
+    if (rgn.empty()) return {};
+    std::vector<uint8_t> gray(rgn.mask.size());
+    for (size_t i = 0; i < rgn.mask.size(); ++i) gray[i] = rgn.mask[i] ? 255 : 0;
+    std::vector<uint8_t> jpg;
+    stbi_write_jpg_to_func(stbiCallback, &jpg, rgn.width, rgn.height, 1, gray.data(), 90);
+    return base64Encode(jpg);
 }
 
 } // namespace vision

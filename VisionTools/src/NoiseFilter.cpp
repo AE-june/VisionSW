@@ -3,16 +3,205 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <limits>
+#include <cstring>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace vision {
+
+static std::vector<float> makeGaussianKernel(int size);   // 전방 선언 (filterHeightMap보다 아래 정의)
 
 NoiseFilter::NoiseFilter(Params params) : m_params(params) {}
 
 ToolResult NoiseFilter::execute(VisionDataPtr input) {
     if (!input) return { ToolStatus::Fail, "null input" };
-    if (input->hasImage()) return filter2D(input);
-    if (input->hasCloud()) return filter3D(input);
+    if (input->inHeightMap(0)) return filterHeightMap(input);   // HeightMap 우선
+    if (input->inCloud(0)) return filter3D(input);
     return { ToolStatus::Skip, "no data to filter" };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  filterHeightMap — HeightMap(높이맵) 필터. 전부 NaN(무효 픽셀) 인지: 유효 이웃만 사용.
+//   Mean/Median/Gaussian: 평활화 (창 내 유효값으로 대체)
+//   SOR: 창 내 유효 이웃의 평균/표준편차로 이상치 판정 → 제거(NaN)
+// ─────────────────────────────────────────────────────────────────────
+ToolResult NoiseFilter::filterHeightMap(VisionDataPtr input) {
+    const HeightMap& src = *input->inHeightMap(0);
+    const int W = src.width, H = src.height;
+    if (W <= 0 || H <= 0) return { ToolStatus::Fail, "NoiseFilter: 빈 HeightMap" };
+
+    const int kx = std::max(3, m_params.kernelSizeX | 1);   // 홀수 보장
+    const int ky = std::max(3, m_params.kernelSizeY | 1);
+    const Type type = m_params.type;
+    const float NaN = std::numeric_limits<float>::quiet_NaN();
+    const float EPS = 1e-6f;
+    const size_t N = static_cast<size_t>(W) * H;
+
+    const char* modeName = type == Type::Mean ? "mean" : type == Type::Median ? "median"
+                         : type == Type::Gaussian ? "gaussian" : type == Type::Bilateral ? "bilateral" : "sor";
+    VISION_LOG_INFO("NoiseFilter::filterHeightMap type={} kx={} ky={} stdRatio={:.2f}",
+                    modeName, kx, ky, m_params.stdRatio);
+
+    auto out  = std::make_shared<VisionData>(*input);
+    auto heightmap = std::make_shared<HeightMap>(src);   // 메타데이터+데이터 복사 (ROI 밖은 원본 유지)
+
+    // ── 코어 필터: float Mat(NaN=무효) → 같은 크기 필터 결과 Mat ────────────
+    //   전체/부분 영역 공용. 영역 dims는 인자 Mat에서 읽는다.
+    // 경계 처리: 모든 창 연산에 BORDER_CONSTANT(0) 사용.
+    //  NaN 인지 정규화(num/den)에서 이미지 밖은 값 0·가중치 0 → 자동 제외되므로,
+    //  최상/최하단 행도 '실제 이웃'만으로 필터링됨. (BORDER_REPLICATE면 가장자리 행을
+    //  복제해 이웃 통계가 자기 편향 → SOR가 가장자리 이상치를 못 걸러내는 문제가 있었음)
+    auto filterRegion = [&](const cv::Mat& data) -> cv::Mat {
+        const int w = data.cols, h = data.rows;
+        const size_t n = static_cast<size_t>(w) * h;
+        cv::Mat valid = (data == data);            // CV_8U: 255=유효 (NaN은 자기 자신과 != )
+        cv::Mat maskF; valid.convertTo(maskF, CV_32F, 1.0 / 255.0);   // 1.0/0.0
+        cv::Mat filled; data.copyTo(filled);
+        filled.setTo(0.f, ~valid);                 // NaN→0 (선형필터가 유효값만 합산하도록)
+
+        cv::Mat res(h, w, CV_32F);
+        float* rp = res.ptr<float>();
+        const uchar* vp = valid.ptr<uchar>();
+        const float* dp = reinterpret_cast<const float*>(data.data);
+
+        // NaN 인지 정규화: 유효값 합 / 유효 가중치 합 (선형 필터 mean/gaussian 공용)
+        auto normalize = [&](const cv::Mat& num, const cv::Mat& den) {
+            const float* np = num.ptr<float>();
+            const float* dnp = den.ptr<float>();
+            for (size_t i = 0; i < n; ++i)
+                rp[i] = (vp[i] && dnp[i] > EPS) ? np[i] / dnp[i] : NaN;
+        };
+
+        // 무효(NaN) 픽셀을 '가장 가까운 유효 데이터'로 채워 base 생성 — median/bilateral 전용.
+        //  이 필터들은 NaN 마스킹이 안 돼 채운 값이 그대로 창에 들어간다. 지역평균/0으로 채우면
+        //  데이터 경계 밖 여백값이 경계 행을 오염시키지만, 최근접 유효값으로 채우면 데이터가
+        //  경계 너머로 자연 확장돼 경계(상/하단) 행도 내부와 동일하게 필터링된다(=데이터 경계 기준).
+        auto nearestFillBase = [&]() -> cv::Mat {
+            cv::Mat inv; cv::bitwise_not(valid, inv);   // 무효=비영(distanceTransform 측정대상), 유효=영(타깃)
+            cv::Mat dist, labels;
+            cv::distanceTransform(inv, dist, labels, cv::DIST_L2, 3, cv::DIST_LABEL_PIXEL);
+            double maxL = 0; cv::minMaxLoc(labels, nullptr, &maxL);
+            std::vector<float> lut((size_t)maxL + 1, 0.f);
+            const int* lp = labels.ptr<int>();
+            for (size_t i = 0; i < n; ++i) if (vp[i]) lut[(size_t)lp[i]] = dp[i];   // 유효 픽셀 → 자기 라벨에 값
+            cv::Mat base(h, w, CV_32F); float* bp = base.ptr<float>();
+            for (size_t i = 0; i < n; ++i) bp[i] = vp[i] ? dp[i] : lut[(size_t)lp[i]];  // 무효 → 최근접 유효값
+            return base;
+        };
+
+        // median/bilateral 공통: 최근접 채움 base를 데이터 행밴드[상단..하단]로 자르고
+        //  상/하단을 REFLECT(미러) 패딩 후 필터 → 경계 행이 '미러된 실제 이웃'으로 필터링돼
+        //  상/하단 필터 효과가 내부와 같아진다(복제 채움의 자기편향으로 경계가 덜 걸리던 문제 해결).
+        //  결과를 rp에 직접 기록(유효 픽셀만, 나머지 NaN).
+        auto bandReflectFilter = [&](bool isMedian, int mk, int kb, double srC, double ss) {
+            cv::Mat base = nearestFillBase();
+            cv::Mat rowSum; cv::reduce(maskF, rowSum, 1, cv::REDUCE_SUM, CV_32F);  // 행별 유효수
+            const float* rs = rowSum.ptr<float>();
+            int r0 = 0;      while (r0 < h  && rs[r0] < 0.5f) ++r0;   // 첫 유효행
+            int r1 = h - 1;  while (r1 >= 0 && rs[r1] < 0.5f) --r1;   // 끝 유효행
+            for (size_t i = 0; i < n; ++i) rp[i] = NaN;
+            if (r1 < r0) return;                                      // 데이터 없음
+            const int bh = r1 - r0 + 1;
+            const int padY = std::min(ky, bh);                       // REFLECT 패딩은 밴드높이 이하
+            cv::Mat band = base.rowRange(r0, r1 + 1);
+            cv::Mat padded; cv::copyMakeBorder(band, padded, padY, padY, 0, 0, cv::BORDER_REFLECT);
+            cv::Mat filt;
+            if (isMedian) cv::medianBlur(padded, filt, mk);
+            else          cv::bilateralFilter(padded, filt, kb, srC, ss, cv::BORDER_REFLECT);
+            cv::Mat core = filt.rowRange(padY, padY + bh);           // 패드 제거 → 밴드 코어
+            const float* cp = core.ptr<float>();
+            for (int r = r0; r <= r1; ++r) {
+                const float* crow = cp + (size_t)(r - r0) * w;
+                for (int c = 0; c < w; ++c) { size_t i = (size_t)r * w + c; if (vp[i]) rp[i] = crow[c]; }
+            }
+        };
+
+        if (type == Type::Mean) {
+            cv::Mat num, den;
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            normalize(num, den);
+        }
+        else if (type == Type::Gaussian) {
+            cv::Mat num, den;
+            cv::GaussianBlur(filled, num, cv::Size(kx, ky), 0, 0, cv::BORDER_CONSTANT);
+            cv::GaussianBlur(maskF,  den, cv::Size(kx, ky), 0, 0, cv::BORDER_CONSTANT);
+            normalize(num, den);
+        }
+        else if (type == Type::Median) {
+            // OpenCV medianBlur: CV_32F는 정사각 커널 3/5만 지원
+            const int mk = (std::max(kx, ky) <= 3) ? 3 : 5;
+            bandReflectFilter(true, mk, 0, 0.0, 0.0);   // 데이터밴드 REFLECT 패딩 → 상/하단도 강하게
+        }
+        else if (type == Type::Bilateral) {
+            // bilateral은 정사각 윈도우만 지원 → max(kx,ky) 사용
+            const int kb = std::max(kx, ky);
+            double sigmaRangeCount = (src.zResMm > 0)
+                ? static_cast<double>(m_params.sigmaRangeMm) / src.zResMm
+                : static_cast<double>(m_params.sigmaRangeMm);
+            double sigmaSpace = std::max(1.0, kb / 3.0);
+            bandReflectFilter(false, 0, kb, sigmaRangeCount, sigmaSpace);   // 데이터밴드 REFLECT 패딩
+        }
+        else {  // SOR — 이웃 통계(중심 픽셀 제외)로 이상치 판정 → NaN
+            cv::Mat num, den, sq, numSq;
+            cv::blur(filled, num, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::blur(maskF,  den, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            cv::multiply(filled, filled, sq);
+            cv::blur(sq, numSq, cv::Size(kx, ky), cv::Point(-1,-1), cv::BORDER_CONSTANT);
+            const float* np = num.ptr<float>(); const float* dnp = den.ptr<float>();
+            const float* nsp = numSq.ptr<float>();
+            const float k2 = static_cast<float>(kx * ky);
+            for (size_t i = 0; i < n; ++i) {
+                if (!vp[i]) { rp[i] = NaN; continue; }
+                // 중심 픽셀 기여를 제거해 이웃만으로 통계 계산
+                float neighborSum   = np[i]  * k2 - dp[i];
+                float neighborSumSq = nsp[i] * k2 - dp[i] * dp[i];
+                float neighborCnt   = dnp[i] * k2 - 1.f;   // 중심은 항상 유효
+                if (neighborCnt <= EPS) { rp[i] = dp[i]; continue; }  // 이웃 없으면 유지
+                float mean = neighborSum / neighborCnt;
+                float var  = std::max(0.f, neighborSumSq / neighborCnt - mean * mean);
+                float sd   = std::sqrt(var);
+                rp[i] = (std::abs(dp[i] - mean) > m_params.stdRatio * sd) ? NaN : dp[i];
+            }
+        }
+        return res;
+    };
+
+    if (type == Type::Median && std::max(kx, ky) > 5)
+        VISION_LOG_WARN("NoiseFilter: median은 커널 3/5만 지원 (요청={}x{})", kx, ky);
+
+    cv::Mat full(H, W, CV_32F, const_cast<float*>(src.data.data()));
+
+    auto rgn = input->inRegion(1);
+    if (!rgn) {
+        // Region 없음 → 전체 이미지 필터 (기존 동작)
+        cv::Mat res = filterRegion(full);
+        std::memcpy(heightmap->data.data(), res.ptr<float>(), sizeof(float) * N);
+    } else {
+        // Region bounding box + halo로 서브이미지 필터 → 마스크=1인 픽셀만 결과 적용.
+        const int halo = std::max(kx, ky);
+        const Rect2D bbox = rgn->boundingBox();
+        if (bbox.w > 0 && bbox.h > 0) {
+            int ex0 = std::max(0, bbox.x - halo);
+            int ey0 = std::max(0, bbox.y - halo);
+            int ex1 = std::min(W, bbox.x + bbox.w + halo);
+            int ey1 = std::min(H, bbox.y + bbox.h + halo);
+            cv::Mat sub = full(cv::Rect(ex0, ey0, ex1 - ex0, ey1 - ey0)).clone();
+            cv::Mat subRes = filterRegion(sub);
+
+            for (int row = bbox.y; row < bbox.y + bbox.h; ++row) {
+                const float* sr = subRes.ptr<float>(row - ey0);
+                float* dz = &heightmap->data[static_cast<size_t>(row) * W];
+                for (int col = bbox.x; col < bbox.x + bbox.w; ++col) {
+                    if (rgn->contains(col, row))
+                        dz[col] = sr[col - ex0];
+                }
+            }
+        }
+    }
+    out->setHeightMap(heightmap);
+    return { ToolStatus::Ok, "", out };
 }
 
 // Separable Gaussian kernel
@@ -31,59 +220,13 @@ static std::vector<float> makeGaussianKernel(int size) {
     return k;
 }
 
-ToolResult NoiseFilter::filter2D(VisionDataPtr input) {
-    VISION_LOG_DEBUG("NoiseFilter::filter2D kernel={}", m_params.kernelSize);
-    const auto& src = *input->image;
-    int W = src.width, H = src.height, C = src.channels;
-
-    auto out = std::make_shared<VisionData>(*input);
-    out->image = std::make_shared<Image2D>();
-    out->image->width = W;
-    out->image->height = H;
-    out->image->channels = C;
-    out->image->data.resize(static_cast<size_t>(W) * H * C);
-
-    int k = std::max(3, m_params.kernelSize | 1);  // ensure odd
-    auto kernel = makeGaussianKernel(k);
-    int half = k / 2;
-
-    // Horizontal pass into temp buffer
-    std::vector<float> tmp(static_cast<size_t>(W) * H * C);
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            for (int c = 0; c < C; ++c) {
-                float sum = 0.f;
-                for (int dx = -half; dx <= half; ++dx) {
-                    int xx = std::clamp(x + dx, 0, W - 1);
-                    sum += kernel[dx + half] * src.data[(y * W + xx) * C + c];
-                }
-                tmp[(y * W + x) * C + c] = sum;
-            }
-        }
-    }
-
-    // Vertical pass to output
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            for (int c = 0; c < C; ++c) {
-                float sum = 0.f;
-                for (int dy = -half; dy <= half; ++dy) {
-                    int yy = std::clamp(y + dy, 0, H - 1);
-                    sum += kernel[dy + half] * tmp[(yy * W + x) * C + c];
-                }
-                out->image->data[(y * W + x) * C + c] =
-                    static_cast<uint8_t>(std::clamp(sum, 0.f, 255.f));
-            }
-        }
-    }
-
-    return { ToolStatus::Ok, "", out };
-}
-
 ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
     VISION_LOG_DEBUG("NoiseFilter::filter3D radius={} minNeighbors={}",
                      m_params.radius, m_params.minNeighbors);
-    const auto& src = *input->cloud;
+    auto inCloud = input->inCloud(0);
+    if (!inCloud)
+        return { ToolStatus::Fail, "NoiseFilter::filter3D: PointCloud3D 입력이 없습니다" };
+    const auto& src = *inCloud;
 
     // Guard against excessive computation for very large clouds
     const size_t maxBruteForce = 50000;
@@ -96,9 +239,11 @@ ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
     float r2 = m_params.radius * m_params.radius;
     int minN = m_params.minNeighbors;
 
-    auto out = std::make_shared<VisionData>(*input);
-    out->cloud = std::make_shared<PointCloud3D>();
-    out->cloud->frameId = src.frameId;
+    auto out = std::make_shared<VisionData>();
+    out->sourceId = input->sourceId;
+    out->frames   = input->frames;
+    out->setCloud(std::make_shared<PointCloud3D>());
+    out->clouds[0]->frameId = src.frameId;
 
     for (size_t i = 0; i < src.points.size(); ++i) {
         const auto& p = src.points[i];
@@ -111,11 +256,11 @@ ToolResult NoiseFilter::filter3D(VisionDataPtr input) {
                 if (++cnt >= minN) break;
             }
         }
-        if (cnt >= minN) out->cloud->points.push_back(p);
+        if (cnt >= minN) out->clouds[0]->points.push_back(p);
     }
 
     VISION_LOG_DEBUG("NoiseFilter::filter3D {} → {} points",
-                     src.points.size(), out->cloud->points.size());
+                     src.points.size(), out->clouds[0]->points.size());
     return { ToolStatus::Ok, "", out };
 }
 

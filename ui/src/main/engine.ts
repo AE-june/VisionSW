@@ -3,7 +3,11 @@ import { spawn, ChildProcess } from 'child_process'
 import { join } from 'path'
 import WebSocket from 'ws'
 
-const ENGINE_URL = 'ws://localhost:9000'
+// 엔진 포트: 워크트리마다 다르게 줄 수 있게 .env(MAIN_VITE_ENGINE_PORT)로 오버라이드. 기본 9000.
+//  같은 머신에서 여러 워크트리 앱을 동시에 띄우려면 워크트리별로 다른 포트를 줘야 한다
+//  (안 그러면 두 엔진이 같은 포트에 바인딩 충돌 → 한 엔진만 살고 두 UI가 그것을 공유 → 불안정).
+const ENGINE_PORT = Number((import.meta as { env?: Record<string, string> }).env?.MAIN_VITE_ENGINE_PORT) || 9000
+const ENGINE_URL = `ws://localhost:${ENGINE_PORT}`
 const ENGINE_RECONNECT_MS = 1000
 const ENGINE_MAX_RETRIES = 10
 
@@ -43,6 +47,8 @@ function connectWs() {
 
   socket.on('close', () => {
     wsReady = false
+    if (ws !== socket) return  // 명시적으로 교체된 소켓 — 재연결 루프 중복 방지
+    ws = null
     if (retryCount < ENGINE_MAX_RETRIES) {
       retryCount++
       setTimeout(connectWs, ENGINE_RECONNECT_MS)
@@ -60,14 +66,21 @@ export function startEngine() {
     : join(__dirname, '../../../build/bin/Release/VisionEngine.exe')
 
   try {
-    engineProcess = spawn(exePath, [], {
+    engineProcess = spawn(exePath, ['--parent-pid', String(process.pid), '--port', String(ENGINE_PORT)], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     })
     engineProcess.stdout?.on('data', (d) => process.stdout.write('[C++] ' + d))
     engineProcess.stderr?.on('data', (d) => process.stderr.write('[C++] ' + d))
     engineProcess.on('error', (e) => console.error('[engine] spawn error:', e.message))
-    engineProcess.on('exit', (code) => console.log('[engine] exit code:', code))
+    engineProcess.on('exit', (code) => {
+      console.log('[engine] exit code:', code)
+      engineProcess = null
+      if (code !== 0) {
+        console.warn('[engine] crashed — restarting in 1s...')
+        setTimeout(() => { retryCount = 0; startEngine() }, 1000)
+      }
+    })
   } catch (e) {
     console.warn('[engine] Could not spawn VisionEngine.exe — using standalone WebSocket mode')
   }
@@ -85,6 +98,16 @@ export function stopEngine() {
   }
 }
 
+// 강제 재시작: 내부 프로세스/소켓을 정리하고 재연결 카운터를 리셋한 뒤 다시 시작.
+// 이미 외부에서 엔진이 떠 있으면 새 spawn은 포트 충돌로 종료되고 기존 엔진에 연결된다.
+export function restartEngine() {
+  if (ws) { ws.terminate(); ws = null }
+  wsReady = false
+  if (engineProcess) { engineProcess.kill(); engineProcess = null }
+  retryCount = 0
+  startEngine()
+}
+
 // ── IPC handlers ──────────────────────────────────────────────────────────
 
 export function registerEngineIpc() {
@@ -92,7 +115,7 @@ export function registerEngineIpc() {
     if (!wsReady || !ws) {
       return { error: 'VisionEngine not connected' }
     }
-    ws.send(JSON.stringify({ cmd: 'run', ...recipe as object }))
+    ws.send(JSON.stringify({ cmd: 'run', schemaVersion: 2, ...(recipe as object) }))
     return { ok: true }
   })
 
@@ -104,5 +127,28 @@ export function registerEngineIpc() {
 
   ipcMain.handle('engine:isReady', async () => {
     return { connected: wsReady }
+  })
+
+  ipcMain.handle('engine:restart', async () => {
+    restartEngine()
+    return { ok: true }
+  })
+
+  ipcMain.handle('engine:preload', async (_event, folder: string, xResMm: number, yResMm: number, zResMm: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'preload', folder, xResMm, yResMm, zResMm }))
+    return { ok: true }
+  })
+
+  ipcMain.handle('engine:fetchProfile', async (_event, nodeId: string, profileIdx: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'fetchProfile', nodeId, profileIdx }))
+    return { ok: true }
+  })
+
+  ipcMain.handle('engine:fetchNotchEnv', async (_event, nodeId: string, chunkIdx: number) => {
+    if (!wsReady || !ws) return { error: 'VisionEngine not connected' }
+    ws.send(JSON.stringify({ cmd: 'fetchNotchEnv', nodeId, chunkIdx }))
+    return { ok: true }
   })
 }

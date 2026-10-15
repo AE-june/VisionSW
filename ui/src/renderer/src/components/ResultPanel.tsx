@@ -1,13 +1,14 @@
+import { useRef, useState, useCallback } from 'react'
+
 export interface MeasureResult {
   id: string
   tool: string
   ok: boolean
   msg: string
-  heightDiff?: number
-  thicknessMm?: number
-  minMm?: number
-  maxMm?: number
   pass?: boolean
+  // Generic named measurements / decisions
+  measurements?: { name: string; value: number; unit: string; valid: boolean }[]
+  decisions?: { name: string; pass: boolean; reason: string; measured?: number; nominal?: number; tolerance?: number }[]
 }
 
 export interface LogEntry {
@@ -22,42 +23,73 @@ interface Props {
   onClear: () => void
 }
 
-function formatResult(r: MeasureResult): string {
-  if (r.tool === 'LineFitHeight' && r.heightDiff !== undefined)
-    return `${r.heightDiff.toFixed(3)} mm`
-  if (r.tool === 'ThicknessMeasure' && r.thicknessMm !== undefined)
-    return `${r.thicknessMm.toFixed(3)} mm`
-  return r.ok ? 'OK' : r.msg || 'Fail'
+function Row({ label, value, pass }: { label: string; value: string; pass: boolean }) {
+  return (
+    <div className="result-row">
+      <span className="result-label">{label}</span>
+      <span className={`result-value ${pass ? 'pass-color' : 'fail-color'}`}>{value}</span>
+    </div>
+  )
 }
 
-function toolLabel(r: MeasureResult): string {
-  if (r.tool === 'LineFitHeight') return 'Height Diff'
-  if (r.tool === 'ThicknessMeasure') return 'Thickness'
-  return r.tool
-}
+// 노드 1개의 결과 → 행 묶음
+function ResultRows({ r }: { r: MeasureResult }) {
+  if (!r.ok) return <Row label={r.tool} value={r.msg || 'Fail'} pass={false} />
 
-function resultPass(r: MeasureResult): boolean {
-  if (r.pass !== undefined) return r.pass
-  return r.ok
+  const meas = r.measurements ?? []
+  const decs = (r.decisions ?? []).filter(d => d.name !== 'allPass')
+
+  if (meas.length === 0 && decs.length === 0)
+    return <Row label={r.tool} value="OK" pass />
+
+  return <>
+    {meas.filter(m => m.valid).map((m, i) => (
+      <Row key={`m-${i}`}
+        label={m.name}
+        value={`${m.value.toFixed(m.unit === 'pts' ? 0 : 4)}${m.unit ? ' ' + m.unit : ''}`}
+        pass
+      />
+    ))}
+    {decs.map((d, i) => (
+      <Row key={`d-${i}`} label={d.name} value={d.pass ? 'PASS' : 'FAIL'} pass={d.pass} />
+    ))}
+  </>
 }
 
 export default function ResultPanel({ results, logs, overallPass, onClear }: Props) {
   const statusClass = overallPass === null ? '' : overallPass ? 'pass' : 'fail'
   const statusText = overallPass === null ? 'READY' : overallPass ? 'PASS' : 'FAIL'
 
+  const [height, setHeight] = useState(180)
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragRef.current = { startY: e.clientY, startH: height }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      const delta = dragRef.current.startY - ev.clientY  // 위로 끌면 커짐
+      const next = Math.min(window.innerHeight - 120, Math.max(80, dragRef.current.startH + delta))
+      setHeight(next)
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [height])
+
   return (
-    <div className="result-panel">
+    <div className="result-panel" style={{ height }}>
+      <div className="result-resize-handle" onMouseDown={onResizeStart} />
       <div className="result-left">
         <div className="panel-header">측정 결과</div>
         <div className={`result-status ${statusClass}`}>{statusText}</div>
         <div className="result-list">
           {results.map((r) => (
-            <div key={r.id} className="result-row">
-              <span className="result-label">{toolLabel(r)}</span>
-              <span className={`result-value ${resultPass(r) ? 'pass-color' : 'fail-color'}`}>
-                {formatResult(r)}
-              </span>
-            </div>
+            <ResultRows key={r.id} r={r} />
           ))}
           {results.length === 0 && (
             <div className="result-row">

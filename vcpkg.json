@@ -6,6 +6,7 @@
     "nlohmann-json",
     "gtest",
     "crow",
-    "stb"
+    "stb",
+    "eigen3"
   ]
 }

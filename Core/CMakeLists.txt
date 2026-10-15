@@ -2,7 +2,7 @@ add_library(Core STATIC
     src/VisionData.cpp
     src/Pipeline.cpp
     src/PipelineSerializer.cpp
-    src/ZMapLoader.cpp
+    src/HeightMapLoader.cpp
 )
 
 target_include_directories(Core
