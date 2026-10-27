@@ -27,6 +27,7 @@ declare global {
       onEngineEvent: (cb: (data: unknown) => void) => () => void
       openFolder: () => Promise<string | null>
       listFolderImages: (dir: string) => Promise<{ name: string; path: string; mtimeMs: number }[]>
+      listFolderClouds: (dir: string) => Promise<{ name: string; path: string; mtimeMs: number }[]>
       // 폴더검사(배치) 전용 워커풀
       batchStart: (count?: number) => Promise<{ ok?: boolean; workerIds?: number[]; error?: string }>
       batchStop: () => Promise<{ ok?: boolean }>
@@ -365,15 +366,17 @@ export default function App() {
   }, [])
 
   // ── 폴더검사 ──
-  // folder 모드인 HeightMapLoader 노드 수집 (id, 라벨, 폴더). 여러 로더가 각자 폴더를 순회.
+  // folder 모드인 HeightMapLoader/CloudLoader 노드 수집 (id, 라벨, 폴더). 여러 로더가 각자 폴더를 순회.
   const folderLoaderNodes = useCallback(() => nodesRef.current.filter(n => {
     const d = n.data as { toolType: string; params?: Record<string, unknown> }
-    return d.toolType === 'HeightMapLoader' && d.params?.mode === 'folder' && !!d.params?.folder
+    return (d.toolType === 'HeightMapLoader' || d.toolType === 'CloudLoader')
+      && d.params?.mode === 'folder' && !!d.params?.folder
   }), [])
 
-  // 폴더별 이미지 나열 후 정렬키(name/time) 적용
-  const listSorted = useCallback(async (folder: string, key: BatchSortKey) => {
-    const files = (await window.electronAPI?.listFolderImages(folder)) ?? []
+  // 폴더별 파일 나열(로더 종류에 맞는 확장자) 후 정렬키(name/time) 적용
+  const listSorted = useCallback(async (folder: string, key: BatchSortKey, toolType = 'HeightMapLoader') => {
+    const api = window.electronAPI
+    const files = (await (toolType === 'CloudLoader' ? api?.listFolderClouds(folder) : api?.listFolderImages(folder))) ?? []
     return key === 'time' ? [...files].sort((a, b) => a.mtimeMs - b.mtimeMs) : files  // name은 main에서 이미 정렬
   }, [])
 
@@ -385,12 +388,12 @@ export default function App() {
     if (!api) return
     const loaders = folderLoaderNodes()
     Promise.all(loaders.map(async n => {
-      const d = n.data as { label: string; params: Record<string, unknown> }
-      const files = await api.listFolderImages(d.params.folder as string)
+      const d = n.data as { toolType: string; label: string; params: Record<string, unknown> }
+      const files = await listSorted(d.params.folder as string, 'name', d.toolType)
       return { id: n.id, label: d.label, folder: d.params.folder as string, count: files.length }
     })).then(infos => { if (!cancelled) setBatchLoaders(infos) })
     return () => { cancelled = true }
-  }, [batchOpen, nodes, folderLoaderNodes])
+  }, [batchOpen, nodes, folderLoaderNodes, listSorted])
 
   const handleBatchStop = useCallback(() => {
     batchStopRef.current = true
@@ -404,15 +407,18 @@ export default function App() {
     const allEdges = edgesRef.current
     const loaderNodes = folderLoaderNodes()
     if (loaderNodes.length === 0) {
-      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 폴더 모드 HeightMapLoader가 없습니다' }])
+      setLogs(l => [...l, { level: 'error', msg: '폴더검사: 폴더 모드 HeightMapLoader/CloudLoader가 없습니다' }])
       return
     }
 
     // 각 로더의 폴더를 나열·정렬(name/time). 로더별 파일 배열을 인덱스로 락스텝 순회.
     const listed = await Promise.all(loaderNodes.map(async n => {
-      const d = n.data as { params: Record<string, unknown> }
-      return { id: n.id, files: await listSorted(d.params.folder as string, batchSortKey) }
+      const d = n.data as { toolType: string; params: Record<string, unknown> }
+      return { id: n.id, isCloud: d.toolType === 'CloudLoader', files: await listSorted(d.params.folder as string, batchSortKey, d.toolType) }
     }))
+    // 포인트클라우드 폴더 로더가 하나라도 있으면 보수 모드: 워커 1개 · 프리페치 없음 · 죽은 파일은 재시도 없이 건너뜀.
+    // (파일당 수백MB라 HeightMap 기준 워커 수/프리페치로는 메모리 피크를 보장 못 함 — 실측 기반 동적 조절은 추후)
+    const cloudMode = listed.some(l => l.isCloud)
     const counts = listed.map(l => l.files.length)
     const setCount = Math.min(...counts)
     if (setCount === 0) {
@@ -488,7 +494,7 @@ export default function App() {
     }
 
     // ── 병렬 워커풀 경로 (무한반복 아닐 때) ──────────────────────────────
-    const startRes = await api.batchStart()
+    const startRes = await api.batchStart(cloudMode ? 1 : undefined)
     if (startRes.error || !startRes.workerIds?.length) {
       setLogs(l => [...l, { level: 'error', msg: `워커풀 시작 실패: ${startRes.error ?? '알 수 없는 오류'}` }])
       setBatchRunning(false)
@@ -497,7 +503,9 @@ export default function App() {
     }
     const workerIds = startRes.workerIds
     const N = workerIds.length
-    setLogs(l => [...l, { level: 'info', msg: `워커 ${N}개 기동 완료 — 병렬 검사 시작` }])
+    setLogs(l => [...l, { level: 'info', msg: cloudMode
+      ? `포인트클라우드 폴더검사 — 메모리 보호를 위해 워커 ${N}개로 순차 처리 (프리페치 없음)`
+      : `워커 ${N}개 기동 완료 — 병렬 검사 시작` }])
 
     const resById = new Map(listed.map(l => {
       const nd = allNodes.find(n => n.id === l.id)
@@ -550,7 +558,7 @@ export default function App() {
 
     // 워커 workerId에게 i번째 이미지를 지금부터 백그라운드로 미리 로드해두게 함
     const prefetchFor = (workerId: number, i: number) => {
-      if (i >= setCount) return
+      if (cloudMode || i >= setCount) return   // 클라우드 모드: 처리 중 다음 파일을 동시에 올리지 않음
       const paths = pathById(i)
       for (const l of listed) {
         const p = paths.get(l.id)
@@ -608,7 +616,10 @@ export default function App() {
             for (let j = i + N; j < setCount; j += N) strandedQueue.push(j)
             break
           }
-          continue   // 재기동 성공 — 같은 이미지를 재시도 (아직 completed 처리 안 함)
+          if (!cloudMode) continue   // 재기동 성공 — 같은 이미지를 재시도 (아직 completed 처리 안 함)
+          // 클라우드 모드: 같은 파일은 또 메모리 초과로 죽을 가능성이 높으니 재시도 없이 실패 처리 후 다음 파일로
+          setLogs(l => [...l, { level: 'error', msg: `${setLabel}: 처리 중 워커 종료(메모리 부족 추정) — 건너뜀` }])
+          r.error = true
         }
 
         completed++

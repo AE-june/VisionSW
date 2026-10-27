@@ -659,7 +659,7 @@ public:
     }
 };
 
-// (구) DualExposureMergeTool — ExposureMerge2 타입 제거됨. ExposureMerge 사용.
+// DualExposureMergeTool (ExposureMerge2) — 인터리브 2노출 입력. halfRes=false 행 복제 경로 때문에 재등록.
 class DualExposureMergeTool : public IAlgorithmTool {
     float m_matchTol;
     float m_reflTol;
@@ -2034,6 +2034,18 @@ std::shared_ptr<IAlgorithmTool> ToolFactory::create(
         return std::make_shared<ExposureSplitTool>(
             p.value("splitCount", 2),
             noPreview);
+    }
+    // 인터리브 2노출 머지(짝수행=저노출). halfRes=false면 머지 행을 2배 복제해 원본 transport 픽셀 수 유지.
+    if (type == "ExposureMerge2") {
+        return std::make_shared<DualExposureMergeTool>(
+            p.value("matchTol", 20.0f),
+            p.value("reflTol",  -1.0f),
+            p.value("tolX",     10.0f),
+            p.value("tolY",     100.0f),
+            p.value("gapK",     2),
+            p.value("halfRes",  true),
+            noPreview,
+            p.value("_nodeId",  std::string()));
     }
     if (type == "ExposureMerge3") {
         return std::make_shared<TripleExposureMergeTool>(

@@ -101,9 +101,13 @@ ipcMain.handle('dialog:openFolder', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
-// 폴더검사: 폴더 내 이미지 파일 목록 (이름 자연 정렬 + 수정시각)
-ipcMain.handle('folder:listImages', async (_event, dir: string) => {
-  const exts = new Set(['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'])
+// 폴더검사: 폴더 내 이미지/포인트클라우드 파일 목록 (이름 자연 정렬 + 수정시각)
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'])
+const CLOUD_EXTS = new Set(['.ply', '.xyz', '.asc', '.pcd', '.bin'])
+ipcMain.handle('folder:listImages', async (_event, dir: string) => listFolderFiles(dir, IMAGE_EXTS))
+ipcMain.handle('folder:listClouds', async (_event, dir: string) => listFolderFiles(dir, CLOUD_EXTS))
+
+async function listFolderFiles(dir: string, exts: Set<string>) {
   const entries = await readdir(dir, { withFileTypes: true })
   const names = entries
     .filter(e => e.isFile() && exts.has(e.name.slice(e.name.lastIndexOf('.')).toLowerCase()))
@@ -116,7 +120,7 @@ ipcMain.handle('folder:listImages', async (_event, dir: string) => {
     try { mtimeMs = (await stat(path)).mtimeMs } catch { /* 접근 불가 파일은 0 */ }
     return { name: basename(name), path, mtimeMs }
   }))
-})
+}
 
 // 레시피 저장/불러오기 (텍스트 파일 읽기/쓰기)
 ipcMain.handle('recipe:save', async (_event, filePath: string, content: string) => {

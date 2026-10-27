@@ -126,6 +126,9 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
     // (여러 이미지를 순회하는 워커 프로세스가 g_heightmapFileCache를 무한정 쌓아두지 않도록)
     const bool batchMode = msg.value("batch", false);
     std::lock_guard<std::mutex> cacheLock(g_cacheMtx);
+    // 캐시를 안 쓰는 실행(배치)은 이전 실행의 노드 출력을 먼저 비운다 — 안 그러면 이전 세트의
+    // 중간 결과(대용량 PointCloud 복사본 등)가 다음 세트 처리 중에도 남아 피크 메모리가 2배가 됨
+    if (!useCache) g_nodeCache.clear();
 
     // 실행 1회분 프레임 레지스트리 — 모든 노드가 공유
     auto runFrames = std::make_shared<FrameRegistry>();
@@ -318,7 +321,7 @@ static json runPipeline(const json& msg, crow::websocket::connection* conn) {
 
             // 7. 출력·캐시·프레임 전파
             if (result.output) {
-                {
+                if (useCache) {   // 캐시 미사용 실행은 저장도 안 함(위 clear와 짝)
                     std::lock_guard<std::mutex> lk(nodeCacheMtx);
                     g_nodeCache[nodeId] = {result.output, ph};
                 }

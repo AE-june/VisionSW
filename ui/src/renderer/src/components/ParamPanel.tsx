@@ -371,6 +371,28 @@ function ExposureSplitParams({ params, onChange }: { params: Record<string, unkn
   </>
 }
 
+// ExposureMerge2 (2노출 머지): 저/장 인터리브(짝수행=저노출) → 1번 머지(저>장 우선). halfRes 끄면 머지 행 2배 복제.
+function ExposureMerge2Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  return <>
+    <div className="param-empty" style={{ fontSize: 10 }}>저/장 2노출 인터리브 HeightMap(짝수행=저노출, 홀수행=장노출)을 연결하세요. 노출별 HeightMap 두 장은 HeightMap Math(fill)로 한 장에 합칠 수 있습니다. 우선순위 저&gt;장.</div>
+    <div className="param-section">머지</div>
+    <NumField label="일치 허용 (cnt)" value={params.matchTol as number ?? 20} step={5} onChange={v => set('matchTol', v)}
+      tooltip="두 노출이 모두 유효하고 |차이| ≤ 이 값이면 겹침 일치로 보고 오프셋(offset) 추정에 사용. 단위: raw count" />
+    <CheckField label="반해상도 출력 (Y×2)" value={params.halfRes as boolean ?? false} onChange={v => set('halfRes', v)}
+      tooltip="머지는 2중 프로파일당 1행이라 켜면 n행·Y피치×2로 출력. 끄면 각 행을 2배 복제해 원본 높이(transport 픽셀 수) 유지" />
+    <div className="param-section">리플렉션 제거 (연속성 필터)</div>
+    <NumField label="리플 허용 (cnt)" value={params.reflTol as number ?? -1} step={10} onChange={v => set('reflTol', v)}
+      tooltip="리플렉션 씨앗 허용치. 두 노출 |차이| ≤ 이 값이면 신뢰 씨앗. 음수면 일치 허용(matchTol) 값을 사용. 단위: raw count" />
+    <NumField label="X 허용치 (cnt/px)" value={params.tolX as number ?? 10} step={1} onChange={v => set('tolX', v)}
+      tooltip="연속성 확장 시 X방향 이웃과의 Z 허용 차이. 단위: count/px" />
+    <NumField label="Y 허용치 (cnt/px)" value={params.tolY as number ?? 100} step={10} onChange={v => set('tolY', v)}
+      tooltip="연속성 확장 시 Y방향 이웃과의 Z 허용 차이. 단위: count/px" />
+    <NumField label="갭 점프 (px)" value={params.gapK as number ?? 2} step={1} onChange={v => set('gapK', v)}
+      tooltip="연속성이 NaN(구멍) 픽셀을 건너뛸 최대 거리. 허용치는 건너뛴 거리에 비례해 증가" />
+  </>
+}
+
 // ExposureMerge3 (3노출 머지): 저/중/장 인터리브 → 캐스케이드로 2번 머지(저>중>장 우선). ExposureMerge2와 동일 규칙, 청크 모드 없음.
 function ExposureMerge3Params({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
@@ -741,12 +763,73 @@ function LineFitParams({ params, onChange }: { params: Record<string, unknown>; 
   </>
 }
 
+// CloudLoader: 단일 파일 / 폴더(연속검사) 모드 — HeightMapLoader와 같은 방식(엔진은 path만 읽음).
+// 포인트클라우드는 파일당 수백MB라 폴더 선택 시 아무것도 미리 로드하지 않고 목록만 만든다.
 function CloudLoaderParams({ params, onChange, toolType }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void; toolType?: string }) {
   const set = (key: string, val: unknown) => onChange({ ...params, [key]: val })
+  const mode = (params.mode as string) ?? 'file'
+  const folder = (params.folder as string) ?? ''
+  const index = (params.index as number) ?? 0
+  const [files, setFiles] = useState<{ name: string; path: string }[]>([])
+
+  useEffect(() => {
+    if (mode === 'folder' && folder && window.electronAPI?.listFolderClouds) {
+      window.electronAPI.listFolderClouds(folder).then(fs => {
+        setFiles(fs)
+        // 엔진은 path만 읽으므로, 선택된 인덱스의 파일로 path를 동기화 (초기/폴더변경 시)
+        const ci = Math.min(Math.max(0, index), Math.max(0, fs.length - 1))
+        if (fs[ci] && params.path !== fs[ci].path) onChange({ ...params, index: ci, path: fs[ci].path })
+      })
+    } else {
+      setFiles([])
+    }
+    // mode/folder 변경 시에만 재나열 — index 변경은 gotoIndex가 path까지 함께 갱신
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, folder])
+
+  const pickFolder = async () => {
+    const dir = await window.electronAPI?.openFolder?.()
+    if (dir) onChange({ ...params, folder: dir, index: 0 })
+  }
+
+  const clampIdx = Math.min(Math.max(0, index), Math.max(0, files.length - 1))
+  const cur = files[clampIdx]
+  const gotoIndex = (i: number) => {
+    const f = files[i]
+    onChange(f ? { ...params, index: i, path: f.path } : { ...params, index: i })
+  }
+
   return <>
     <div className="param-section">포인트클라우드 로드</div>
-    <PathField label="파일 (ply/xyz/asc/pcd/bin)" value={(params.path as string) ?? ''}
-      onChange={v => set('path', v)} toolType={toolType} />
+    <div className="param-row">
+      <span className="param-label">모드</span>
+      <select className="param-select" value={mode} onChange={e => set('mode', e.target.value)}>
+        <option value="file">단일 파일</option>
+        <option value="folder">폴더 (연속검사)</option>
+      </select>
+    </div>
+    {mode === 'file' ? (
+      <PathField label="파일 (ply/xyz/asc/pcd/bin)" value={(params.path as string) ?? ''}
+        onChange={v => set('path', v)} toolType={toolType} />
+    ) : <>
+      <div className="param-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+        <span className="param-label">폴더</span>
+        <button className="btn-browse" onClick={pickFolder}>📁 폴더 선택</button>
+        {folder && <div className="param-path-display" title={folder}>{folder} · 클라우드 {files.length}개</div>}
+      </div>
+      {files.length > 0 && (
+        <div className="param-row">
+          <span className="param-label">파일</span>
+          <div className="zl-idx">
+            <button className="btn-browse" onClick={() => gotoIndex((clampIdx - 1 + files.length) % files.length)}>◀</button>
+            <span className="zl-idx-cur" title={cur?.name}>{clampIdx + 1}/{files.length}</span>
+            <button className="btn-browse" onClick={() => gotoIndex((clampIdx + 1) % files.length)}>▶</button>
+          </div>
+        </div>
+      )}
+      {cur && <div className="param-path-display" title={cur.name}>{cur.name}</div>}
+      <div className="param-empty" style={{ fontSize: 10 }}>연속검사(📁 폴더검사)가 이 폴더를 순서대로 검사합니다 · 메모리 보호를 위해 워커 1개로 순차 처리</div>
+    </>}
     <CheckField label="X/Y 반전 로드 (Keyence)" value={(params.swapXY as boolean) ?? false}
       onChange={v => set('swapXY', v)}
       tooltip="켜면 로드한 점의 X/Y를 맞바꿈. SmartRay는 x=스캔(transport)/y=레이저라인(lateral)인데 Keyence는 반대(스캔=Y, 레이저라인=X)이므로 켜서 파이프라인 축 관례에 맞춤" />
@@ -1324,13 +1407,15 @@ function HeightMapMathParams({ params, onChange }: { params: Record<string, unkn
   const op = (params.op as string) ?? 'abs'
   return <>
     <div className="param-section">HeightMap 픽셀 연산</div>
-    <SelectField label="연산" value={op} options={['abs', 'add', 'subtract', 'multiply']}
+    <SelectField label="연산" value={op} options={['abs', 'add', 'subtract', 'multiply', 'fill']}
       onChange={v => set('op', v)}
-      tooltip="abs=|포트0| · add=포트0+포트1 · subtract=포트0-포트1 · multiply=포트0×포트1(포트1 연결 시) 또는 포트0×factor" />
+      tooltip="abs=|포트0| · add=포트0+포트1 · subtract=포트0-포트1 · multiply=포트0×포트1(포트1 연결 시) 또는 포트0×factor · fill=포트0 우선, 포트0이 빈 픽셀만 포트1로 채움" />
     {op === 'multiply' && <NumField label="배율 (factor)" value={(params.factor as number) ?? 1.0} step={0.1} onChange={v => set('factor', v)}
       tooltip="포트1 미연결 시 포트0 전체에 이 값을 곱함. 단위 변환·스케일 조정용" />}
     <div className="param-empty" style={{ fontSize: 10 }}>
-      {op === 'abs' ? '포트0만 필요. 차이맵 절댓값으로 결함 분포 시각화에 사용' : '포트0=A, 포트1=B. 두 HeightMap 크기가 동일해야 함'}
+      {op === 'abs' ? '포트0만 필요. 차이맵 절댓값으로 결함 분포 시각화에 사용'
+        : op === 'fill' ? '포트0=A, 포트1=B(크기 동일). 노출별 HeightMap을 행 인터리브 한 장으로 합칠 때 사용(예: 저노출→포트0, 장노출→포트1 → Exposure Merge (2))'
+        : '포트0=A, 포트1=B. 두 HeightMap 크기가 동일해야 함'}
     </div>
   </>
 }
@@ -1381,6 +1466,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureSplit' && <ExposureSplitParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}
@@ -1443,6 +1529,7 @@ export default function ParamPanel({ nodeId, toolType, label, params, onParamCha
         {toolType === 'HeightMapLoader' && <HeightMapLoaderParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge' && <ExposureMergeParams params={params} onChange={handleChange} />}
         {toolType === 'ExposureSplit' && <ExposureSplitParams params={params} onChange={handleChange} />}
+        {toolType === 'ExposureMerge2' && <ExposureMerge2Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureMerge3' && <ExposureMerge3Params params={params} onChange={handleChange} />}
         {toolType === 'ExposureFilter' && <ExposureFilterParams params={params} onChange={handleChange} />}
         {toolType === 'GapFill' && <GapFillParams params={params} onChange={handleChange} />}

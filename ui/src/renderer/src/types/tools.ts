@@ -68,6 +68,12 @@ export const TOOL_DEFS: ToolDef[] = [
     description: '인터리브 다중노출 HeightMap을 노출별로 분리. 행 순서대로 노출1/2/3 출력',
   },
   {
+    type: 'ExposureMerge2', label: 'Exposure Merge (2)', category: 'SDC 전용',
+    inputs: ['HeightMap'], outputs: ['HeightMap'],
+    defaultParams: { matchTol: 20, reflTol: -1, tolX: 10, tolY: 100, gapK: 2, halfRes: false },
+    description: '저/장 2노출 인터리브(짝수행=저노출) 머지 + 리플렉션 제거. halfRes 끄면 머지 행을 2배 복제해 원본 transport 픽셀 수 유지',
+  },
+  {
     type: 'ExposureMerge3', label: 'Exposure Merge (3)', category: 'SDC 전용',
     inputs: ['HeightMap', { type: 'HeightMap', optional: true }, { type: 'HeightMap', optional: true }],
     outputs: ['HeightMap', 'HeightMap'],
@@ -451,7 +457,7 @@ export const TOOL_DEFS: ToolDef[] = [
     inputs: ['HeightMap', { type: 'HeightMap', optional: true }], outputs: ['HeightMap'],
     inputLabels: ['A', 'B(선택)'],
     defaultParams: { op: 'abs', factor: 1.0 },
-    description: 'per-pixel 산술 연산. op=abs: |A|. op=add/subtract: A±B. op=multiply: A×factor(B없을때) 또는 A×B',
+    description: 'per-pixel 산술 연산. op=abs: |A|. op=add/subtract: A±B. op=multiply: A×factor(B없을때) 또는 A×B. op=fill: A 우선, A가 NaN인 픽셀만 B',
   },
   {
     type: 'GradientMap', label: 'Gradient Map', category: '표면 연산',

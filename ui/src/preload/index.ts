@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
   listFolderImages: (dir: string) =>
     ipcRenderer.invoke('folder:listImages', dir),
+  listFolderClouds: (dir: string) =>
+    ipcRenderer.invoke('folder:listClouds', dir),
 
   // VisionEngine: send run command, returns { ok } or { error }
   engineRun: (recipe: unknown) =>

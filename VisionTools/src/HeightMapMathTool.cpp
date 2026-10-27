@@ -18,7 +18,7 @@ ToolResult HeightMapMathTool::execute(VisionDataPtr input) {
     const size_t N  = static_cast<size_t>(w) * h;
     const float  NaN = std::numeric_limits<float>::quiet_NaN();
 
-    if ((op == "add" || op == "subtract") && !hmB)
+    if ((op == "add" || op == "subtract" || op == "fill") && !hmB)
         return { ToolStatus::Fail, "HeightMapMath: op=" + op + " 에는 포트1 HeightMap이 필요합니다." };
     if (hmB && (hmB->width != w || hmB->height != h))
         return { ToolStatus::Fail, "HeightMapMath: 포트0/1 HeightMap 크기가 다릅니다." };
@@ -37,6 +37,10 @@ ToolResult HeightMapMathTool::execute(VisionDataPtr input) {
     } else if (op == "subtract") {
         for (size_t i = 0; i < N; ++i)
             out[i] = (std::isnan(a[i]) || std::isnan(b[i])) ? NaN : a[i] - b[i];
+    } else if (op == "fill") {
+        // A 우선, A가 비어 있는 픽셀만 B로 채움 (예: 노출별 HeightMap을 행 인터리브 한 장으로 합치기)
+        for (size_t i = 0; i < N; ++i)
+            out[i] = std::isnan(a[i]) ? b[i] : a[i];
     } else if (op == "multiply") {
         if (b) {
             for (size_t i = 0; i < N; ++i)
